@@ -49,9 +49,12 @@ bankai inspect <h> # render the task state for a given hash (audit)
 ## Status
 
 - [x] [ADR-0001](docs/adrs/0001-hybrid-content-addressing.md) — Accepted
-- [ ] Pillar 1: `Task` type + canonical serialization + `task_hash` bridge
-- [ ] Pillar 2: mobile-rule registry + `gleamunison/sync` wiring
-- [ ] CLI, supervision tree, socket interface
+- [x] [ADR-0002](docs/adrs/0002-canonical-serialization-versioning.md) — Accepted
+- [x] [ADR-0003](docs/adrs/0003-mobile-rule-sandbox.md) — Accepted (implemented)
+- [x] Pillar 1: `Task` type + canonical serialization + `task_hash` bridge
+- [x] Pillar 2: mobile-rule registry + sandbox (isolated / timeout / monitor) + `repl` eval
+- [x] CLI, supervision tree, UNIX-socket daemon + client mode
+- [x] CI (GitHub Actions: format-check → deps → test); gleamunison as a git dep
 
 ## License
 

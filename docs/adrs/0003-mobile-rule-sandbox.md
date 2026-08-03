@@ -158,26 +158,25 @@ Option A — it abandons the project's novelty.
 
 ## Verification / follow-up
 
-**Required hardening (implementation, tracked separately from this ADR):**
+**Required hardening — IMPLEMENTED (45 tests green):**
 
-1. Wrap `registry.eval` in a spawned, monitored process with a wall-clock timeout
-   (reuse the socket-layer `process.spawn` + monitor pattern). On timeout or exit,
-   return a bounded error; never propagate a crash to the daemon.
-2. Split `register` from `approve`: registration no longer auto-approves; execution
-   requires an explicit `approve`.
-3. Add tests:
-   - an approved rule that loops is **killed within the timeout** and returns an
-     error (not a hang);
-   - an unapproved rule is denied even after registration;
-   - a rule that triggers an eval crash returns an error, **not a daemon crash**.
+1. ✅ `registry.eval` runs `repl.eval_string` in a spawned, **unlinked** process
+   bounded by a wall-clock timeout (default 1s). On timeout the runaway is killed.
+2. ✅ **Monitor-based instant crash detection:** the worker is `monitor`-ed, and a
+   `Selector` races the reply against the DOWN message. A crash wins instantly
+   (distinct `"crashed"` error) rather than waiting out the budget. This upgrades
+   the original "timeout-only" plan; a looping rule that neither replies nor
+   crashes still hits the timeout.
+3. ✅ `register` no longer auto-approves — execution requires an explicit `approve`.
+4. ✅ Tests: a slow rule is killed at the budget (`"timed out"`); a panicking rule
+   returns `"crashed"` instantly without taking down the caller; an unapproved
+   rule is denied even after registration.
 
-**Longer-term:**
-- A reduction/call budget in addition to wall-clock.
+**Longer-term (still open):**
+- A reduction / call budget in addition to wall-clock.
 - A per-process `max_heap_size` kill to close the memory-bomb residual.
 - Capability tokens for effectful rules (+ a follow-up ADR defining the token model).
 - Signature-based trust on sync.
-- Optional separate sandbox node if the eval surface grows effectful.
 
-This ADR resolves ADR-0001 follow-up #2. **The decision is accepted; the
-required-hardening implementation above is the next pillar-2 slice, not part of
-this document.**
+This ADR resolves ADR-0001 follow-up #2. The hardening above is landed, not
+aspirational — see `src/bankai/rules/registry.gleam#run_isolated`.
