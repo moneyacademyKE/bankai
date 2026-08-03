@@ -1,12 +1,13 @@
 //// bankai — content-addressed task memory for distributed AI agents.
 ////
-//// This root module owns the process entry point (`main`). `cli` and `socket`
-//// are kept separate so the protocol/CLI surface stays pure and testable;
-//// `socket` imports `cli` (not the reverse), so neither may import this root.
+//// This root module owns the process entry point (`main`). `cli`, `socket`,
+//// `mcp`, and `sync_peer` are kept separate so the protocol/CLI surface stays
+//// pure and testable; none of them import this root.
 
 import bankai/cli
 import bankai/mcp
 import bankai/socket
+import bankai/sync_peer
 import gleam/io
 
 pub const version = "0.1.0"
@@ -22,6 +23,11 @@ pub fn main() -> Nil {
     // Long-running servers — block, no single-shot envelope.
     ["serve", ..] -> socket.serve(cli.default_workspace)
     ["mcp", ..] -> mcp.serve(cli.default_workspace)
+    ["sync-serve", ..rest] ->
+      sync_peer.serve(
+        cli.default_workspace,
+        sync_peer.parse_port(rest, sync_peer.default_port),
+      )
     [] -> io.println(cli.usage())
     [method, ..params] -> {
       // Warm path first: if a daemon is listening on the socket, route the

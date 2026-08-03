@@ -1,13 +1,15 @@
-%% Native UNIX-domain-socket transport for the bankai daemon.
+%% Native socket transport for bankai: UNIX-domain for the daemon + TCP for the
+%% live peer sync (G6 livesync).
 %%
-%% gleam_erlang does not expose gen_tcp, so these thin FFI shims back the
-%% daemon's warm path: a resident process that answers JSON-RPC requests over
-%% .bankai/bankai.sock without paying the BEAM cold-start cost of single-shot
-%% `gleam run` on every command.
+%% gleam_erlang does not expose gen_tcp, so these thin FFI shims back both:
+%%   - the daemon's warm path (resident process answering JSON-RPC over
+%%     .bankai/bankai.sock without the BEAM cold-start cost of single-shot run)
+%%   - the peer sync server/client (a running rig streams its task set over TCP)
 %%
-%% Uses {packet, line} framing: gen_tcp strips/attaches newlines, so recv_line
-%% returns a single line without the trailing newline and send_data callers
-%% append "\n". {ok,_}/{error,_} tuples map directly onto gleam's Result.
+%% {packet, line} framing throughout: recv_line returns one line without the
+%% trailing newline; send_data callers append "\n". accept/recv_line/send_data/
+%% close_s are gen_tcp-generic (work on UNIX-domain AND TCP sockets). {ok,_}/
+%% {error,_} tuples map directly onto gleam's Result.
 
 -module(bankai_socket_ffi).
 -export([
@@ -19,7 +21,10 @@
     connect/1,
     delete_path/1,
     socket_exists/1,
-    controlling_process/2
+    controlling_process/2,
+    %% G6 livesync — TCP
+    listen_tcp/1,
+    connect_tcp/2
 ]).
 
 %% Listen on a UNIX-domain socket at Path. Removes any stale socket file first.
@@ -89,3 +94,13 @@ socket_exists(Path) ->
         {ok, _} -> true;
         {error, _} -> false
     end.
+
+%% --- G6 livesync: TCP listen/connect for peer task sync. ---
+%% Reuses accept/recv_line/send_data/close_s (gen_tcp-generic). NDJSON framing
+%% via {packet, line}. {reuseaddr, true} so a restart can rebind promptly.
+listen_tcp(Port) ->
+    gen_tcp:listen(Port, [{packet, line}, {active, false}, {reuseaddr, true}]).
+
+%% Host is a gleam String (binary); gen_tcp:connect wants a charlist hostname.
+connect_tcp(Host, Port) ->
+    gen_tcp:connect(binary_to_list(Host), Port, [{packet, line}, {active, false}]).

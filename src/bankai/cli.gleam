@@ -14,6 +14,7 @@ import bankai/serde
 import bankai/storage/store
 import bankai/sync/jsonl
 import bankai/sync/merge
+import bankai/sync_peer
 import bankai/time
 import bankai/types.{InProgress, Open}
 import gleam/int
@@ -58,9 +59,13 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     ["setup", agent, ..] -> envelope(setup_cmd(agent))
     // G5 — retire closed tasks into archive.jsonl + a summary memory
     ["compact", ..] -> envelope(compact_cmd(workspace, tasks_path))
-    // G6 — reconcile local, or union-merge a remote tasks.jsonl (--from).
-    // The transport (git pull / rsync) is the agent's job; bankai is the merge.
+    // G6 (eventual) — reconcile local, or union-merge a remote tasks.jsonl
+    // (--from). The transport (git pull / rsync) is the agent's job; bankai is
+    // the merge.
     ["sync", ..rest] -> envelope(sync_cmd(tasks_path, rest))
+    // G6 livesync — pull a running peer's task set over TCP and union-merge.
+    // (sync-serve, the TCP server, lives in the root main — it blocks.)
+    ["sync-pull", ..rest] -> envelope(sync_pull_cmd(workspace, rest))
     [cmd, ..] -> envelope(Error("unknown command: " <> cmd))
   }
 }
@@ -316,9 +321,9 @@ fn inspect_cmd(tasks_path: String, hash: String) -> Result(json.Json, String) {
   }
 }
 
-// G6 — bankai sync: reconcile local, or union-merge a remote tasks.jsonl
-// (--from). The transport (git pull / rsync) is the agent's job; bankai is the
-// (content-addressed, deterministic) merge primitive.
+// G6 (eventual) — bankai sync: reconcile local, or union-merge a remote
+// tasks.jsonl (--from). The transport (git pull / rsync) is the agent's job;
+// bankai is the (content-addressed, deterministic) merge primitive.
 fn sync_cmd(
   tasks_path: String,
   rest: List(String),
@@ -353,6 +358,29 @@ fn sync_cmd(
   }
 }
 
+// G6 livesync — bankai sync-pull: connect to a running peer's sync server
+// (bankai sync-serve), pull its task set over TCP, union-merge into local.
+fn sync_pull_cmd(
+  workspace: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  let host = parse_host(rest)
+  let port = sync_peer.parse_port(rest, sync_peer.default_port)
+  case sync_peer.pull(workspace, host, port) {
+    Error(msg) -> Error(msg)
+    Ok(n) ->
+      Ok(json.string(
+        "pulled "
+        <> int.to_string(n)
+        <> " task(s) from "
+        <> host
+        <> ":"
+        <> int.to_string(port)
+        <> " (union-merged)",
+      ))
+  }
+}
+
 // G5 — bankai compact: retire Closed tasks into archive.jsonl + a memory.
 fn compact_cmd(
   workspace: String,
@@ -382,12 +410,21 @@ fn load_store(tasks_path: String) -> store.Store {
   }
 }
 
-/// G6: the value after the first `--from`, if any.
+/// G6 (eventual): the value after the first `--from`, if any.
 fn parse_from(args: List(String)) -> Option(String) {
   case args {
     [] -> option.None
     ["--from", v, ..] -> option.Some(v)
     [_, ..rest] -> parse_from(rest)
+  }
+}
+
+/// G6 livesync: the value after the first `--host` (default "localhost").
+fn parse_host(args: List(String)) -> String {
+  case args {
+    ["--host", v, ..] -> v
+    [_, ..rest] -> parse_host(rest)
+    [] -> "localhost"
   }
 }
 
@@ -478,6 +515,8 @@ pub fn usage() -> String {
   <> "  prime                         emit agent-injection prompt (with memories)\n"
   <> "  setup <claude|codex>          write CLAUDE.md / AGENTS.md (agent instructions)\n"
   <> "  sync [--from <path>]          reconcile, or union-merge a remote tasks.jsonl\n"
+  <> "  sync-serve [--port N]         run the TCP sync server (peers pull your tasks)\n"
+  <> "  sync-pull --host H [--port N] pull + union-merge a running peer's tasks\n"
   <> "  init                          initialize .bankai/\n"
   <> "  serve                         run the daemon (warm JSON-RPC socket path)\n\n"
   <> "all command output is a JSON envelope: {\"ok\": ...} / {\"error\": ...}"
