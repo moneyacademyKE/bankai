@@ -1,0 +1,13 @@
+# Gleam
+build/
+erl/
+*.beam
+*.ez
+
+# bankai workspace
+.bankai/
+.bankai_demo/
+
+# scratch
+.bash_history
+*.dump
