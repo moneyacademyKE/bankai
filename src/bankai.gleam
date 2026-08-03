@@ -5,6 +5,7 @@
 //// `socket` imports `cli` (not the reverse), so neither may import this root.
 
 import bankai/cli
+import bankai/mcp
 import bankai/socket
 import gleam/io
 
@@ -18,7 +19,9 @@ pub fn version_string() -> String {
 pub fn main() -> Nil {
   let args = argv()
   case args {
+    // Long-running servers — block, no single-shot envelope.
     ["serve", ..] -> socket.serve(cli.default_workspace)
+    ["mcp", ..] -> mcp.serve(cli.default_workspace)
     [] -> io.println(cli.usage())
     [method, ..params] -> {
       // Warm path first: if a daemon is listening on the socket, route the
