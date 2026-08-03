@@ -33,6 +33,7 @@ pub fn task_to_json(task: Task) -> json.Json {
         ])
       }),
     ),
+    #("labels", json.array(task.labels, of: json.string)),
     #(
       "content_hash",
       json.string(identity.hash_to_debug_string(task.content_hash)),
@@ -66,6 +67,7 @@ pub fn task_decoder() -> decode.Decoder(Task) {
     "relationships",
     decode.list(of: relationship_decoder()),
   )
+  use labels <- decode.field("labels", decode.list(of: decode.string))
   use hash_hex <- decode.field("content_hash", decode.string)
   case status_from_string(status_str) {
     Ok(status) ->
@@ -79,6 +81,7 @@ pub fn task_decoder() -> decode.Decoder(Task) {
         created_at: created_at,
         updated_at: updated_at,
         relationships: relationships,
+        labels: labels,
         content_hash: identity.hash_from_bytes(identity.hex_to_bytes(hash_hex)),
       ))
     Error(Nil) ->
@@ -93,6 +96,7 @@ pub fn task_decoder() -> decode.Decoder(Task) {
           created_at,
           updated_at,
           relationships,
+          labels,
           identity.hash_from_bytes(identity.hex_to_bytes(hash_hex)),
         ),
         "valid status",

@@ -17,7 +17,7 @@ import bankai/types.{InProgress, Open}
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option
+import gleam/option.{type Option}
 import gleam/string
 
 pub const default_workspace = ".bankai"
@@ -29,19 +29,22 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
   case argv {
     [] -> usage()
     ["init", ..] -> envelope(init_cmd(workspace))
-    ["create", title, ..] -> envelope(create_cmd(workspace, tasks_path, title))
-    ["list", ..] -> envelope(list_cmd(tasks_path))
-    ["ready", ..] -> envelope(ready_cmd(tasks_path))
+    ["create", title, ..rest] ->
+      envelope(create_cmd(workspace, tasks_path, title, rest))
+    ["list", ..rest] -> envelope(list_cmd(tasks_path, rest))
+    ["ready", ..rest] -> envelope(ready_cmd(tasks_path, rest))
     ["show", id, ..] -> envelope(show_cmd(tasks_path, id))
     ["dep", "add", task_id, blocker_id, ..] ->
       envelope(dep_add_cmd(tasks_path, task_id, blocker_id))
     ["dep", ..] -> envelope(Error("usage: dep add <task-id> <blocker-id>"))
+    ["update", id, "--label", label, ..] ->
+      envelope(label_add_cmd(tasks_path, id, label))
     ["update", id, "--claim", ..rest] ->
       envelope(claim_cmd(tasks_path, id, rest))
     ["update", id, status, ..] -> envelope(update_cmd(tasks_path, id, status))
     ["update", ..] ->
       envelope(Error(
-        "usage: update <id> <status> | update <id> --claim [assignee]",
+        "usage: update <id> <status> | update <id> --claim [a] | --label <l>",
       ))
     // G4 — agent memory
     ["remember", text, ..] -> envelope(remember_cmd(workspace, text))
@@ -72,32 +75,48 @@ fn create_cmd(
   workspace: String,
   tasks_path: String,
   title: String,
+  rest: List(String),
 ) -> Result(json.Json, String) {
   let _ = jsonl.ensure_dir(workspace)
   let now = time.now()
-  // G12: id derived from the content hash (bk-XXXX), not the clock.
+  // G12: id derived from the content hash (bk-XXXX). G3: labels from --label.
+  let labels = parse_labels(rest)
   let task =
-    builder.build_with_derived_id(title, "", Open, option.None, 1, now, now, [])
+    builder.build_with_derived_id(
+      title,
+      "",
+      Open,
+      option.None,
+      1,
+      now,
+      now,
+      [],
+      labels,
+    )
   let index = store.put(load_store(tasks_path), task)
   let _ = jsonl.flush(store.list(index), to: tasks_path)
   Ok(serde.task_to_json(task))
 }
 
-fn list_cmd(tasks_path: String) -> Result(json.Json, String) {
-  Ok(
-    load_store(tasks_path)
-    |> store.current_tasks()
-    |> json.array(of: serde.task_to_json),
-  )
+fn list_cmd(
+  tasks_path: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  let tasks = load_store(tasks_path) |> store.current_tasks()
+  let tasks = filter_by_label(tasks, parse_label_filter(rest))
+  Ok(json.array(tasks, of: serde.task_to_json))
 }
 
-fn ready_cmd(tasks_path: String) -> Result(json.Json, String) {
-  Ok(
+fn ready_cmd(
+  tasks_path: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  let tasks =
     load_store(tasks_path)
     |> store.current_tasks()
     |> graph.ready_tasks()
-    |> json.array(of: serde.task_to_json),
-  )
+  let tasks = filter_by_label(tasks, parse_label_filter(rest))
+  Ok(json.array(tasks, of: serde.task_to_json))
 }
 
 // G2 — find by id, print JSON.
@@ -154,9 +173,7 @@ fn update_cmd(
 ) -> Result(json.Json, String) {
   case serde.status_from_string(status) {
     Ok(new_status) -> {
-      // BUG-01 fix: load the store ONCE and thread it. The previous code
-      // reloaded between find_by_id and put, discarding concurrent writes /
-      // sibling tasks on flush (TOCTOU + data loss).
+      // BUG-01 fix: load the store ONCE and thread it.
       let index = load_store(tasks_path)
       case store.find_by_id(index, id) {
         Ok(task) -> {
@@ -197,6 +214,36 @@ fn claim_cmd(
             assignee: option.Some(assignee),
             updated_at: time.now(),
           )
+        })
+      let index = store.put(index, updated)
+      let _ = jsonl.flush(store.list(index), to: tasks_path)
+      Ok(serde.task_to_json(updated))
+    }
+    Error(Nil) -> Error("no such task: " <> id)
+  }
+}
+
+// G3 — bankai update <id> --label <label>: add a label (idempotent).
+fn label_add_cmd(
+  tasks_path: String,
+  id: String,
+  label: String,
+) -> Result(json.Json, String) {
+  let index = load_store(tasks_path)
+  case store.find_by_id(index, id) {
+    Ok(task) -> {
+      let updated =
+        builder.update(task, fn(t) {
+          case list.contains(t.labels, label) {
+            // idempotent — adding an existing label is a no-op (hash unchanged)
+            True -> t
+            False ->
+              types.Task(
+                ..t,
+                labels: [label, ..t.labels],
+                updated_at: time.now(),
+              )
+          }
         })
       let index = store.put(index, updated)
       let _ = jsonl.flush(store.list(index), to: tasks_path)
@@ -252,23 +299,57 @@ fn load_store(tasks_path: String) -> store.Store {
   }
 }
 
+/// Collect the token after each `--label` (G3). Order is reversed (prepend) but
+/// labels are an unordered set, sorted again at canonical-encode time.
+fn parse_labels(args: List(String)) -> List(String) {
+  let #(_, labels) =
+    list.fold(args, #(False, []), fn(acc, a) {
+      let #(want_value, labels) = acc
+      case want_value, a {
+        True, v -> #(False, [v, ..labels])
+        False, "--label" -> #(True, labels)
+        False, _ -> #(False, labels)
+      }
+    })
+  labels
+}
+
+/// The first `--label`'s value, if any (used to filter list/ready).
+fn parse_label_filter(args: List(String)) -> Option(String) {
+  case parse_labels(args) {
+    [] -> option.None
+    [label, ..] -> option.Some(label)
+  }
+}
+
+fn filter_by_label(
+  tasks: List(types.Task),
+  label: Option(String),
+) -> List(types.Task) {
+  case label {
+    option.None -> tasks
+    option.Some(l) -> list.filter(tasks, fn(t) { list.contains(t.labels, l) })
+  }
+}
+
 pub fn usage() -> String {
   "bankai — content-addressed task memory\n\n"
   <> "usage: bankai <command> [args]\n\n"
-  <> "  create <title>           create a task, print its JSON\n"
-  <> "  show <id>                print a task by id (JSON)\n"
-  <> "  list                     list all current tasks (JSON array)\n"
-  <> "  ready                    list unblocked tasks (JSON array)\n"
-  <> "  dep add <id> <blocker>   mark <id> blocked by <blocker>\n"
-  <> "  update <id> <status>     set status (open|in_progress|blocked|completed|closed)\n"
-  <> "  update <id> --claim [a]  claim: set in_progress + assignee (default: agent)\n"
-  <> "  remember \"insight\"       persist a content-addressed memory\n"
-  <> "  memories                 list persisted memories\n"
-  <> "  inspect <hash>           render the task for a content hash\n"
-  <> "  prime                    emit agent-injection prompt (with memories)\n"
-  <> "  sync                     reconcile + flush .bankai/tasks.jsonl\n"
-  <> "  init                     initialize .bankai/\n"
-  <> "  serve                    run the daemon (warm JSON-RPC socket path)\n\n"
+  <> "  create <title> [--label L]..  create a task, print its JSON\n"
+  <> "  show <id>                     print a task by id (JSON)\n"
+  <> "  list [--label L]              list current tasks (JSON array)\n"
+  <> "  ready [--label L]             list unblocked tasks (JSON array)\n"
+  <> "  dep add <id> <blocker>        mark <id> blocked by <blocker>\n"
+  <> "  update <id> <status>          open|in_progress|blocked|completed|closed\n"
+  <> "  update <id> --claim [a]       claim: in_progress + assignee (default agent)\n"
+  <> "  update <id> --label L         add a label\n"
+  <> "  remember \"insight\"            persist a content-addressed memory\n"
+  <> "  memories                      list persisted memories\n"
+  <> "  inspect <hash>                render the task for a content hash\n"
+  <> "  prime                         emit agent-injection prompt (with memories)\n"
+  <> "  sync                          reconcile + flush .bankai/tasks.jsonl\n"
+  <> "  init                          initialize .bankai/\n"
+  <> "  serve                         run the daemon (warm JSON-RPC socket path)\n\n"
   <> "all command output is a JSON envelope: {\"ok\": ...} / {\"error\": ...}"
 }
 
@@ -282,8 +363,10 @@ pub fn prime_text(workspace: String) -> String {
     <> "`bankai ready`, claim an unblocked task (`bankai update <id> --claim`),\n"
     <> "then mark it in_progress. On completion run `bankai update <id> completed`.\n"
     <> "Use `bankai show <id>` / `bankai inspect <hash>` to read state, and\n"
-    <> "`bankai dep add <id> <blocker>` to wire dependencies. Mobile validation\n"
-    <> "rules may be registered and executed by content hash (allow-list-gated)."
+    <> "`bankai dep add <id> <blocker>` to wire dependencies. Label work with\n"
+    <> "`--label`; persist durable insights with `bankai remember \"...\"`. Mobile\n"
+    <> "validation rules may be registered and executed by content hash\n"
+    <> "(allow-list-gated)."
   let mems_block = case memory.load(from: workspace <> "/memories.jsonl") {
     Ok([]) -> ""
     Ok(mems) -> {

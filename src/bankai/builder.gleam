@@ -18,6 +18,7 @@ pub fn build(
   updated_at: Int,
   relationships: List(Relationship),
 ) -> Task {
+  // G3: labels default to [] — existing callers are unchanged.
   let draft =
     Task(
       id: id,
@@ -29,12 +30,14 @@ pub fn build(
       created_at: created_at,
       updated_at: updated_at,
       relationships: relationships,
+      labels: [],
       content_hash: identity.hash_bytes(<<>>),
     )
   ast_bridge.rehash(draft)
 }
 
-/// Apply a field change and return a rehashed Task (hash advances).
+/// Apply a field change and return a rehashed Task (hash advances). A `Task(..t,
+/// ...)` spread carries `labels` through automatically.
 pub fn update(task: Task, mutate: fn(Task) -> Task) -> Task {
   task
   |> mutate
@@ -52,9 +55,10 @@ pub fn short_id_from_hash(h: identity.Hash) -> String {
 }
 
 /// Build a Task whose id is DERIVED from its own (placeholder) content hash,
-/// not from the clock. The id is taken from the draft's hash (placeholder id
-/// `"__pending__"`), then the task is rebuilt with the real id + rehashed. No
-/// circularity: the id references the placeholder-hash, not the final hash.
+/// not from the clock. The id is taken from a draft's hash (placeholder id
+/// `"__pending__"`, REAL labels so the derived id is label-aware), then the
+/// task is rebuilt with the real id + rehashed. No circularity: the id
+/// references the placeholder-hash, not the final hash.
 pub fn build_with_derived_id(
   title: String,
   description: String,
@@ -64,29 +68,37 @@ pub fn build_with_derived_id(
   created_at: Int,
   updated_at: Int,
   relationships: List(Relationship),
+  labels: List(String),
 ) -> Task {
   let draft =
-    build(
-      "__pending__",
-      title,
-      description,
-      status,
-      assignee,
-      priority,
-      created_at,
-      updated_at,
-      relationships,
+    Task(
+      id: "__pending__",
+      title: title,
+      description: description,
+      status: status,
+      assignee: assignee,
+      priority: priority,
+      created_at: created_at,
+      updated_at: updated_at,
+      relationships: relationships,
+      labels: labels,
+      content_hash: identity.hash_bytes(<<>>),
     )
+  let draft = ast_bridge.rehash(draft)
   let id = short_id_from_hash(draft.content_hash)
-  build(
-    id,
-    title,
-    description,
-    status,
-    assignee,
-    priority,
-    created_at,
-    updated_at,
-    relationships,
-  )
+  let final =
+    Task(
+      id: id,
+      title: title,
+      description: description,
+      status: status,
+      assignee: assignee,
+      priority: priority,
+      created_at: created_at,
+      updated_at: updated_at,
+      relationships: relationships,
+      labels: labels,
+      content_hash: identity.hash_bytes(<<>>),
+    )
+  ast_bridge.rehash(final)
 }

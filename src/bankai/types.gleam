@@ -42,6 +42,7 @@ pub type Task {
     created_at: Int,
     updated_at: Int,
     relationships: List(Relationship),
+    labels: List(String),
     content_hash: Hash,
   )
 }

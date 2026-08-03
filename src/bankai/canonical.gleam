@@ -6,9 +6,9 @@
 ////   - every variable-length value is length-prefixed (32-bit big-endian count)
 ////   - enums map to a fixed byte; Option to a tag byte
 ////   - Ints (bignum-safe) are encoded as length-prefixed decimal strings
-////   - the relationship list is SORTED before encoding
+////   - the relationship + labels lists are SORTED before encoding
 ////   - a leading VERSION byte lets us invalidate every hash if the encoding
-////     ever changes (see follow-up ADR on canonical-serialization versioning)
+////     ever changes (see ADR-0002 — canonical-serialization versioning)
 ////
 //// content_hash is intentionally NOT encoded — it is derived from these bytes.
 
@@ -24,8 +24,9 @@ import gleam/option.{type Option}
 import gleam/order
 import gleam/string
 
-/// Bump this if the encoding changes; it invalidates every prior content hash.
-const canonical_version = 1
+/// Bump if the encoding changes; it invalidates every prior content hash.
+/// v2 (G3): added the `labels` list.
+const canonical_version = 2
 
 /// Encode a Task as a stable, unambiguous BitArray (excludes content_hash).
 pub fn canonical_bytes(task: Task) -> BitArray {
@@ -39,6 +40,7 @@ pub fn canonical_bytes(task: Task) -> BitArray {
   |> put_int(task.created_at)
   |> put_int(task.updated_at)
   |> put_relationships(task.relationships)
+  |> put_labels(task.labels)
 }
 
 // --- segment builders ---
@@ -81,6 +83,13 @@ fn put_relationships(acc: BitArray, rels: List(Relationship)) -> BitArray {
     |> put_byte(relation_code(rel.relation))
     |> put_str(rel.target_id)
   })
+}
+
+fn put_labels(acc: BitArray, labels: List(String)) -> BitArray {
+  // Sort for determinism (labels are an unordered set semantically).
+  let sorted = list.sort(labels, by: string.compare)
+  let acc = put_int(acc, list.length(sorted))
+  list.fold(sorted, acc, fn(a, label) { put_str(a, label) })
 }
 
 // --- enum -> stable byte code ---
