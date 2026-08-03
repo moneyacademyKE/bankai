@@ -60,18 +60,27 @@ All command output is a JSON envelope — `{"ok": <json>}` on success, `{"error"
 - [x] [ADR-0003](docs/adrs/0003-mobile-rule-sandbox.md) — Accepted (implemented)
 - [x] Pillar 1: `Task` type + canonical serialization + `task_hash` bridge
 - [x] Pillar 2: mobile-rule registry + sandbox (isolated / timeout / monitor) + `repl` eval
-- [x] CLI, supervision tree, UNIX-socket daemon + client mode
+- [x] CLI, supervision tree, UNIX-socket daemon + client mode, **MCP stdio server**
 - [x] CI (GitHub Actions: format-check → deps → test); gleamunison as a git dep
 - [x] v0.1.0 released; audit BUG-01..12 addressed (10 fixed, 2 deferred — see [issue #1](https://github.com/moneyacademyKE/bankai/issues/1))
+- [x] Beads-parity roadmap (G1–G12) — **all phases shipped** (82 tests)
 
 ## Roadmap (Beads parity)
 
+All 12 items shipped, each in the lean Rich-Hickey-compatible form — the spec's
+heavy options (aarondb, `gleamunison/sync`, Mist) replaced by simpler proven
+precedents (git-bug, Letta/Anthropic tiering, mcp_toolkit-as-reference).
+
 | Phase | Items | Status |
 |---|---|---|
-| **P0 — Make the graph usable** | G12 hash-prefix IDs · G9 `{"ok"}`/`{"error"}` envelopes · G2 `show` · G1 `dep add` · G8 `update --claim` | 🚧 in progress |
-| **P1 — Agent memory** | G4 `remember` + prime injection · G3 labels field + `--label` filter | queued |
-| **P2 — Ecosystem** | G10 hierarchical IDs (`bk-a3f8.1`) · G7 `setup claude` / `setup codex` (emit AGENTS.md) | queued |
-| **P3 — Scale** | G5 memory compaction (aarondb datalog) · G6 remote sync (`gleamunison/sync`) · G11 MCP server | queued |
+| **P0 — Make the graph usable** | G12 hash-prefix IDs · G9 `{"ok"}`/`{"error"}` envelopes · G2 `show` · G1 `dep add` · G8 `update --claim` | ✅ |
+| **P1 — Agent memory** | G4 `remember` + prime injection · G3 labels + `--label` filter | ✅ |
+| **P2 — Ecosystem** | G10 hierarchical IDs (`bk-a3f8.1`) · G7 `setup claude/codex` (CLAUDE.md / AGENTS.md) | ✅ |
+| **P3 — Scale** | G5 `compact` (dep-free tier+retire, not aarondb) · G6 `sync --from` (git transport, not `gleamunison/sync`) · G11 `mcp` (thin stdio adapter, not mcp_toolkit/Mist) | ✅ |
+
+Open follow-ups (beyond the roadmap): a `gleamunison/sync` *live*-sync transport
+(G6's variant, when low-latency multi-rig is needed); `mcp_toolkit` HTTP/SSE
+transport (G11's variant, for remote/streaming MCP clients).
 
 ## License
 
