@@ -5,9 +5,11 @@ import bankai/sync/merge
 import bankai/types.{InProgress, Open}
 import gleam/list
 import gleam/option
+import gleam/string
 import gleamunison/identity
 import gleeunit
 import gleeunit/should
+import simplifile
 
 pub fn main() {
   gleeunit.main()
@@ -106,4 +108,13 @@ pub fn merge_never_raises_on_garbage_test() {
   // The "garbage tolerance" lives in jsonl.load (unparseable lines skipped).
   let _ = merge.merge([], [])
   should.be_true(True)
+}
+
+/// BUG-09 regression: JSONL output ends with a trailing newline (wc -l / jq interop).
+pub fn flush_writes_trailing_newline_test() {
+  let path = "test_bk_newline.jsonl"
+  let _ = jsonl.flush([fresh()], to: path)
+  let raw = should.be_ok(simplifile.read(from: path))
+  string.ends_with(raw, "\n")
+  |> should.be_true
 }

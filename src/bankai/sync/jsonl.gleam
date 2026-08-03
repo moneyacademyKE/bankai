@@ -12,11 +12,19 @@ pub fn flush(
   tasks: List(Task),
   to path: String,
 ) -> Result(Nil, simplifile.FileError) {
+  // BUG-09 fix: JSONL convention is one record per line, each terminated by
+  // "\n" — external tools (wc -l, tail, jq) expect a trailing newline. An empty
+  // task list writes an empty file (the reader yields []).
   let body =
     tasks
     |> list.map(serde.task_to_json)
     |> list.map(json.to_string)
     |> string.join("\n")
+
+  let body = case list.is_empty(tasks) {
+    True -> ""
+    False -> body <> "\n"
+  }
 
   simplifile.write(body, to: path)
 }

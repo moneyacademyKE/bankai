@@ -67,7 +67,7 @@ pub fn is_ready(task: Task, done: Set(String)) -> Bool {
 
 /// All currently-ready tasks. Plain function — NOT a gleamunison eval.
 pub fn ready_tasks(tasks: List(Task)) -> List(Task) {
-  let done = completed_ids(tasks)
+  let done = satisfied_ids(tasks)
   tasks
   |> list.filter(fn(t) { is_ready(t, done) })
   |> list.sort(by: fn(a, b) { string.compare(a.id, b.id) })
@@ -134,9 +134,13 @@ fn is_active(status: TaskStatus) -> Bool {
   }
 }
 
-fn completed_ids(tasks: List(Task)) -> Set(String) {
+// BUG-03 fix: a Blocks dependency is satisfied ONLY by Completed work — NOT by
+// Closed. "Closed" = abandoned/won't-do: the dependency was not delivered, so
+// the dependent stays blocked (NOT auto-ready). (was `completed_ids`, which
+// wrongly included Closed via `!is_active`.)
+fn satisfied_ids(tasks: List(Task)) -> Set(String) {
   tasks
-  |> list.filter(fn(t) { !is_active(t.status) })
+  |> list.filter(fn(t) { t.status == Completed })
   |> list.map(fn(t) { t.id })
   |> set.from_list()
 }

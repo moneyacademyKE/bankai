@@ -24,7 +24,7 @@ pub type Request {
 }
 
 pub type Response {
-  Result(value: String)
+  OkResponse(value: String)
   ErrorResponse(message: String)
 }
 
@@ -40,27 +40,29 @@ pub fn socket_path(workspace: String) -> String {
 
 pub fn handle_request(workspace: String, request: Request) -> Response {
   case request.method {
-    "ready" -> Result(value: cli.run_in(workspace, ["ready"]))
-    "list" -> Result(value: cli.run_in(workspace, ["list"]))
+    "ready" -> OkResponse(value: cli.run_in(workspace, ["ready"]))
+    "list" -> OkResponse(value: cli.run_in(workspace, ["list"]))
     "create" ->
       case request.params {
-        [title, ..] -> Result(value: cli.run_in(workspace, ["create", title]))
+        [title, ..] ->
+          OkResponse(value: cli.run_in(workspace, ["create", title]))
         _ -> ErrorResponse(message: "create requires a title")
       }
     "update" ->
       case request.params {
         [id, status, ..] ->
-          Result(value: cli.run_in(workspace, ["update", id, status]))
+          OkResponse(value: cli.run_in(workspace, ["update", id, status]))
         _ -> ErrorResponse(message: "update requires <id> <status>")
       }
     "inspect" ->
       case request.params {
-        [hash, ..] -> Result(value: cli.run_in(workspace, ["inspect", hash]))
+        [hash, ..] ->
+          OkResponse(value: cli.run_in(workspace, ["inspect", hash]))
         _ -> ErrorResponse(message: "inspect requires a hash")
       }
-    "prime" -> Result(value: cli.run_in(workspace, ["prime"]))
-    "sync" -> Result(value: cli.run_in(workspace, ["sync"]))
-    "init" -> Result(value: cli.run_in(workspace, ["init"]))
+    "prime" -> OkResponse(value: cli.run_in(workspace, ["prime"]))
+    "sync" -> OkResponse(value: cli.run_in(workspace, ["sync"]))
+    "init" -> OkResponse(value: cli.run_in(workspace, ["init"]))
     _ -> ErrorResponse(message: "unknown method: " <> request.method)
   }
 }
@@ -76,7 +78,7 @@ pub fn handle_line(workspace: String, line: String) -> String {
     Ok(#(method, params, id)) -> {
       let resp = handle_request(workspace, Request(method:, params:))
       case resp {
-        Result(value) -> ok_response(value, id)
+        OkResponse(value) -> ok_response(value, id)
         ErrorResponse(message) -> error_response(message, id)
       }
     }
@@ -149,6 +151,12 @@ fn ffi_connect(path: String) -> Result(Dynamic, Dynamic)
 @external(erlang, "bankai_socket_ffi", "delete_path")
 fn ffi_delete_path(path: String) -> Nil
 
+@external(erlang, "bankai_socket_ffi", "controlling_process")
+fn ffi_controlling_process(
+  sock: Dynamic,
+  pid: process.Pid,
+) -> Result(Dynamic, Dynamic)
+
 // ---------------------------------------------------------------------------
 // Daemon: `bankai serve` — blocks in an accept loop.
 // ---------------------------------------------------------------------------
@@ -171,9 +179,12 @@ fn serve_loop(workspace: String, ls: Dynamic) -> Nil {
   case ffi_accept(ls) {
     Error(_) -> Nil
     Ok(sock) -> {
-      // Isolate each connection: a handler crash (e.g. a malformed line that
-      // trips gleam_json's ffi) must not kill the accept loop.
-      let _ = process.spawn(fn() { handle_conn(workspace, sock) })
+      // Isolate each connection: a handler crash must not kill the accept loop.
+      // BUG-05 fix: hand socket control to the handler so its lifetime + close
+      // signals are tied to the handler (else the socket leaks when a handler
+      // dies and error signals route to the acceptor).
+      let handler = process.spawn(fn() { handle_conn(workspace, sock) })
+      let _ = ffi_controlling_process(sock, handler)
       serve_loop(workspace, ls)
     }
   }

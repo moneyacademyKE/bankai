@@ -145,8 +145,12 @@ pub fn is_approved(reg: Registry, hash: identity.Hash) -> Bool {
   set.contains(reg.approved, key(hash))
 }
 
-/// Content-addressed sync: union two registries by rule hash. Identical sources
-/// dedupe (same hash); approved sets union.
+/// Content-addressed sync: union two registries by rule hash (identical sources
+/// dedupe — same hash). BUT approvals stay LOCAL — BUG-06 fix: the old code
+/// `set.union`-ed approvals, letting a rule approved on ANY rig become
+/// executable everywhere after merge, bypassing ADR-0003's trust layer
+/// ("registration is arrival, approval is trust"). Sync propagates RULES (data),
+/// never TRUST — each rig approves locally.
 pub fn merge(a: Registry, b: Registry) -> Registry {
   let rules =
     dict.to_list(b.rules)
@@ -154,7 +158,7 @@ pub fn merge(a: Registry, b: Registry) -> Registry {
       let #(_, rule) = pair
       dict.insert(acc, key(rule.hash), rule)
     })
-  Registry(rules:, approved: set.union(a.approved, b.approved))
+  Registry(rules:, approved: a.approved)
 }
 
 pub fn count(reg: Registry) -> Int {

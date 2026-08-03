@@ -1,6 +1,7 @@
 import bankai/actors/task_actor
 import bankai/builder
 import bankai/types.{InProgress, Open}
+import gleam/list
 import gleam/option
 import gleamunison/identity
 import gleeunit
@@ -66,4 +67,20 @@ pub fn add_relation_acyclic_is_applied_test() {
   let updated = should.be_ok(result)
   identity.hash_equal(updated.content_hash, task_a.content_hash)
   |> should.be_false
+}
+
+/// BUG-04 regression: adding the same Blocks relation twice must be a true
+/// no-op — hash unchanged, list not grown.
+pub fn add_relation_dedup_is_a_noop_test() {
+  let assert Ok(started) = task_actor.start(fresh_task())
+  let once =
+    should.be_ok(task_actor.add_relation(started.data, "bk-0099", [], 1000))
+  let assert Ok(started2) = task_actor.start(once)
+  let twice =
+    should.be_ok(task_actor.add_relation(started2.data, "bk-0099", [], 1000))
+
+  identity.hash_equal(twice.content_hash, once.content_hash)
+  |> should.be_true
+  list.length(twice.relationships)
+  |> should.equal(1)
 }

@@ -1,6 +1,6 @@
 import bankai/builder
 import bankai/storage/store
-import bankai/types.{Open}
+import bankai/types.{InProgress, Open}
 import gleam/list
 import gleam/option
 import gleamunison/identity
@@ -76,4 +76,37 @@ pub fn from_list_roundtrip_test() {
   let rebuilt = store.from_list([t1])
   store.size(rebuilt)
   |> should.equal(1)
+}
+
+/// Coverage gap: the store retains ALL versions (history); `list` returns all,
+/// `current_tasks` collapses to the latest per id.
+pub fn current_tasks_keeps_latest_list_keeps_all_test() {
+  let v1 =
+    builder.build("bk-0001", "one", "d", Open, option.None, 1, 1000, 1000, [])
+  let v2 =
+    builder.build(
+      "bk-0001",
+      "one",
+      "d",
+      InProgress,
+      option.None,
+      1,
+      2000,
+      2000,
+      [],
+    )
+  let store = store.new() |> store.put(v1) |> store.put(v2)
+
+  // both versions retained in the history
+  store.list(store)
+  |> list.length()
+  |> should.equal(2)
+
+  // current view collapses to the latest (v2)
+  let current = store.current_tasks(store)
+  list.length(current)
+  |> should.equal(1)
+  let task = should.be_ok(list.first(current))
+  task.status
+  |> should.equal(InProgress)
 }

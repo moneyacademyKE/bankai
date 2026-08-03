@@ -1,7 +1,7 @@
 import bankai/builder
 import bankai/graph
 import bankai/types.{
-  Blocks, Completed, InProgress, Open, RelatesTo, Relationship,
+  Blocks, Closed, Completed, InProgress, Open, RelatesTo, Relationship,
 }
 import gleam/list
 import gleam/option
@@ -85,4 +85,18 @@ pub fn topological_sort_dependencies_first_test() {
   // chain A->B->C (A depends on B depends on C): only valid order is C, B, A.
   graph.topological_sort(chain())
   |> should.equal(["C", "B", "A"])
+}
+
+/// BUG-03 regression: a Closed (won't-do) blocker does NOT satisfy a Blocks
+/// dependency — only Completed does. B blocked by Closed-C must stay blocked.
+pub fn closed_blocker_does_not_satisfy_dependency_test() {
+  let c = builder.build("C", "c", "d", Closed, option.None, 1, 1, 1, [])
+  let b =
+    builder.build("B", "b", "d", Open, option.None, 1, 1, 1, [
+      Relationship("C", Blocks),
+    ])
+  let ready_ids = graph.ready_tasks([b, c]) |> list.map(fn(t) { t.id })
+
+  list.contains(ready_ids, "B")
+  |> should.be_false
 }

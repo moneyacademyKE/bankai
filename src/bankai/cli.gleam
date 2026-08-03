@@ -13,7 +13,7 @@ import bankai/serde
 import bankai/storage/store
 import bankai/sync/jsonl
 import bankai/time
-import bankai/types.{type Task, Completed, InProgress, Open}
+import bankai/types.{type Task, Open}
 import gleam/int
 import gleam/json
 import gleam/list
@@ -69,22 +69,26 @@ fn ready_cmd(tasks_path: String) -> String {
 }
 
 fn update_cmd(tasks_path: String, id: String, status: String) -> String {
-  case parse_status(status) {
-    Ok(new_status) ->
-      case store.find_by_id(load_store(tasks_path), id) {
+  case serde.status_from_string(status) {
+    Ok(new_status) -> {
+      // BUG-01 fix: load the store ONCE and thread it through. The previous
+      // code reloaded from disk between find_by_id and store.put, so a
+      // concurrent write (or any task created in between) was silently
+      // discarded on flush. One load, one put, one flush — same store.
+      let index = load_store(tasks_path)
+      case store.find_by_id(index, id) {
         Ok(task) -> {
           let updated =
             builder.update(task, fn(t) {
               types.Task(..t, status: new_status, updated_at: time.now())
             })
-          let index =
-            load_store(tasks_path)
-            |> store.put(updated)
+          let index = store.put(index, updated)
           let _ = jsonl.flush(store.list(index), to: tasks_path)
           serde.task_to_json_string(updated)
         }
         Error(Nil) -> "no such task: " <> id
       }
+    }
     Error(Nil) -> "invalid status: " <> status
   }
 }
@@ -118,15 +122,6 @@ fn tasks_to_json_array(tasks: List(Task)) -> String {
   |> json.to_string()
 }
 
-fn parse_status(s: String) -> Result(types.TaskStatus, Nil) {
-  case s {
-    "open" -> Ok(Open)
-    "in_progress" -> Ok(InProgress)
-    "completed" -> Ok(Completed)
-    _ -> Error(Nil)
-  }
-}
-
 pub fn usage() -> String {
   "bankai — content-addressed task memory\n\n"
   <> "usage: bankai <command> [args]\n\n"
@@ -134,7 +129,7 @@ pub fn usage() -> String {
   <> "  create <title>        create a task, print its JSON\n"
   <> "  list                  list all tasks (JSON array)\n"
   <> "  ready                 list unblocked tasks (JSON array)\n"
-  <> "  update <id> <status>  set status (open|in_progress|completed)\n"
+  <> "  update <id> <status>  set status (open|in_progress|blocked|completed|closed)\n"
   <> "  inspect <hash>        render the task for a content hash\n"
   <> "  prime                 emit agent-injection prompt\n"
   <> "  sync                  reconcile + flush .bankai/tasks.jsonl\n"

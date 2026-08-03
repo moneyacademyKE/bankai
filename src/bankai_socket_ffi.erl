@@ -18,7 +18,8 @@
     close_s/1,
     connect/1,
     delete_path/1,
-    socket_exists/1
+    socket_exists/1,
+    controlling_process/2
 ]).
 
 %% Listen on a UNIX-domain socket at Path. Removes any stale socket file first.
@@ -37,8 +38,11 @@ accept(ListenSocket) ->
 %% One framed line, with the trailing CR/LF stripped. gen_tcp {packet, line}
 %% includes the terminator on this OTP version; gleam_json's ffi raises (does
 %% not return Error) on trailing bytes, so we guarantee a clean line here.
+%% BUG-07: guard on is_binary so we don't rely on iolist_to_binary being a
+%% no-op on binaries (idempotent today, fragile if recv ever returns a list).
 recv_line(Socket) ->
     case gen_tcp:recv(Socket, 0) of
+        {ok, Data} when is_binary(Data) -> {ok, strip_eol(Data)};
         {ok, Data} -> {ok, strip_eol(iolist_to_binary(Data))};
         Err -> Err
     end.
@@ -64,6 +68,11 @@ send_data(Socket, Data) ->
 close_s(Socket) ->
     gen_tcp:close(Socket),
     nil.
+
+%% BUG-05: hand socket control to the handler process so its lifetime + close
+%% signals are tied to it (the acceptor is the default owner after accept).
+controlling_process(Socket, Pid) ->
+    gen_tcp:controlling_process(Socket, Pid).
 
 %% Client connect to an existing UNIX-domain socket.
 connect(Path) ->

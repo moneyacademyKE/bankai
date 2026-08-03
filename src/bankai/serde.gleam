@@ -122,7 +122,7 @@ fn status_to_string(s: TaskStatus) -> String {
   }
 }
 
-fn status_from_string(s: String) -> Result(TaskStatus, Nil) {
+pub fn status_from_string(s: String) -> Result(TaskStatus, Nil) {
   case s {
     "open" -> Ok(Open)
     "in_progress" -> Ok(InProgress)

@@ -10,7 +10,7 @@ import gleam/string
 
 pub fn main() -> Nil {
   let ws = "/tmp/bankai_daemon_probe"
-  let _ = process.spawn(fn() { socket.serve(ws) })
+  let _ = process.spawn_unlinked(fn() { socket.serve(ws) })
   process.sleep(300)
 
   io.println("init   -> " <> show(socket.client_request(ws, "init", [])))

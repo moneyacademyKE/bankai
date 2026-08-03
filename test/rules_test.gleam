@@ -59,17 +59,13 @@ pub fn eval_unknown_hash_errors_test() {
 
 pub fn merge_unions_registries_by_hash_test() {
   let #(a, _ha) = registry.register(registry.new(), "ruleA", "42")
-  let #(b, hb) = registry.register(registry.new(), "ruleB", "99")
-  let b = registry.approve(b, hb)
+  let #(b, _hb) = registry.register(registry.new(), "ruleB", "99")
   let merged = registry.merge(a, b)
 
+  // rules union by hash (data syncs) — BUG-06 moved the approval assertions to
+  // the dedicated security regression test below.
   registry.count(merged)
   |> should.equal(2)
-  // ruleB from b is now present + approved in the merged registry.
-  registry.is_approved(merged, hb)
-  |> should.be_true
-  registry.eval(merged, hb)
-  |> should.be_ok
 }
 
 /// ADR-0003 resource layer: a rule whose eval overruns the budget is killed and
@@ -94,4 +90,25 @@ pub fn run_isolated_survives_crash_test() {
   // waiting out the budget — so the error says "crashed", not "timed out".
   let msg = should.be_error(result)
   should.be_true(string.contains(msg, "crashed"))
+}
+
+/// BUG-06 security regression: sync propagates RULES (data), never TRUST. A rule
+/// approved on a remote rig must NOT become locally executable after merge —
+/// each rig approves locally (ADR-0003 trust layer).
+pub fn merge_does_not_propagate_remote_approval_test() {
+  let local = registry.new()
+  let #(remote, hr) = registry.register(registry.new(), "remote-rule", "42")
+  let remote = registry.approve(remote, hr)
+  // approved on the REMOTE rig
+
+  let merged = registry.merge(local, remote)
+
+  // rule data is present...
+  registry.count(merged)
+  |> should.equal(1)
+  // ...but NOT locally approved, so eval is denied.
+  registry.is_approved(merged, hr)
+  |> should.be_false
+  registry.eval(merged, hr)
+  |> should.be_error
 }
