@@ -8,6 +8,7 @@
 import bankai/actors/apply
 import bankai/builder
 import bankai/graph
+import bankai/memory
 import bankai/serde
 import bankai/storage/store
 import bankai/sync/jsonl
@@ -17,6 +18,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option
+import gleam/string
 
 pub const default_workspace = ".bankai"
 
@@ -41,8 +43,11 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
       envelope(Error(
         "usage: update <id> <status> | update <id> --claim [assignee]",
       ))
+    // G4 — agent memory
+    ["remember", text, ..] -> envelope(remember_cmd(workspace, text))
+    ["memories", ..] -> envelope(memories_cmd(workspace))
     ["inspect", hash, ..] -> envelope(inspect_cmd(tasks_path, hash))
-    ["prime", ..] -> envelope(Ok(json.string(prime_text())))
+    ["prime", ..] -> envelope(Ok(json.string(prime_text(workspace))))
     ["sync", ..] -> envelope(sync_cmd(tasks_path))
     [cmd, ..] -> envelope(Error("unknown command: " <> cmd))
   }
@@ -201,6 +206,29 @@ fn claim_cmd(
   }
 }
 
+// G4 — bankai remember "insight": content-address a memory, persist it, return it.
+fn remember_cmd(workspace: String, text: String) -> Result(json.Json, String) {
+  let _ = jsonl.ensure_dir(workspace)
+  let path = workspace <> "/memories.jsonl"
+  let existing = case memory.load(from: path) {
+    Ok(m) -> m
+    Error(_) -> []
+  }
+  let mem = memory.new(text, time.now())
+  let _ = memory.flush([mem, ..existing], to: path)
+  Ok(memory.memory_to_json(mem))
+}
+
+// G4 — bankai memories: list all persisted memories.
+fn memories_cmd(workspace: String) -> Result(json.Json, String) {
+  let path = workspace <> "/memories.jsonl"
+  let mems = case memory.load(from: path) {
+    Ok(m) -> m
+    Error(_) -> []
+  }
+  Ok(json.array(mems, of: memory.memory_to_json))
+}
+
 fn inspect_cmd(tasks_path: String, hash: String) -> Result(json.Json, String) {
   case store.get_by_hex(load_store(tasks_path), hash) {
     Ok(task) -> Ok(serde.task_to_json(task))
@@ -234,21 +262,39 @@ pub fn usage() -> String {
   <> "  dep add <id> <blocker>   mark <id> blocked by <blocker>\n"
   <> "  update <id> <status>     set status (open|in_progress|blocked|completed|closed)\n"
   <> "  update <id> --claim [a]  claim: set in_progress + assignee (default: agent)\n"
+  <> "  remember \"insight\"       persist a content-addressed memory\n"
+  <> "  memories                 list persisted memories\n"
   <> "  inspect <hash>           render the task for a content hash\n"
-  <> "  prime                    emit agent-injection prompt\n"
+  <> "  prime                    emit agent-injection prompt (with memories)\n"
   <> "  sync                     reconcile + flush .bankai/tasks.jsonl\n"
   <> "  init                     initialize .bankai/\n"
   <> "  serve                    run the daemon (warm JSON-RPC socket path)\n\n"
   <> "all command output is a JSON envelope: {\"ok\": ...} / {\"error\": ...}"
 }
 
-pub fn prime_text() -> String {
-  "You are an agent operating against the bankai task-memory mesh.\n"
-  <> "Task identity is content-addressed (SHA-256 over canonical state).\n"
-  <> "IDs are short hash prefixes (bk-XXXX). Before starting work: run\n"
-  <> "`bankai ready`, claim an unblocked task (`bankai update <id> --claim`),\n"
-  <> "then mark it in_progress. On completion run `bankai update <id> completed`.\n"
-  <> "Use `bankai show <id>` / `bankai inspect <hash>` to read state, and\n"
-  <> "`bankai dep add <id> <blocker>` to wire dependencies. Mobile validation\n"
-  <> "rules may be registered and executed by content hash (allow-list-gated)."
+/// The agent-injection prompt. G4: recent persisted memories are appended so
+/// agents start a run with durable context.
+pub fn prime_text(workspace: String) -> String {
+  let base =
+    "You are an agent operating against the bankai task-memory mesh.\n"
+    <> "Task identity is content-addressed (SHA-256 over canonical state).\n"
+    <> "IDs are short hash prefixes (bk-XXXX). Before starting work: run\n"
+    <> "`bankai ready`, claim an unblocked task (`bankai update <id> --claim`),\n"
+    <> "then mark it in_progress. On completion run `bankai update <id> completed`.\n"
+    <> "Use `bankai show <id>` / `bankai inspect <hash>` to read state, and\n"
+    <> "`bankai dep add <id> <blocker>` to wire dependencies. Mobile validation\n"
+    <> "rules may be registered and executed by content hash (allow-list-gated)."
+  let mems_block = case memory.load(from: workspace <> "/memories.jsonl") {
+    Ok([]) -> ""
+    Ok(mems) -> {
+      let lines =
+        mems
+        |> list.map(fn(m) { "- " <> m.text })
+        |> string.join("\n")
+      "\n\n## Agent memories (persisted insights)\n" <> lines
+    }
+    // Missing/unreadable memories file = no memories; prompt is the base text.
+    Error(_) -> ""
+  }
+  base <> mems_block
 }

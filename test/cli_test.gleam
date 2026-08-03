@@ -10,6 +10,7 @@ import gleam/string
 import gleamunison/identity
 import gleeunit
 import gleeunit/should
+import simplifile
 
 pub fn main() {
   gleeunit.main()
@@ -35,6 +36,16 @@ const ws_claim = "/tmp/bankai_cli_claim"
 
 const ws_env = "/tmp/bankai_cli_env"
 
+/// Test isolation: empty this workspace's tasks.jsonl + memories.jsonl so state
+/// left by a previous run (or a sibling test sharing the ws) can't leak in.
+/// gleeunit has no global setup hook, so each test wipes its own workspace.
+fn wipe(ws: String) {
+  let _ = simplifile.create_directory_all(ws)
+  let _ = simplifile.write("", to: ws <> "/tasks.jsonl")
+  let _ = simplifile.write("", to: ws <> "/memories.jsonl")
+  Nil
+}
+
 /// G9: unwrap a {"ok": <task>} envelope into the Task. (Commands now return
 /// envelopes; tests decode via this instead of serde.task_from_json_string.)
 fn ok_task_decoder() -> decode.Decoder(types.Task) {
@@ -48,6 +59,7 @@ fn task_from_output(output: String) -> Result(types.Task, json.DecodeError) {
 
 /// Full lifecycle: init -> create -> ready -> update -> inspect.
 pub fn cli_e2e_smoke_test() {
+  wipe(ws_e2e)
   let _ = cli.run_in(ws_e2e, ["init"])
   let created = cli.run_in(ws_e2e, ["create", "Ship the bankai MVP"])
   let task = should.be_ok(task_from_output(created))
@@ -72,6 +84,7 @@ pub fn cli_e2e_smoke_test() {
 
 /// The content hash from `create` is inspectable end to end.
 pub fn cli_inspect_roundtrip_test() {
+  wipe(ws_inspect)
   let _ = cli.run_in(ws_inspect, ["init"])
   let created = cli.run_in(ws_inspect, ["create", "Inspectable task"])
   let task = should.be_ok(task_from_output(created))
@@ -83,6 +96,8 @@ pub fn cli_inspect_roundtrip_test() {
 }
 
 pub fn prime_emits_agent_prompt_test() {
+  wipe(ws_e2e)
+  let _ = cli.run_in(ws_e2e, ["init"])
   cli.run_in(ws_e2e, ["prime"])
   |> string.contains("content-addressed")
   |> should.be_true
@@ -90,6 +105,7 @@ pub fn prime_emits_agent_prompt_test() {
 
 /// JSON-RPC protocol round-trips through the socket/daemon handler.
 pub fn socket_jsonrpc_roundtrip_test() {
+  wipe(ws_socket)
   let _ = socket.handle_request(ws_socket, socket.Request("init", []))
   let _ =
     socket.handle_request(
@@ -110,6 +126,8 @@ pub fn socket_jsonrpc_roundtrip_test() {
 }
 
 pub fn socket_unknown_method_errors_test() {
+  wipe(ws_socket)
+  let _ = socket.handle_request(ws_socket, socket.Request("init", []))
   case socket.handle_request(ws_socket, socket.Request("frobnicate", [])) {
     socket.ErrorResponse(_) -> should.be_true(True)
     socket.OkResponse(_) -> should.be_true(False)
@@ -118,6 +136,7 @@ pub fn socket_unknown_method_errors_test() {
 
 /// BUG-02 regression: `update` must accept ALL five status variants.
 pub fn cli_update_accepts_blocked_and_closed_test() {
+  wipe(ws_status)
   let _ = cli.run_in(ws_status, ["init"])
   let created = cli.run_in(ws_status, ["create", "All-status task"])
   let task = should.be_ok(task_from_output(created))
@@ -144,6 +163,7 @@ pub fn cli_update_accepts_blocked_and_closed_test() {
 
 /// BUG-01 regression: updating one task must preserve every other task.
 pub fn cli_update_preserves_sibling_tasks_test() {
+  wipe(ws_dataloss)
   let _ = cli.run_in(ws_dataloss, ["init"])
   let created_a = cli.run_in(ws_dataloss, ["create", "Keep task A"])
   let a = should.be_ok(task_from_output(created_a))
@@ -174,6 +194,7 @@ pub fn cli_update_preserves_sibling_tasks_test() {
 
 /// G12: create produces a short hash-prefix id (bk-XXXX), not a timestamp.
 pub fn create_uses_hash_prefix_id_test() {
+  wipe(ws_g12)
   let _ = cli.run_in(ws_g12, ["init"])
   let created = cli.run_in(ws_g12, ["create", "Hashy"])
   let task = should.be_ok(task_from_output(created))
@@ -187,6 +208,7 @@ pub fn create_uses_hash_prefix_id_test() {
 
 /// G2: show <id> returns the task by id.
 pub fn show_returns_task_by_id_test() {
+  wipe(ws_show)
   let _ = cli.run_in(ws_show, ["init"])
   let created = cli.run_in(ws_show, ["create", "Showable"])
   let task = should.be_ok(task_from_output(created))
@@ -199,6 +221,7 @@ pub fn show_returns_task_by_id_test() {
 
 /// G2: show on a missing id is an error envelope.
 pub fn show_missing_is_error_envelope_test() {
+  wipe(ws_show)
   let _ = cli.run_in(ws_show, ["init"])
   cli.run_in(ws_show, ["show", "bk-nope"])
   |> string.starts_with("{\"error\"")
@@ -208,6 +231,7 @@ pub fn show_missing_is_error_envelope_test() {
 /// G1: dep add wires a Blocks edge; a blocked task is not ready until its
 /// blocker completes.
 pub fn dep_add_wires_and_affects_ready_test() {
+  wipe(ws_dep)
   let _ = cli.run_in(ws_dep, ["init"])
   let a =
     should.be_ok(
@@ -238,6 +262,7 @@ pub fn dep_add_wires_and_affects_ready_test() {
 
 /// G1: dep add rejects a cycle (graph.would_cycle).
 pub fn dep_add_rejects_cycle_test() {
+  wipe(ws_dep)
   let _ = cli.run_in(ws_dep, ["init"])
   let a = should.be_ok(task_from_output(cli.run_in(ws_dep, ["create", "A"])))
   let b = should.be_ok(task_from_output(cli.run_in(ws_dep, ["create", "B"])))
@@ -250,6 +275,7 @@ pub fn dep_add_rejects_cycle_test() {
 
 /// G1 / BUG-04: dep add of an existing edge is idempotent (hash unchanged).
 pub fn dep_add_is_idempotent_test() {
+  wipe(ws_dep)
   let _ = cli.run_in(ws_dep, ["init"])
   let a = should.be_ok(task_from_output(cli.run_in(ws_dep, ["create", "A"])))
   let b = should.be_ok(task_from_output(cli.run_in(ws_dep, ["create", "B"])))
@@ -267,6 +293,7 @@ pub fn dep_add_is_idempotent_test() {
 
 /// G8: update <id> --claim <assignee> sets in_progress + assignee atomically.
 pub fn claim_sets_in_progress_and_assignee_test() {
+  wipe(ws_claim)
   let _ = cli.run_in(ws_claim, ["init"])
   let t =
     should.be_ok(
@@ -286,6 +313,7 @@ pub fn claim_sets_in_progress_and_assignee_test() {
 
 /// G8: --claim with no assignee defaults to "agent".
 pub fn claim_defaults_assignee_to_agent_test() {
+  wipe(ws_claim)
   let _ = cli.run_in(ws_claim, ["init"])
   let t =
     should.be_ok(
@@ -301,6 +329,7 @@ pub fn claim_defaults_assignee_to_agent_test() {
 
 /// G9: success output is an {"ok": ...} envelope.
 pub fn success_output_is_ok_envelope_test() {
+  wipe(ws_env)
   let _ = cli.run_in(ws_env, ["init"])
   cli.run_in(ws_env, ["create", "Env"])
   |> string.starts_with("{\"ok\"")
@@ -309,6 +338,7 @@ pub fn success_output_is_ok_envelope_test() {
 
 /// G9: failure output is an {"error": ...} envelope.
 pub fn error_output_is_error_envelope_test() {
+  wipe(ws_env)
   let _ = cli.run_in(ws_env, ["init"])
   cli.run_in(ws_env, ["show", "bk-missing"])
   |> string.starts_with("{\"error\"")
