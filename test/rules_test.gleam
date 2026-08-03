@@ -90,6 +90,8 @@ pub fn run_isolated_times_out_test() {
 pub fn run_isolated_survives_crash_test() {
   let boom = fn() { panic as "rule eval blew up" }
   let result = registry.run_isolated(boom, 200)
-  result
-  |> should.be_error
+  // Crash is now detected INSTANTLY via the monitor (DOWN message), not by
+  // waiting out the budget — so the error says "crashed", not "timed out".
+  let msg = should.be_error(result)
+  should.be_true(string.contains(msg, "crashed"))
 }

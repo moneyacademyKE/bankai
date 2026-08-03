@@ -11,9 +11,9 @@
 ////   - Capability: rules are pure — repl's eval surface exposes no file/net/proc
 ////                 builtins. Effectful rules require capability tokens (future).
 ////   - Resource:   every eval is bounded by a wall-clock timeout (default 1s).
-////   - Isolation:  eval runs in an UNLINKED spawned process, so a crash/loop in
-////                 a rule cannot propagate to the daemon handler; on timeout the
-////                 runaway process is killed. See `run_isolated`.
+////   - Isolation:  eval runs in an UNLINKED spawned process (a crash/loop can't
+////                 reach the daemon handler); monitor-based instant crash
+////                 detection + timeout-bounded, runaway killed. See `run_isolated`.
 
 import gleam/bit_array
 import gleam/dict.{type Dict}
@@ -69,15 +69,23 @@ pub fn lookup(reg: Registry, hash: identity.Hash) -> Result(Rule, Nil) {
   dict.get(reg.rules, key(hash))
 }
 
-/// Run `work` in an ISOLATED, UNLINKED process bounded by a wall-clock timeout.
+type IsolatedOutcome {
+  Replied(result: Result(String, String))
+  Crashed
+}
+
+/// Run `work` in an ISOLATED, UNLINKED process bounded by a wall-clock timeout,
+/// with MONITOR-based instant crash detection.
 ///
 /// - Isolation: `spawn_unlinked` (NOT linked `spawn`) so a crash/exit in `work`
 ///   is contained — it cannot take down the caller (the daemon handler).
-/// - Bounded:   `receive(within)` returns Error(Nil) on timeout expiry.
-/// - Cleanup:   on timeout the runaway process is killed so it can't linger.
+/// - Crash detection: the worker is `monitor`-ed. If it exits before replying,
+///   the DOWN message wins the selector IMMEDIATELY (no waiting out the budget),
+///   yielding a distinct "crashed" error — better than timeout-only detection.
+/// - Bounded: `selector_receive(within)` returns Error(Nil) on timeout expiry
+///   (a looping rule that neither replies nor crashes).
+/// - Cleanup: on timeout the monitor is dropped and the runaway process killed.
 ///
-/// A crash in `work` (process exit before replying) surfaces here as a timeout,
-/// since no reply ever arrives — bounded and isolated, which is the guarantee.
 /// See ADR-0003 (isolation + resource layers).
 pub fn run_isolated(
   work: fn() -> Result(String, String),
@@ -85,9 +93,19 @@ pub fn run_isolated(
 ) -> Result(String, String) {
   let reply = process.new_subject()
   let pid = process.spawn_unlinked(fn() { process.send(reply, work()) })
-  case process.receive(from: reply, within: timeout_ms) {
-    Ok(result) -> result
+  let monitor = process.monitor(pid)
+  let selector =
+    process.new_selector()
+    |> process.select_map(for: reply, mapping: fn(result) { Replied(result) })
+    |> process.select_specific_monitor(monitor, fn(_) { Crashed })
+  case process.selector_receive(from: selector, within: timeout_ms) {
+    Ok(Replied(result)) -> {
+      process.demonitor_process(monitor:)
+      result
+    }
+    Ok(Crashed) -> Error("rule eval crashed (isolated process exited)")
     Error(Nil) -> {
+      process.demonitor_process(monitor:)
       process.kill(pid)
       Error("rule eval timed out after " <> int.to_string(timeout_ms) <> "ms")
     }
