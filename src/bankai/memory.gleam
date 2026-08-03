@@ -5,7 +5,6 @@
 //// (text + created_at; content_hash excluded, just like Task). Lives in
 //// .bankai/memories.jsonl alongside tasks.jsonl.
 
-import bankai/time
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/int

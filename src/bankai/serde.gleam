@@ -147,13 +147,13 @@ fn relation_to_string(r: RelationType) -> String {
   }
 }
 
-fn relation_from_string(s: String) -> Result(RelationType, Nil) {
+pub fn relation_from_string(s: String) -> Result(RelationType, Nil) {
   case s {
     "blocks" -> Ok(Blocks)
-    "relates_to" -> Ok(RelatesTo)
+    "relates_to" | "relates-to" -> Ok(RelatesTo)
     "duplicates" -> Ok(Duplicates)
     "supersedes" -> Ok(Supersedes)
-    "replies_to" -> Ok(RepliesTo)
+    "replies_to" | "replies-to" -> Ok(RepliesTo)
     _ -> Error(Nil)
   }
 }

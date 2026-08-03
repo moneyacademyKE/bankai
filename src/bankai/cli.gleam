@@ -16,7 +16,7 @@ import bankai/sync/jsonl
 import bankai/sync/merge
 import bankai/sync_peer
 import bankai/time
-import bankai/types.{InProgress, Open}
+import bankai/types.{Blocks, InProgress, Open}
 import gleam/int
 import gleam/json
 import gleam/list
@@ -38,9 +38,10 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     ["list", ..rest] -> envelope(list_cmd(tasks_path, rest))
     ["ready", ..rest] -> envelope(ready_cmd(tasks_path, rest))
     ["show", id, ..] -> envelope(show_cmd(tasks_path, id))
-    ["dep", "add", task_id, blocker_id, ..] ->
-      envelope(dep_add_cmd(tasks_path, task_id, blocker_id))
-    ["dep", ..] -> envelope(Error("usage: dep add <task-id> <blocker-id>"))
+    ["dep", "add", task_id, target_id, ..rest] ->
+      envelope(dep_add_cmd(tasks_path, task_id, target_id, rest))
+    ["dep", ..] ->
+      envelope(Error("usage: dep add <task-id> <target-id> [--type T]"))
     ["update", id, "--label", label, ..] ->
       envelope(label_add_cmd(tasks_path, id, label))
     ["update", id, "--claim", ..rest] ->
@@ -94,6 +95,7 @@ fn create_cmd(
   let _ = jsonl.ensure_dir(workspace)
   let now = time.now()
   let labels = parse_labels(rest)
+  let priority = parse_priority(rest)
   case parse_parent(rest) {
     // G10: hierarchical subtask id "<parent>.<n>" (parent must exist).
     option.Some(parent_id) -> {
@@ -103,7 +105,17 @@ fn create_cmd(
         Ok(_) -> {
           let id = next_child_id(index, parent_id)
           let task =
-            builder.build(id, title, "", Open, option.None, 1, now, now, [])
+            builder.build(
+              id,
+              title,
+              "",
+              Open,
+              option.None,
+              priority,
+              now,
+              now,
+              [],
+            )
           // build defaults labels: []; apply any --label via a rehashed spread.
           let task = case labels {
             [] -> task
@@ -123,7 +135,7 @@ fn create_cmd(
           "",
           Open,
           option.None,
-          1,
+          priority,
           now,
           now,
           [],
@@ -165,41 +177,48 @@ fn show_cmd(tasks_path: String, id: String) -> Result(json.Json, String) {
   }
 }
 
-// G1 — bankai dep add <task-id> <blocker-id>: task-id becomes blocked by
-// blocker-id. Cycle-safe (graph.would_cycle) and idempotent (apply.relation
-// dedups — BUG-04). Both ids must exist.
+// G1 — bankai dep add <task-id> <target-id> [--type T]: add a relation from
+// task-id to target-id. Default type Blocks (a dependency — cycle-checked).
+// Non-blocks types (relates-to/duplicates/supersedes/replies-to) are
+// non-directional annotations and skip the cycle check. Idempotent (BUG-04).
 fn dep_add_cmd(
   tasks_path: String,
   task_id: String,
-  blocker_id: String,
+  target_id: String,
+  rest: List(String),
 ) -> Result(json.Json, String) {
+  let rel_type = parse_relation_type(rest)
   let index = load_store(tasks_path)
   case store.find_by_id(index, task_id) {
     Error(Nil) -> Error("no such task: " <> task_id)
     Ok(task) ->
-      case store.find_by_id(index, blocker_id) {
-        Error(Nil) -> Error("no such blocker task: " <> blocker_id)
-        Ok(_) ->
-          case
+      case store.find_by_id(index, target_id) {
+        Error(Nil) -> Error("no such task: " <> target_id)
+        Ok(_) -> {
+          // Only Blocks (a dependency) can create a cycle. Non-blocks relations
+          // are non-directional, so they skip the cycle check.
+          let cycle =
             graph.would_cycle(graph.all_edges(store.current_tasks(index)), #(
               task_id,
-              blocker_id,
+              target_id,
             ))
-          {
-            True ->
+          case rel_type, cycle {
+            Blocks, True ->
               Error(
                 "relation would create a cycle: "
                 <> task_id
                 <> " -> "
-                <> blocker_id,
+                <> target_id,
               )
-            False -> {
-              let updated = apply.relation(task, blocker_id, time.now())
+            _, _ -> {
+              let updated =
+                apply.relation_typed(task, target_id, rel_type, time.now())
               let index = store.put(index, updated)
               let _ = jsonl.flush(store.list(index), to: tasks_path)
               Ok(serde.task_to_json(updated))
             }
           }
+        }
       }
   }
 }
@@ -428,6 +447,33 @@ fn parse_host(args: List(String)) -> String {
   }
 }
 
+/// dep add --type: the relation type after `--type` (default Blocks). Reuses
+/// serde's mapping (single source of truth). Invalid → Blocks.
+fn parse_relation_type(args: List(String)) -> types.RelationType {
+  case args {
+    ["--type", v, ..] ->
+      case serde.relation_from_string(v) {
+        Ok(r) -> r
+        Error(_) -> Blocks
+      }
+    [_, ..rest] -> parse_relation_type(rest)
+    [] -> Blocks
+  }
+}
+
+/// create --priority: the value after `--priority` (default 1).
+fn parse_priority(args: List(String)) -> Int {
+  case args {
+    ["--priority", v, ..] ->
+      case int.parse(v) {
+        Ok(n) -> n
+        Error(_) -> 1
+      }
+    [_, ..rest] -> parse_priority(rest)
+    [] -> 1
+  }
+}
+
 /// G10: next hierarchical child id "<parent>.<n>" — max existing child number
 /// for the parent + 1 (starts at 1). Scans current tasks (unique ids).
 fn next_child_id(index: store.Store, parent_id: String) -> String {
@@ -500,11 +546,13 @@ fn filter_by_label(
 pub fn usage() -> String {
   "bankai — content-addressed task memory\n\n"
   <> "usage: bankai <command> [args]\n\n"
-  <> "  create <title> [--label L].. [--parent <id>]  create a task / subtask\n"
+  <> "  create <title> [--label L].. [--parent <id>] [--priority N]\n"
+  <> "                                create a task / subtask\n"
   <> "  show <id>                     print a task by id (JSON)\n"
   <> "  list [--label L]              list current tasks (JSON array)\n"
   <> "  ready [--label L]             list unblocked tasks (JSON array)\n"
-  <> "  dep add <id> <blocker>        mark <id> blocked by <blocker>\n"
+  <> "  dep add <id> <target> [--type T]\n"
+  <> "                                add a relation (blocks|relates-to|duplicates|supersedes|replies-to)\n"
   <> "  update <id> <status>          open|in_progress|blocked|completed|closed\n"
   <> "  update <id> --claim [a]       claim: in_progress + assignee (default agent)\n"
   <> "  update <id> --label L         add a label\n"
@@ -534,8 +582,8 @@ pub fn agent_instructions() -> String {
   <> "2. `bankai update <id> --claim` — claim it (sets in_progress + assignee).\n"
   <> "3. Do the work; commit atomically per logical change.\n"
   <> "4. `bankai update <id> completed` — mark done.\n"
-  <> "5. `bankai dep add <id> <blocker>` — wire a dependency (cycle-safe).\n"
-  <> "6. `bankai create <title> [--label L].. [--parent <id>]` — new task/subtask.\n"
+  <> "5. `bankai dep add <id> <target> [--type blocks]` — wire a dependency (cycle-safe).\n"
+  <> "6. `bankai create <title> [--label L].. [--parent <id>] [--priority N]` — new task/subtask.\n"
   <> "7. `bankai remember \"insight\"` — persist a durable note for future runs.\n"
   <> "8. `bankai compact` — retire closed tasks (keeps `prime` bounded).\n"
   <> "9. `bankai prime` — re-read this workflow + recent memories.\n\n"
@@ -553,10 +601,10 @@ pub fn prime_text(workspace: String) -> String {
     <> "`bankai ready`, claim an unblocked task (`bankai update <id> --claim`),\n"
     <> "then mark it in_progress. On completion run `bankai update <id> completed`.\n"
     <> "Use `bankai show <id>` / `bankai inspect <hash>` to read state, and\n"
-    <> "`bankai dep add <id> <blocker>` to wire dependencies. Label work with\n"
-    <> "`--label`; persist durable insights with `bankai remember \"...\"`. Mobile\n"
-    <> "validation rules may be registered and executed by content hash\n"
-    <> "(allow-list-gated)."
+    <> "`bankai dep add <id> <target>` to wire dependencies. Label work with\n"
+    <> "`--label`; prioritize with `--priority`; persist durable insights with\n"
+    <> "`bankai remember \"...\"`. Mobile validation rules may be registered and\n"
+    <> "executed by content hash (allow-list-gated)."
   let mems_block = case memory.load(from: workspace <> "/memories.jsonl") {
     Ok([]) -> ""
     Ok(mems) -> {
