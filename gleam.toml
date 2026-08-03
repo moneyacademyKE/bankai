@@ -4,8 +4,8 @@ description = "Content-addressed task-memory graph for distributed AI agent swar
 licences = ["Apache-2.0"]
 target = "erlang"
 
-# bankai's genuine content-addressing layer. Not on Hex (v3.9.0 is author-local),
-# so resolved as a path dependency to the working clone.
+# bankai's genuine content-addressing layer. Not on Hex, so resolved as a git
+# dependency pinned to a public moneyacademyKE/gleamunison commit (CI-fetchable).
 [dependencies]
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 gleam_erlang = ">= 1.3.0 and < 2.0.0"
@@ -13,7 +13,7 @@ gleam_otp = ">= 1.2.0 and < 2.0.0"
 gleam_json = ">= 3.1.0 and < 4.0.0"
 simplifile = ">= 2.4.0 and < 3.0.0"
 gleam_crypto = ">= 1.5.1 and < 2.0.0"
-gleamunison = { path = "/Users/moe/Desktop/gleamunison_dogfood/gleamunison_repo" }
+gleamunison = { git = "https://github.com/moneyacademyKE/gleamunison.git", ref = "11b4d5814f37390a73b41b51663c1e05196ba13d" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
