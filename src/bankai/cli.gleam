@@ -16,7 +16,7 @@ import bankai/sync/jsonl
 import bankai/sync/merge
 import bankai/sync_peer
 import bankai/time
-import bankai/types.{Blocks, InProgress, Open}
+import bankai/types.{Blocked, Blocks, InProgress, Open}
 import gleam/int
 import gleam/json
 import gleam/list
@@ -37,6 +37,8 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
       envelope(create_cmd(workspace, tasks_path, title, rest))
     ["list", ..rest] -> envelope(list_cmd(tasks_path, rest))
     ["ready", ..rest] -> envelope(ready_cmd(tasks_path, rest))
+    ["count", ..rest] -> envelope(count_cmd(tasks_path, rest))
+    ["blocked", ..rest] -> envelope(blocked_cmd(tasks_path, rest))
     ["show", id, ..] -> envelope(show_cmd(tasks_path, id))
     ["dep", "add", task_id, target_id, ..rest] ->
       envelope(dep_add_cmd(tasks_path, task_id, target_id, rest))
@@ -46,10 +48,12 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
       envelope(label_add_cmd(tasks_path, id, label))
     ["update", id, "--claim", ..rest] ->
       envelope(claim_cmd(tasks_path, id, rest))
+    ["update", id, "--priority", n, ..] ->
+      envelope(priority_update_cmd(tasks_path, id, n))
     ["update", id, status, ..] -> envelope(update_cmd(tasks_path, id, status))
     ["update", ..] ->
       envelope(Error(
-        "usage: update <id> <status> | update <id> --claim [a] | --label <l>",
+        "usage: update <id> <status> | --claim [a] | --label <l> | --priority N",
       ))
     // G4 — agent memory
     ["remember", text, ..] -> envelope(remember_cmd(workspace, text))
@@ -165,6 +169,29 @@ fn ready_cmd(
     load_store(tasks_path)
     |> store.current_tasks()
     |> graph.ready_tasks()
+  let tasks = filter_by_label(tasks, parse_label_filter(rest))
+  Ok(json.array(tasks, of: serde.task_to_json))
+}
+
+/// bankai count [--label L]: number of current tasks (optionally filtered).
+fn count_cmd(
+  tasks_path: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  let tasks = load_store(tasks_path) |> store.current_tasks()
+  let tasks = filter_by_label(tasks, parse_label_filter(rest))
+  Ok(json.object([#("count", json.int(list.length(tasks)))]))
+}
+
+/// bankai blocked [--label L]: tasks currently in the Blocked state.
+fn blocked_cmd(
+  tasks_path: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  let tasks =
+    load_store(tasks_path)
+    |> store.current_tasks()
+    |> list.filter(fn(t) { t.status == Blocked })
   let tasks = filter_by_label(tasks, parse_label_filter(rest))
   Ok(json.array(tasks, of: serde.task_to_json))
 }
@@ -310,6 +337,32 @@ fn label_add_cmd(
   }
 }
 
+/// bankai update <id> --priority N: set the task's priority field.
+fn priority_update_cmd(
+  tasks_path: String,
+  id: String,
+  priority_str: String,
+) -> Result(json.Json, String) {
+  case int.parse(priority_str) {
+    Error(_) -> Error("invalid priority: " <> priority_str)
+    Ok(priority) -> {
+      let index = load_store(tasks_path)
+      case store.find_by_id(index, id) {
+        Ok(task) -> {
+          let updated =
+            builder.update(task, fn(t) {
+              types.Task(..t, priority: priority, updated_at: time.now())
+            })
+          let index = store.put(index, updated)
+          let _ = jsonl.flush(store.list(index), to: tasks_path)
+          Ok(serde.task_to_json(updated))
+        }
+        Error(Nil) -> Error("no such task: " <> id)
+      }
+    }
+  }
+}
+
 // G4 — bankai remember "insight": content-address a memory, persist it, return it.
 fn remember_cmd(workspace: String, text: String) -> Result(json.Json, String) {
   let _ = jsonl.ensure_dir(workspace)
@@ -409,11 +462,12 @@ fn compact_cmd(
 }
 
 // G7 — bankai setup <agent>: write an agent-instruction file into the project
-// (cwd) so Claude Code / Codex / opencode discover the bankai workflow.
+// (cwd) so Claude Code / Codex / Cursor / opencode discover the bankai workflow.
 fn setup_cmd(agent: String) -> Result(json.Json, String) {
   let filename = case agent {
     "claude" -> "CLAUDE.md"
     "codex" -> "AGENTS.md"
+    "cursor" -> ".cursorrules"
     other -> other <> ".md"
   }
   let _ = simplifile.write(agent_instructions(), to: filename)
@@ -525,7 +579,7 @@ fn parse_labels(args: List(String)) -> List(String) {
   labels
 }
 
-/// The first `--label`'s value, if any (used to filter list/ready).
+/// The first `--label`'s value, if any (used to filter list/ready/count/blocked).
 fn parse_label_filter(args: List(String)) -> Option(String) {
   case parse_labels(args) {
     [] -> option.None
@@ -551,17 +605,20 @@ pub fn usage() -> String {
   <> "  show <id>                     print a task by id (JSON)\n"
   <> "  list [--label L]              list current tasks (JSON array)\n"
   <> "  ready [--label L]             list unblocked tasks (JSON array)\n"
+  <> "  count [--label L]             count current tasks\n"
+  <> "  blocked [--label L]           list blocked tasks (JSON array)\n"
   <> "  dep add <id> <target> [--type T]\n"
   <> "                                add a relation (blocks|relates-to|duplicates|supersedes|replies-to)\n"
   <> "  update <id> <status>          open|in_progress|blocked|completed|closed\n"
   <> "  update <id> --claim [a]       claim: in_progress + assignee (default agent)\n"
   <> "  update <id> --label L         add a label\n"
+  <> "  update <id> --priority N      set the priority\n"
   <> "  remember \"insight\"            persist a content-addressed memory\n"
   <> "  memories                      list persisted memories\n"
   <> "  inspect <hash>                render the task for a content hash\n"
   <> "  compact                       retire closed tasks into archive.jsonl\n"
   <> "  prime                         emit agent-injection prompt (with memories)\n"
-  <> "  setup <claude|codex>          write CLAUDE.md / AGENTS.md (agent instructions)\n"
+  <> "  setup <claude|codex|cursor>   write agent-instruction file\n"
   <> "  sync [--from <path>]          reconcile, or union-merge a remote tasks.jsonl\n"
   <> "  sync-serve [--port N]         run the TCP sync server (peers pull your tasks)\n"
   <> "  sync-pull --host H [--port N] pull + union-merge a running peer's tasks\n"
@@ -570,8 +627,9 @@ pub fn usage() -> String {
   <> "all command output is a JSON envelope: {\"ok\": ...} / {\"error\": ...}"
 }
 
-/// The bankai workflow, written by `bankai setup` into CLAUDE.md / AGENTS.md so
-/// coding agents (Claude Code, Codex, opencode) discover it. (G7)
+/// The bankai workflow, written by `bankai setup` into CLAUDE.md / AGENTS.md /
+/// .cursorrules so coding agents (Claude Code, Codex, Cursor, opencode) discover
+/// it. (G7)
 pub fn agent_instructions() -> String {
   "# Working with bankai\n\n"
   <> "bankai is the task-memory mesh for this project. Tasks are content-addressed\n"
