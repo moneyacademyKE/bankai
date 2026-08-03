@@ -5,12 +5,12 @@
 //// ONLY when the same task id has diverged to different hashes — those are
 //// surfaced (never silently overwritten) and routed to conflicts.jsonl.
 
+import bankai/storage/store
+import bankai/types.{type Task}
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/string
 import gleamunison/identity
-import bankai/storage/store
-import bankai/types.{type Task}
 
 pub type Conflict {
   Conflict(id: String, local_hash: String, remote_hash: String)
@@ -42,17 +42,21 @@ fn dedupe_by_hash(tasks: List(Task)) -> List(Task) {
   })
   |> dict.values()
   |> list.sort(by: fn(a, b) {
-    string.compare(store.hash_key(a.content_hash), store.hash_key(b.content_hash))
+    string.compare(
+      store.hash_key(a.content_hash),
+      store.hash_key(b.content_hash),
+    )
   })
 }
 
 fn index_by_id(tasks: List(Task)) -> Dict(String, Task) {
-  list.fold(tasks, dict.new(), fn(acc, t) {
-    dict.insert(acc, t.id, t)
-  })
+  list.fold(tasks, dict.new(), fn(acc, t) { dict.insert(acc, t.id, t) })
 }
 
-fn id_conflicts(local: Dict(String, Task), remote: Dict(String, Task)) -> List(Conflict) {
+fn id_conflicts(
+  local: Dict(String, Task),
+  remote: Dict(String, Task),
+) -> List(Conflict) {
   local
   |> dict.to_list()
   |> list.filter_map(fn(pair) {

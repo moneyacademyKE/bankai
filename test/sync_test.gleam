@@ -1,20 +1,30 @@
-import gleeunit
-import gleeunit/should
-import gleam/list
-import gleam/option
-import gleamunison/identity
 import bankai/builder
 import bankai/serde
 import bankai/sync/jsonl
 import bankai/sync/merge
 import bankai/types.{InProgress, Open}
+import gleam/list
+import gleam/option
+import gleamunison/identity
+import gleeunit
+import gleeunit/should
 
 pub fn main() {
   gleeunit.main()
 }
 
 fn fresh() {
-  builder.build("bk-0001", "Write spec", "desc", Open, option.None, 1, 1000, 1000, [])
+  builder.build(
+    "bk-0001",
+    "Write spec",
+    "desc",
+    Open,
+    option.None,
+    1,
+    1000,
+    1000,
+    [],
+  )
 }
 
 pub fn json_roundtrip_test() {
@@ -29,7 +39,18 @@ pub fn json_roundtrip_test() {
 
 pub fn jsonl_flush_load_roundtrip_test() {
   let t1 = fresh()
-  let t2 = builder.build("bk-0002", "two", "d", InProgress, option.None, 2, 1000, 1000, [])
+  let t2 =
+    builder.build(
+      "bk-0002",
+      "two",
+      "d",
+      InProgress,
+      option.None,
+      2,
+      1000,
+      1000,
+      [],
+    )
   let path = "test_bk_tasks.jsonl"
   let _ = jsonl.flush([t1, t2], to: path)
   let loaded = jsonl.load(from: path)
@@ -57,7 +78,17 @@ pub fn divergent_same_id_is_a_conflict_test() {
   // same id, different status -> different content hash -> conflict
   let local = [fresh()]
   let remote = [
-    builder.build("bk-0001", "Write spec", "desc", InProgress, option.None, 1, 1000, 1000, []),
+    builder.build(
+      "bk-0001",
+      "Write spec",
+      "desc",
+      InProgress,
+      option.None,
+      1,
+      1000,
+      1000,
+      [],
+    ),
   ]
   let result = merge.merge(local, remote)
 

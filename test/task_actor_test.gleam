@@ -1,17 +1,27 @@
-import gleeunit
-import gleeunit/should
-import gleam/option
-import gleamunison/identity
 import bankai/actors/task_actor
 import bankai/builder
 import bankai/types.{InProgress, Open}
+import gleam/option
+import gleamunison/identity
+import gleeunit
+import gleeunit/should
 
 pub fn main() {
   gleeunit.main()
 }
 
 fn fresh_task() {
-  builder.build("bk-0001", "Write spec", "desc", Open, option.None, 1, 1000, 1000, [])
+  builder.build(
+    "bk-0001",
+    "Write spec",
+    "desc",
+    Open,
+    option.None,
+    1,
+    1000,
+    1000,
+    [],
+  )
 }
 
 pub fn get_state_returns_current_task_test() {

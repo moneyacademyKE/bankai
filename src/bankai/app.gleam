@@ -6,15 +6,15 @@
 //// this MVP proves the supervision tree boots and that task state survives
 //// actor crashes via the store.
 
-import gleam/erlang/process
-import gleam/otp/actor
-import gleam/otp/static_supervisor
-import gleam/otp/supervision
 import bankai/actors/messages.{type TaskMessage}
 import bankai/actors/task_actor
 import bankai/storage/store
 import bankai/store_actor
 import bankai/types.{type Task}
+import gleam/erlang/process
+import gleam/otp/actor
+import gleam/otp/static_supervisor
+import gleam/otp/supervision
 
 pub opaque type App {
   App(
@@ -24,15 +24,15 @@ pub opaque type App {
 }
 
 /// Boot the supervision tree with an initial set of tasks.
-pub fn start(
-  initial: List(Task),
-) -> Result(App, actor.StartError) {
+pub fn start(initial: List(Task)) -> Result(App, actor.StartError) {
   let store_name = process.new_name(prefix: "bankai_store")
   let builder =
     static_supervisor.new(static_supervisor.OneForOne)
-    |> static_supervisor.add(supervision.worker(fn() {
-      store_actor.start_named(store_name, store.from_list(initial))
-    }))
+    |> static_supervisor.add(
+      supervision.worker(fn() {
+        store_actor.start_named(store_name, store.from_list(initial))
+      }),
+    )
 
   case static_supervisor.start(builder) {
     Ok(supervisor) -> Ok(App(store_name:, supervisor:))

@@ -4,12 +4,12 @@
 //// evaluation happens here (that's pillar 2, src/bankai/rules). This is the
 //// cheap, frequent path that meets the sub-5ms NFR.
 
+import bankai/canonical
+import bankai/types.{type Task, Task}
 import gleam/string
 import gleamunison/identity.{
   type Hash, hash_bytes, hash_equal, hash_to_debug_string,
 }
-import bankai/canonical
-import bankai/types.{type Task, Task}
 
 /// Content-address a Task: SHA-256 over its canonical byte encoding.
 pub fn task_hash(task: Task) -> Hash {

@@ -10,14 +10,14 @@
 //// ops as the CLI via `handle_request`. `handle_request` stays the pure,
 //// testable protocol entry point; `serve`/`client_request` add the wire.
 
+import bankai/cli
+import bankai/sync/jsonl
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/io
 import gleam/json
 import gleam/string
-import bankai/cli
-import bankai/sync/jsonl
 
 pub type Request {
   Request(method: String, params: List(String))
@@ -55,8 +55,7 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
       }
     "inspect" ->
       case request.params {
-        [hash, ..] ->
-          Result(value: cli.run_in(workspace, ["inspect", hash]))
+        [hash, ..] -> Result(value: cli.run_in(workspace, ["inspect", hash]))
         _ -> ErrorResponse(message: "inspect requires a hash")
       }
     "prime" -> Result(value: cli.run_in(workspace, ["prime"]))

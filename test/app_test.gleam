@@ -1,20 +1,30 @@
-import gleeunit
-import gleeunit/should
-import gleam/erlang/process
-import gleam/option
-import gleamunison/identity
 import bankai/actors/task_actor
 import bankai/app
 import bankai/builder
 import bankai/store_actor
 import bankai/types.{Open}
+import gleam/erlang/process
+import gleam/option
+import gleamunison/identity
+import gleeunit
+import gleeunit/should
 
 pub fn main() {
   gleeunit.main()
 }
 
 fn fresh_task() {
-  builder.build("bk-0001", "Write spec", "desc", Open, option.None, 1, 1000, 1000, [])
+  builder.build(
+    "bk-0001",
+    "Write spec",
+    "desc",
+    Open,
+    option.None,
+    1,
+    1000,
+    1000,
+    [],
+  )
 }
 
 pub fn app_boots_and_store_responds_test() {

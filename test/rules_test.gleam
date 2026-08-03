@@ -1,9 +1,9 @@
-import gleeunit
-import gleeunit/should
+import bankai/rules/registry
 import gleam/erlang/process
 import gleam/string
 import gleamunison/identity
-import bankai/rules/registry
+import gleeunit
+import gleeunit/should
 
 pub fn main() {
   gleeunit.main()
@@ -88,9 +88,7 @@ pub fn run_isolated_times_out_test() {
 /// an error (does not hang), and crucially does NOT take down this test process
 /// (the spawned eval is unlinked). Reaching the assertions proves containment.
 pub fn run_isolated_survives_crash_test() {
-  let boom = fn() {
-    panic as "rule eval blew up"
-  }
+  let boom = fn() { panic as "rule eval blew up" }
   let result = registry.run_isolated(boom, 200)
   result
   |> should.be_error

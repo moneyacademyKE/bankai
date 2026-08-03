@@ -1,6 +1,6 @@
+import bankai
 import gleeunit
 import gleeunit/should
-import bankai
 
 pub fn main() {
   gleeunit.main()

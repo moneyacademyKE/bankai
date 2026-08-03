@@ -1,14 +1,17 @@
 //// .bankai/tasks.jsonl persistence (Git-trackable, one task per line).
 
+import bankai/serde
+import bankai/types.{type Task}
 import gleam/json
 import gleam/list
 import gleam/string
 import simplifile
-import bankai/serde
-import bankai/types.{type Task}
 
 /// Write all tasks to a JSONL file (full rewrite — deterministic).
-pub fn flush(tasks: List(Task), to path: String) -> Result(Nil, simplifile.FileError) {
+pub fn flush(
+  tasks: List(Task),
+  to path: String,
+) -> Result(Nil, simplifile.FileError) {
   let body =
     tasks
     |> list.map(serde.task_to_json)
@@ -34,13 +37,15 @@ pub fn load(from path: String) -> Result(List(Task), String) {
               _ ->
                 case serde.task_from_json_string(line) {
                   Ok(t) -> Ok(t)
-                  Error(_) -> Error(Nil) // skip unparseable line
+                  Error(_) -> Error(Nil)
+                  // skip unparseable line
                 }
             }
           })
           |> Ok
       }
-    Error(_) -> Ok([]) // missing file -> empty store
+    Error(_) -> Ok([])
+    // missing file -> empty store
   }
 }
 

@@ -1,12 +1,12 @@
-import gleam/io
-import bankai/cli
-import bankai/socket
-
 //// bankai — content-addressed task memory for distributed AI agents.
 ////
 //// This root module owns the process entry point (`main`). `cli` and `socket`
 //// are kept separate so the protocol/CLI surface stays pure and testable;
 //// `socket` imports `cli` (not the reverse), so neither may import this root.
+
+import bankai/cli
+import bankai/socket
+import gleam/io
 
 pub const version = "0.1.0"
 

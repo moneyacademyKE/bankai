@@ -5,11 +5,11 @@
 //// graph is addressable. Persistence to .bankai/tasks.jsonl lives in Phase 6
 //// (bankai/sync); this module is the in-memory index + a to_list/from_list seam.
 
+import bankai/types.{type Task}
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/string
 import gleamunison/identity.{type Hash, hash_to_debug_string}
-import bankai/types.{type Task}
 
 pub opaque type Store {
   Store(tasks: Dict(String, Task))

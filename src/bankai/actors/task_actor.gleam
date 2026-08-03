@@ -5,8 +5,6 @@
 //// advances). Cycle detection on AddRelation uses the pure graph module, gated
 //// by validation.relation_ok over the coordinator-supplied graph context.
 
-import gleam/erlang/process
-import gleam/otp/actor
 import bankai/actors/apply
 import bankai/actors/messages.{
   type TaskMessage, AddRelation, GetState, UpdateStatus,
@@ -14,6 +12,8 @@ import bankai/actors/messages.{
 import bankai/actors/validation
 import bankai/time
 import bankai/types.{type Task, type TaskStatus}
+import gleam/erlang/process
+import gleam/otp/actor
 
 /// Spawn a TaskActor for `task`. Returns the actor handle (its Subject).
 pub fn start(

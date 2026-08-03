@@ -3,14 +3,14 @@
 //// Encode with gleam/json; decode with gleam/dynamic/decode combinators run
 //// against the Dynamic from json.parse. content_hash round-trips as hex.
 
+import bankai/types.{
+  type RelationType, type Relationship, type Task, type TaskStatus, Blocked,
+  Blocks, Closed, Completed, Duplicates, InProgress, Open, RelatesTo,
+  Relationship, RepliesTo, Supersedes, Task,
+}
 import gleam/dynamic/decode
 import gleam/json
 import gleamunison/identity
-import bankai/types.{
-  type RelationType, type Relationship, type Task, type TaskStatus, Blocked,
-  Blocks, Closed, Completed, Duplicates, InProgress, Open, Relationship, RelatesTo,
-  RepliesTo, Supersedes, Task,
-}
 
 // --- encode ---
 
@@ -33,7 +33,10 @@ pub fn task_to_json(task: Task) -> json.Json {
         ])
       }),
     ),
-    #("content_hash", json.string(identity.hash_to_debug_string(task.content_hash))),
+    #(
+      "content_hash",
+      json.string(identity.hash_to_debug_string(task.content_hash)),
+    ),
   ])
 }
 
@@ -81,8 +84,16 @@ pub fn task_decoder() -> decode.Decoder(Task) {
     Error(Nil) ->
       decode.failure(
         Task(
-          id, title, description, Open, assignee, priority, created_at, updated_at,
-          relationships, identity.hash_from_bytes(identity.hex_to_bytes(hash_hex)),
+          id,
+          title,
+          description,
+          Open,
+          assignee,
+          priority,
+          created_at,
+          updated_at,
+          relationships,
+          identity.hash_from_bytes(identity.hex_to_bytes(hash_hex)),
         ),
         "valid status",
       )
@@ -94,7 +105,8 @@ fn relationship_decoder() -> decode.Decoder(Relationship) {
   use relation_str <- decode.field("relation", decode.string)
   case relation_from_string(relation_str) {
     Ok(relation) -> decode.success(Relationship(target_id, relation))
-    Error(Nil) -> decode.failure(Relationship(target_id, Blocks), "valid relation")
+    Error(Nil) ->
+      decode.failure(Relationship(target_id, Blocks), "valid relation")
   }
 }
 

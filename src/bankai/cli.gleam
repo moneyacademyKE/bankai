@@ -7,10 +7,6 @@
 ////
 //// `run_in(workspace, argv)` is pure + testable; `main()` wires system argv.
 
-import gleam/int
-import gleam/json
-import gleam/list
-import gleam/option
 import bankai/builder
 import bankai/graph
 import bankai/serde
@@ -18,6 +14,10 @@ import bankai/storage/store
 import bankai/sync/jsonl
 import bankai/time
 import bankai/types.{type Task, Completed, InProgress, Open}
+import gleam/int
+import gleam/json
+import gleam/list
+import gleam/option
 
 pub const default_workspace = ".bankai"
 
@@ -49,8 +49,7 @@ fn create_cmd(workspace: String, tasks_path: String, title: String) -> String {
   let _ = jsonl.ensure_dir(workspace)
   let now = time.now()
   let id = "bk-" <> int.to_string(now)
-  let task =
-    builder.build(id, title, "", Open, option.None, 1, now, now, [])
+  let task = builder.build(id, title, "", Open, option.None, 1, now, now, [])
   let index = store.put(load_store(tasks_path), task)
   let _ = jsonl.flush(store.list(index), to: tasks_path)
   serde.task_to_json_string(task)
@@ -74,9 +73,10 @@ fn update_cmd(tasks_path: String, id: String, status: String) -> String {
     Ok(new_status) ->
       case store.find_by_id(load_store(tasks_path), id) {
         Ok(task) -> {
-          let updated = builder.update(task, fn(t) {
-            types.Task(..t, status: new_status, updated_at: time.now())
-          })
+          let updated =
+            builder.update(task, fn(t) {
+              types.Task(..t, status: new_status, updated_at: time.now())
+            })
           let index =
             load_store(tasks_path)
             |> store.put(updated)
@@ -150,7 +150,6 @@ pub fn prime_text() -> String {
   <> "any task state cryptographically. Mobile validation rules may be\n"
   <> "registered and executed by content hash (allow-list-gated)."
 }
-
 /// `main()` and argv() live in the root module `bankai` (it imports both `cli`
 /// and `socket`; importing `socket` here would form a forbidden import cycle).
 /// This module exposes the pure, testable `run_in`/`usage`/`prime_text` surface.

@@ -60,7 +60,8 @@ pub fn register(
   let hash = source_hash(source)
   let k = key(hash)
   let rule = Rule(name:, source:, hash:)
-  let reg = Registry(rules: dict.insert(reg.rules, k, rule), approved: reg.approved)
+  let reg =
+    Registry(rules: dict.insert(reg.rules, k, rule), approved: reg.approved)
   #(reg, hash)
 }
 

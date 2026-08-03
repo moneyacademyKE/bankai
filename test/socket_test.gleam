@@ -1,8 +1,8 @@
-import gleeunit
-import gleeunit/should
-import gleam/string
 import bankai/cli
 import bankai/socket
+import gleam/string
+import gleeunit
+import gleeunit/should
 
 pub fn main() {
   gleeunit.main()

@@ -1,12 +1,10 @@
 //// Ergonomic Task construction. Builds a draft then rehashes so the
 //// content_hash is always correct. Reused by graph/actor/CLI layers.
 
+import bankai/ast_bridge
+import bankai/types.{type Relationship, type Task, type TaskStatus, Task}
 import gleam/option.{type Option}
 import gleamunison/identity
-import bankai/ast_bridge
-import bankai/types.{
-  type Relationship, type Task, type TaskStatus, Task,
-}
 
 pub fn build(
   id: String,
@@ -19,18 +17,19 @@ pub fn build(
   updated_at: Int,
   relationships: List(Relationship),
 ) -> Task {
-  let draft = Task(
-    id: id,
-    title: title,
-    description: description,
-    status: status,
-    assignee: assignee,
-    priority: priority,
-    created_at: created_at,
-    updated_at: updated_at,
-    relationships: relationships,
-    content_hash: identity.hash_bytes(<<>>),
-  )
+  let draft =
+    Task(
+      id: id,
+      title: title,
+      description: description,
+      status: status,
+      assignee: assignee,
+      priority: priority,
+      created_at: created_at,
+      updated_at: updated_at,
+      relationships: relationships,
+      content_hash: identity.hash_bytes(<<>>),
+    )
   ast_bridge.rehash(draft)
 }
 

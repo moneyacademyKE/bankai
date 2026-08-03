@@ -12,12 +12,10 @@
 //// task DAG (cycle_detect / topological_sort are trivial here; aarondb's graph
 //// module is coupled to its internal index and drags a web-framework dep tree).
 
+import bankai/types.{type Task, type TaskStatus, Blocks, Closed, Completed}
 import gleam/list
 import gleam/set.{type Set}
 import gleam/string
-import bankai/types.{
-  type Task, type TaskStatus, Blocks, Closed, Completed,
-}
 
 /// Dependency edges (dependent -> dependency) for one task's Blocks relations.
 pub fn dependency_edges(task: Task) -> List(#(String, String)) {
@@ -85,7 +83,11 @@ pub fn topological_sort(tasks: List(Task)) -> List(String) {
 
 // --- internals ---
 
-fn reaches(edges: List(#(String, String)), start: String, target: String) -> Bool {
+fn reaches(
+  edges: List(#(String, String)),
+  start: String,
+  target: String,
+) -> Bool {
   walk(edges, [start], set.new(), target)
 }
 

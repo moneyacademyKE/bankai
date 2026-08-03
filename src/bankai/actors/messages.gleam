@@ -1,8 +1,8 @@
 //// Messages handled by a TaskActor process. Synchronous requests carry a
 //// reply Subject so callers can use actor.call for linearizable reads/writes.
 
-import gleam/erlang/process.{type Subject}
 import bankai/types.{type Task, type TaskStatus}
+import gleam/erlang/process.{type Subject}
 
 pub type TaskMessage {
   /// Apply a status change; replies with the updated Task (rehashed).

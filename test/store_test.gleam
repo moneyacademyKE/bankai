@@ -1,11 +1,11 @@
-import gleeunit
-import gleeunit/should
-import gleam/list
-import gleam/option
-import gleamunison/identity
 import bankai/builder
 import bankai/storage/store
 import bankai/types.{Open}
+import gleam/list
+import gleam/option
+import gleamunison/identity
+import gleeunit
+import gleeunit/should
 
 pub fn main() {
   gleeunit.main()
@@ -13,7 +13,17 @@ pub fn main() {
 
 pub fn put_get_roundtrip_test() {
   let t =
-    builder.build("bk-0001", "Write spec", "desc", Open, option.None, 1, 1000, 1000, [])
+    builder.build(
+      "bk-0001",
+      "Write spec",
+      "desc",
+      Open,
+      option.None,
+      1,
+      1000,
+      1000,
+      [],
+    )
   let store = store.new() |> store.put(t)
   let retrieved = store.get(store, t.content_hash)
 
@@ -26,7 +36,17 @@ pub fn put_get_roundtrip_test() {
 
 pub fn find_by_id_test() {
   let t =
-    builder.build("bk-0001", "Write spec", "desc", Open, option.None, 1, 1000, 1000, [])
+    builder.build(
+      "bk-0001",
+      "Write spec",
+      "desc",
+      Open,
+      option.None,
+      1,
+      1000,
+      1000,
+      [],
+    )
   let store = store.new() |> store.put(t)
   let found = store.find_by_id(store, "bk-0001")
 

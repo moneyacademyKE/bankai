@@ -4,11 +4,11 @@
 //// TaskActor crashes (task actors are ephemeral; the store is permanent).
 //// Registered under a process Name so it can be supervised AND addressed.
 
-import gleam/erlang/process.{type Subject}
-import gleam/otp/actor
 import bankai/graph
 import bankai/storage/store.{type Store}
 import bankai/types.{type Task}
+import gleam/erlang/process.{type Subject}
+import gleam/otp/actor
 
 pub type StoreMsg {
   Create(task: Task, reply_to: Subject(Nil))

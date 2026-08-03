@@ -12,16 +12,17 @@
 ////
 //// content_hash is intentionally NOT encoded — it is derived from these bytes.
 
+import bankai/types.{
+  type RelationType, type Relationship, type Task, type TaskStatus, Blocked,
+  Blocks, Closed, Completed, Duplicates, InProgress, Open, RelatesTo, RepliesTo,
+  Supersedes,
+}
 import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/option.{type Option}
 import gleam/order
 import gleam/string
-import bankai/types.{
-  type RelationType, type Relationship, type Task, type TaskStatus, Blocked, Blocks,
-  Closed, Completed, Duplicates, InProgress, Open, RelatesTo, RepliesTo, Supersedes,
-}
 
 /// Bump this if the encoding changes; it invalidates every prior content hash.
 const canonical_version = 1

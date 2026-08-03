@@ -1,0 +1,33 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          gleam-version: "1.17.0"
+          otp-version: "27"
+
+      - name: Format check
+        run: gleam format --check src test
+
+      - name: Download dependencies
+        run: gleam deps download
+
+      - name: Run tests
+        run: gleam test
+
+# NOTE: this workflow will FAIL on "Download dependencies" until the gleamunison
+# dependency in gleam.toml is changed from the local absolute path dep
+#   gleamunison = { path = "/Users/moe/Desktop/gleamunison_dogfood/gleamunison_repo" }
+# to something a CI runner can resolve. Options (pick one):
+#   1. git dep:   gleamunison = { git = "https://github.com/moneyacademyKE/gleamunison.git" }
+#   2. Hex:       gleamunison = ">= 3.9.0"  (once published)
+# Keep the local path dep only for local iteration on gleamunison itself.

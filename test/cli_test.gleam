@@ -1,17 +1,19 @@
-import gleeunit
-import gleeunit/should
-import gleam/string
-import gleamunison/identity
 import bankai/cli
 import bankai/serde
 import bankai/socket
+import gleam/string
+import gleamunison/identity
+import gleeunit
+import gleeunit/should
 
 pub fn main() {
   gleeunit.main()
 }
 
 const ws_e2e = "/tmp/bankai_cli_e2e"
+
 const ws_inspect = "/tmp/bankai_cli_inspect"
+
 const ws_socket = "/tmp/bankai_cli_socket"
 
 /// Full lifecycle: init -> create -> ready -> update -> inspect.
@@ -59,7 +61,11 @@ pub fn prime_emits_agent_prompt_test() {
 /// JSON-RPC protocol round-trips through the socket/daemon handler.
 pub fn socket_jsonrpc_roundtrip_test() {
   let _ = socket.handle_request(ws_socket, socket.Request("init", []))
-  let _ = socket.handle_request(ws_socket, socket.Request("create", ["socket-driven"]))
+  let _ =
+    socket.handle_request(
+      ws_socket,
+      socket.Request("create", ["socket-driven"]),
+    )
   let resp = socket.handle_request(ws_socket, socket.Request("ready", []))
 
   case resp {

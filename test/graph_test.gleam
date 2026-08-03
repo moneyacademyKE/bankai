@@ -1,12 +1,12 @@
-import gleeunit
-import gleeunit/should
-import gleam/list
-import gleam/option
 import bankai/builder
 import bankai/graph
 import bankai/types.{
   Blocks, Completed, InProgress, Open, RelatesTo, Relationship,
 }
+import gleam/list
+import gleam/option
+import gleeunit
+import gleeunit/should
 
 pub fn main() {
   gleeunit.main()
@@ -14,12 +14,14 @@ pub fn main() {
 
 /// A (->B) B(->C) C : linear chain of Blocks.
 fn chain() {
-  let a = builder.build("A", "a", "d", Open, option.None, 1, 1, 1, [
-    Relationship("B", Blocks),
-  ])
-  let b = builder.build("B", "b", "d", Open, option.None, 1, 1, 1, [
-    Relationship("C", Blocks),
-  ])
+  let a =
+    builder.build("A", "a", "d", Open, option.None, 1, 1, 1, [
+      Relationship("B", Blocks),
+    ])
+  let b =
+    builder.build("B", "b", "d", Open, option.None, 1, 1, 1, [
+      Relationship("C", Blocks),
+    ])
   let c = builder.build("C", "c", "d", Open, option.None, 1, 1, 1, [])
   [a, b, c]
 }
@@ -67,9 +69,10 @@ pub fn ready_only_returns_unblocked_active_test() {
 
 pub fn non_blocks_relations_do_not_block_test() {
   // A RelatesTo B should not block A even if B is not done.
-  let a = builder.build("A", "a", "d", InProgress, option.None, 1, 1, 1, [
-    Relationship("B", RelatesTo),
-  ])
+  let a =
+    builder.build("A", "a", "d", InProgress, option.None, 1, 1, 1, [
+      Relationship("B", RelatesTo),
+    ])
   let b = builder.build("B", "b", "d", Open, option.None, 1, 1, 1, [])
   let ready = graph.ready_tasks([a, b])
   let ready_ids = ready |> list.map(fn(t) { t.id })
