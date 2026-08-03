@@ -19,6 +19,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option}
 import gleam/string
+import simplifile
 
 pub const default_workspace = ".bankai"
 
@@ -51,6 +52,8 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     ["memories", ..] -> envelope(memories_cmd(workspace))
     ["inspect", hash, ..] -> envelope(inspect_cmd(tasks_path, hash))
     ["prime", ..] -> envelope(Ok(json.string(prime_text(workspace))))
+    // G7 — emit agent-instruction file (claude -> CLAUDE.md, codex -> AGENTS.md)
+    ["setup", agent, ..] -> envelope(setup_cmd(agent))
     ["sync", ..] -> envelope(sync_cmd(tasks_path))
     [cmd, ..] -> envelope(Error("unknown command: " <> cmd))
   }
@@ -79,23 +82,47 @@ fn create_cmd(
 ) -> Result(json.Json, String) {
   let _ = jsonl.ensure_dir(workspace)
   let now = time.now()
-  // G12: id derived from the content hash (bk-XXXX). G3: labels from --label.
   let labels = parse_labels(rest)
-  let task =
-    builder.build_with_derived_id(
-      title,
-      "",
-      Open,
-      option.None,
-      1,
-      now,
-      now,
-      [],
-      labels,
-    )
-  let index = store.put(load_store(tasks_path), task)
-  let _ = jsonl.flush(store.list(index), to: tasks_path)
-  Ok(serde.task_to_json(task))
+  case parse_parent(rest) {
+    // G10: hierarchical subtask id "<parent>.<n>" (parent must exist).
+    option.Some(parent_id) -> {
+      let index = load_store(tasks_path)
+      case store.find_by_id(index, parent_id) {
+        Error(Nil) -> Error("no such parent task: " <> parent_id)
+        Ok(_) -> {
+          let id = next_child_id(index, parent_id)
+          let task =
+            builder.build(id, title, "", Open, option.None, 1, now, now, [])
+          // build defaults labels: []; apply any --label via a rehashed spread.
+          let task = case labels {
+            [] -> task
+            _ -> builder.update(task, fn(t) { types.Task(..t, labels: labels) })
+          }
+          let index = store.put(index, task)
+          let _ = jsonl.flush(store.list(index), to: tasks_path)
+          Ok(serde.task_to_json(task))
+        }
+      }
+    }
+    // G12: id derived from the content hash (bk-XXXX).
+    option.None -> {
+      let task =
+        builder.build_with_derived_id(
+          title,
+          "",
+          Open,
+          option.None,
+          1,
+          now,
+          now,
+          [],
+          labels,
+        )
+      let index = store.put(load_store(tasks_path), task)
+      let _ = jsonl.flush(store.list(index), to: tasks_path)
+      Ok(serde.task_to_json(task))
+    }
+  }
 }
 
 fn list_cmd(
@@ -290,12 +317,60 @@ fn sync_cmd(tasks_path: String) -> Result(json.Json, String) {
   Ok(json.string("synced " <> int.to_string(list.length(tasks)) <> " task(s)"))
 }
 
+// G7 — bankai setup <agent>: write an agent-instruction file into the project
+// (cwd) so Claude Code / Codex / opencode discover the bankai workflow.
+fn setup_cmd(agent: String) -> Result(json.Json, String) {
+  let filename = case agent {
+    "claude" -> "CLAUDE.md"
+    "codex" -> "AGENTS.md"
+    other -> other <> ".md"
+  }
+  let _ = simplifile.write(agent_instructions(), to: filename)
+  Ok(json.string("wrote " <> filename <> " (bankai agent instructions)"))
+}
+
 // --- helpers ---
 
 fn load_store(tasks_path: String) -> store.Store {
   case jsonl.load(from: tasks_path) {
     Ok(tasks) -> store.from_list(tasks)
     Error(_) -> store.new()
+  }
+}
+
+/// G10: next hierarchical child id "<parent>.<n>" — max existing child number
+/// for the parent + 1 (starts at 1). Scans current tasks (unique ids).
+fn next_child_id(index: store.Store, parent_id: String) -> String {
+  let prefix = parent_id <> "."
+  let nums =
+    store.current_tasks(index)
+    |> list.filter_map(fn(t) {
+      case string.starts_with(t.id, prefix) {
+        False -> Error(Nil)
+        True -> {
+          let prefix_len = string.length(prefix)
+          let suffix =
+            string.slice(t.id, prefix_len, string.length(t.id) - prefix_len)
+          case int.parse(suffix) {
+            Ok(n) -> Ok(n)
+            Error(Nil) -> Error(Nil)
+          }
+        }
+      }
+    })
+  let next = case list.max(nums, with: int.compare) {
+    Ok(m) -> m + 1
+    Error(Nil) -> 1
+  }
+  parent_id <> "." <> int.to_string(next)
+}
+
+/// G10: the value after the first `--parent`, if any.
+fn parse_parent(args: List(String)) -> Option(String) {
+  case args {
+    [] -> option.None
+    ["--parent", v, ..] -> option.Some(v)
+    [_, ..rest] -> parse_parent(rest)
   }
 }
 
@@ -335,7 +410,7 @@ fn filter_by_label(
 pub fn usage() -> String {
   "bankai — content-addressed task memory\n\n"
   <> "usage: bankai <command> [args]\n\n"
-  <> "  create <title> [--label L]..  create a task, print its JSON\n"
+  <> "  create <title> [--label L].. [--parent <id>]  create a task / subtask\n"
   <> "  show <id>                     print a task by id (JSON)\n"
   <> "  list [--label L]              list current tasks (JSON array)\n"
   <> "  ready [--label L]             list unblocked tasks (JSON array)\n"
@@ -347,10 +422,31 @@ pub fn usage() -> String {
   <> "  memories                      list persisted memories\n"
   <> "  inspect <hash>                render the task for a content hash\n"
   <> "  prime                         emit agent-injection prompt (with memories)\n"
+  <> "  setup <claude|codex>          write CLAUDE.md / AGENTS.md (agent instructions)\n"
   <> "  sync                          reconcile + flush .bankai/tasks.jsonl\n"
   <> "  init                          initialize .bankai/\n"
   <> "  serve                         run the daemon (warm JSON-RPC socket path)\n\n"
   <> "all command output is a JSON envelope: {\"ok\": ...} / {\"error\": ...}"
+}
+
+/// The bankai workflow, written by `bankai setup` into CLAUDE.md / AGENTS.md so
+/// coding agents (Claude Code, Codex, opencode) discover it. (G7)
+pub fn agent_instructions() -> String {
+  "# Working with bankai\n\n"
+  <> "bankai is the task-memory mesh for this project. Tasks are content-addressed\n"
+  <> "(SHA-256); IDs are short hash prefixes (bk-XXXX), with hierarchical subtask\n"
+  <> "IDs of the form bk-XXXX.N.\n\n"
+  <> "## Workflow\n"
+  <> "1. `bankai ready` — list unblocked tasks; pick one.\n"
+  <> "2. `bankai update <id> --claim` — claim it (sets in_progress + assignee).\n"
+  <> "3. Do the work; commit atomically per logical change.\n"
+  <> "4. `bankai update <id> completed` — mark done.\n"
+  <> "5. `bankai dep add <id> <blocker>` — wire a dependency (cycle-safe).\n"
+  <> "6. `bankai create <title> [--label L].. [--parent <id>]` — new task/subtask.\n"
+  <> "7. `bankai remember \"insight\"` — persist a durable note for future runs.\n"
+  <> "8. `bankai prime` — re-read this workflow + recent memories.\n\n"
+  <> "All command output is JSON: {\"ok\": ...} / {\"error\": ...}. A `closed` task\n"
+  <> "(won't-do) does NOT satisfy a dependency — only `completed` does."
 }
 
 /// The agent-injection prompt. G4: recent persisted memories are appended so
