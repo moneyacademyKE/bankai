@@ -245,3 +245,99 @@ quadrantChart
 > **The pragmatic path:** Close the P0 gaps (1-2 days of work) to reach feature parity on the CLI surface. Then the mobile rules + OTP supervision become a genuine differentiator rather than a "cool but unusable" foundation.
 
 Bankai doesn't need to become Beads. It needs to become **usable enough** that its unique capabilities (mobile rules, actor isolation, cryptographic verification) can shine.
+
+---
+
+## 8. Resolution — Roadmap Shipped (all 12 gaps closed)
+
+The phased plan in §6 was executed end-to-end in the same session. Every gap
+G1–G12 shipped — in the **lean, Rich-Hickey-compatible** form. Phase 4 (P3) got a
+*second* gap-analysis pass + research that decomplected each item from its
+heaviest option (§5 had recommended them at their heaviest); that's captured
+below. **82/82 tests green; `main` at `d6a6afa`.**
+
+### 8A. Status — every gap, shipped
+
+| Gap | §5 priority | What shipped | Commit(s) |
+|---|---|---|---|
+| **G1** `dep add` | P0 | `bankai dep add <id> <blocker>` — cycle-safe, idempotent | Phase 1 |
+| **G2** `show` | P0 | `bankai show <id>` | Phase 1 |
+| **G12** short IDs | P0 | `bk-XXXX` hash-prefix, derived from the content hash | Phase 1 |
+| **G8** `--claim` | P0 | `bankai update <id> --claim [a]` — atomic assign + status | Phase 1 |
+| **G9** JSON | P0 | `{"ok"}` / `{"error"}` envelopes on every command | Phase 1 |
+| **G4** `remember` | P1 | `bankai remember` + `memories` + injected into `prime` | Phase 2 |
+| **G3** labels | P1 | `labels` field (canonical **v2**) + `--label` filter | Phase 2 |
+| **G10** hier IDs | P2 | `create --parent` → `bk-XXXX.N` | Phase 3 |
+| **G7** setup | P2 | `setup claude` → CLAUDE.md, `setup codex` → AGENTS.md | Phase 3 |
+| **G5** compact | P3 | **dep-free tier+retire** (Closed → `archive.jsonl` + memory note) | `4c257c1` |
+| **G6** sync | P3 | **`sync --from <path>` union-merge** (git transport) | `4c257c1` |
+| **G11** mcp | P3 | **thin stdio MCP adapter** (1 stdin FFI, no Mist) | `2c6d8f7` |
+
+### 8B. Phase 4 — the second Rich Hickey pass (decomplect the gaps themselves)
+
+§5 recommended G5/G6/G11 at their **heaviest** options (G5: LLM summarization;
+G6: `gleamunison/sync` wire protocol; G11: MCP server from scratch). Before
+building, a second gap analysis asked: *what is each problem actually, and what's
+the simplest thing that solves it?* The recurring finding — **each item
+complected an essential problem with one accidental implementation**; pulling
+them apart, all three shrank, and two were mostly already done by
+content-addressing.
+
+**G5 — compaction ≠ summarization ≠ datalog.** Compaction (essential) = retire
+stale/done items out of the active set so `prime`/load stays bounded, *without
+losing them* (still queryable) — a mechanical filter+archive; `status == Closed`
+is a *filter*, not a *query*. Summarization needs an LLM bankai deliberately
+lacks (the agent *using* bankai is the LLM). "Use aarondb datalog" is a query
+engine for a 3-line filter — and aarondb was dropped (ADR-0001 amendment: it
+drags lustre/mist/wisp). *Research:* Letta ("core vs archival… still retrievable,
+just not in the prompt"), Anthropic's memory tool (plain dir + staleness TTL),
+**Zero-Mem** ("token-free memory ops… effective agent memory does *not* require
+generated intermediate representations"); summarization is *explicitly
+criticized* as "lossy compaction… papers over the absence of a consolidation
+pipeline." → **dep-free `compact`; reject aarondb.** ✅ shipped.
+
+**G6 — sync ≠ `gleamunison/sync`.** Sync = merge + transport; bankai already has
+the hard half — identity (content-addressed hash) + merge (`sync/merge.gleam`,
+union-by-hash, deterministic, transport-agnostic). `.bankai/tasks.jsonl` is
+git-native JSONL, so `git pull` + `bankai sync --from` *is* sync (~80% built).
+`gleamunison/sync` is a second transport for live/low-latency — and the
+stability-risky one (dogfood `erl_crash.dump`, cold-start fragility). *Research:*
+[**git-bug**](https://github.com/git-bug/git-bug) is the existence proof — a
+distributed offline-first tracker embedded in git, op-CRDT merge, syncs via plain
+`git push/pull`, no custom protocol; bankai's content-addressing makes its merge
+*simpler* than git-bug's op-CRDT. → **git transport; defer `gleamunison/sync`**
+to a live-sync spike. ✅ shipped.
+
+**G11 — MCP server ≠ from-scratch rebuild.** bankai's CLI commands *are* the
+tools; `socket.gleam`'s dispatch already does JSON-RPC method→command +
+`{"ok"}`/`{"error"}` envelopes + line-framing. MCP is a *thin adapter* — the
+method set (initialize / tools/list / tools/call) + a tool catalog + envelope
+translation + stdio framing, reusing `cli.run_in`. *Research:* `mcp_toolkit`
+v0.3.1 on Hex has the full MCP protocol (Gleam 1.12+/OTP 27 — compatible) —
+**but hard-depends on `mist`** (`optional: false`), the exact web-framework
+weight aarondb was dropped for. So: thin hand-rolled adapter (stdio, no Mist) for
+the common local-agent case; `mcp_toolkit` is the reference + the HTTP/SSE
+fallback. → **thin stdio adapter; no Mist.** ✅ shipped.
+
+| Item | Hickey-compatible solution | Proven reference | Heavy option (rejected/deferred) |
+|---|---|---|---|
+| **G6** | git transport + union merge | **git-bug** (op-CRDT, git-native) | `gleamunison/sync` — defer |
+| **G11** | thin stdio adapter over dispatch | **mcp_toolkit** (as reference) | `mcp_toolkit`-as-dep (Mist) |
+| **G5** | dep-free `compact` (tier+retire) | **Letta / Anthropic / Zero-Mem** | aarondb + LLM-summarize |
+
+### 8C. Certification (post-roadmap)
+
+- **Does it do what it says?** Yes — `compact` retires (queryable, not deleted);
+  `sync` merges; `mcp` speaks the protocol.
+- **Is it simple?** Phase 4 added **zero heavy deps** — no aarondb, no
+  `gleamunison/sync`, no Mist.
+- **Are the abstractions honest?** `sync` is transport-agnostic; `compact` is
+  tiering not summarization; `mcp` is an adapter not a rebuild.
+
+### 8D. Related — the code-level gap analysis (bug audit)
+
+A *separate* Rich Hickey gap analysis of the v0.1.0 codebase ran concurrently
+(BUG-01..12: "where does the code say one thing but mean another?"). 10 fixed
+with regression tests, 2 deferred (BUG-08 long IDs → resolved by G12; BUG-10
+hash round-trip → no gleamunison stable-hex pair). Tracked in
+[issue #1](https://github.com/moneyacademyKE/bankai/issues/1).
