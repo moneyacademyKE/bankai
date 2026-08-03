@@ -7,11 +7,13 @@
 
 import bankai/actors/apply
 import bankai/builder
+import bankai/compact
 import bankai/graph
 import bankai/memory
 import bankai/serde
 import bankai/storage/store
 import bankai/sync/jsonl
+import bankai/sync/merge
 import bankai/time
 import bankai/types.{InProgress, Open}
 import gleam/int
@@ -54,7 +56,11 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     ["prime", ..] -> envelope(Ok(json.string(prime_text(workspace))))
     // G7 — emit agent-instruction file (claude -> CLAUDE.md, codex -> AGENTS.md)
     ["setup", agent, ..] -> envelope(setup_cmd(agent))
-    ["sync", ..] -> envelope(sync_cmd(tasks_path))
+    // G5 — retire closed tasks into archive.jsonl + a summary memory
+    ["compact", ..] -> envelope(compact_cmd(workspace, tasks_path))
+    // G6 — reconcile local, or union-merge a remote tasks.jsonl (--from).
+    // The transport (git pull / rsync) is the agent's job; bankai is the merge.
+    ["sync", ..rest] -> envelope(sync_cmd(tasks_path, rest))
     [cmd, ..] -> envelope(Error("unknown command: " <> cmd))
   }
 }
@@ -310,11 +316,49 @@ fn inspect_cmd(tasks_path: String, hash: String) -> Result(json.Json, String) {
   }
 }
 
-fn sync_cmd(tasks_path: String) -> Result(json.Json, String) {
-  // Reload + dedupe by content hash + normalize back to disk.
-  let tasks = store.list(load_store(tasks_path))
-  let _ = jsonl.flush(tasks, to: tasks_path)
-  Ok(json.string("synced " <> int.to_string(list.length(tasks)) <> " task(s)"))
+// G6 — bankai sync: reconcile local, or union-merge a remote tasks.jsonl
+// (--from). The transport (git pull / rsync) is the agent's job; bankai is the
+// (content-addressed, deterministic) merge primitive.
+fn sync_cmd(
+  tasks_path: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  case parse_from(rest) {
+    option.Some(remote_path) -> {
+      let local = store.list(load_store(tasks_path))
+      case jsonl.load(from: remote_path) {
+        Error(_) -> Error("could not read remote: " <> remote_path)
+        Ok(remote_tasks) -> {
+          let result = merge.merge(local, remote_tasks)
+          let _ = jsonl.flush(result.tasks, to: tasks_path)
+          let nc = list.length(result.conflicts)
+          let base =
+            "merged " <> int.to_string(list.length(result.tasks)) <> " task(s)"
+          Ok(
+            json.string(case nc {
+              0 -> base
+              _ -> base <> " (" <> int.to_string(nc) <> " conflict(s))"
+            }),
+          )
+        }
+      }
+    }
+    option.None -> {
+      let tasks = store.list(load_store(tasks_path))
+      let _ = jsonl.flush(tasks, to: tasks_path)
+      Ok(json.string(
+        "synced " <> int.to_string(list.length(tasks)) <> " task(s)",
+      ))
+    }
+  }
+}
+
+// G5 — bankai compact: retire Closed tasks into archive.jsonl + a memory.
+fn compact_cmd(
+  workspace: String,
+  tasks_path: String,
+) -> Result(json.Json, String) {
+  Ok(json.string(compact.run(workspace, tasks_path)))
 }
 
 // G7 — bankai setup <agent>: write an agent-instruction file into the project
@@ -335,6 +379,15 @@ fn load_store(tasks_path: String) -> store.Store {
   case jsonl.load(from: tasks_path) {
     Ok(tasks) -> store.from_list(tasks)
     Error(_) -> store.new()
+  }
+}
+
+/// G6: the value after the first `--from`, if any.
+fn parse_from(args: List(String)) -> Option(String) {
+  case args {
+    [] -> option.None
+    ["--from", v, ..] -> option.Some(v)
+    [_, ..rest] -> parse_from(rest)
   }
 }
 
@@ -421,9 +474,10 @@ pub fn usage() -> String {
   <> "  remember \"insight\"            persist a content-addressed memory\n"
   <> "  memories                      list persisted memories\n"
   <> "  inspect <hash>                render the task for a content hash\n"
+  <> "  compact                       retire closed tasks into archive.jsonl\n"
   <> "  prime                         emit agent-injection prompt (with memories)\n"
   <> "  setup <claude|codex>          write CLAUDE.md / AGENTS.md (agent instructions)\n"
-  <> "  sync                          reconcile + flush .bankai/tasks.jsonl\n"
+  <> "  sync [--from <path>]          reconcile, or union-merge a remote tasks.jsonl\n"
   <> "  init                          initialize .bankai/\n"
   <> "  serve                         run the daemon (warm JSON-RPC socket path)\n\n"
   <> "all command output is a JSON envelope: {\"ok\": ...} / {\"error\": ...}"
@@ -444,7 +498,8 @@ pub fn agent_instructions() -> String {
   <> "5. `bankai dep add <id> <blocker>` — wire a dependency (cycle-safe).\n"
   <> "6. `bankai create <title> [--label L].. [--parent <id>]` — new task/subtask.\n"
   <> "7. `bankai remember \"insight\"` — persist a durable note for future runs.\n"
-  <> "8. `bankai prime` — re-read this workflow + recent memories.\n\n"
+  <> "8. `bankai compact` — retire closed tasks (keeps `prime` bounded).\n"
+  <> "9. `bankai prime` — re-read this workflow + recent memories.\n\n"
   <> "All command output is JSON: {\"ok\": ...} / {\"error\": ...}. A `closed` task\n"
   <> "(won't-do) does NOT satisfy a dependency — only `completed` does."
 }
