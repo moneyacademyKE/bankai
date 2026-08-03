@@ -10,5 +10,5 @@ Sequential, immutable. New decisions append; superseded records are kept and cro
 ## Open follow-ups
 
 1. ~~Canonical-serialization versioning for `Task` → bytes.~~ **Resolved by ADR-0002.**
-2. Mobile-rule execution sandbox / security model (pillar 2).
+2. ~~Mobile-rule execution sandbox / security model (pillar 2).~~ **Resolved by ADR-0003.**
 3. Unify task-state + rule storage under one substrate.
