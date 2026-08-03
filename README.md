@@ -36,15 +36,22 @@ bankai's own code stays narrow: the `Task` type + canonical serializer + hash wi
 
 ## Product surface
 
-Modeled on [beads](https://github.com/gastownhall/beads) (a Go/Dolt graph issue tracker): hash-IDed tasks (`bk-a3f8`), dependency relations, and mergeable sync across rigs.
+Modeled on [beads](https://github.com/gastownhall/beads) (a Go/Dolt graph issue tracker): short hash-IDed tasks (`bk-a3f8`), dependency relations, JSON output envelopes, and mergeable sync across rigs.
 
+```sh
+bankai init                  # set up .bankai/ workspace
+bankai create "title"        # create a task (id derived from its content hash)
+bankai show <id>             # print a task by id
+bankai list                  # all current tasks
+bankai ready                 # unblocked tasks (topological filter)
+bankai dep add <id> <blocker># mark <id> blocked by <blocker> (cycle-safe)
+bankai update <id> <status>  # open|in_progress|blocked|completed|closed
+bankai update <id> --claim   # claim atomically: in_progress + assignee
+bankai inspect <hash>        # render task state for a content hash (audit)
+bankai serve                 # daemon (warm JSON-RPC UNIX-socket path)
 ```
-bankai init        # set up .bankai/ workspace + storage
-bankai create      # spawn a content-addressed task actor
-bankai ready       # unblocked-work query (topological filter)
-bankai update <id> # mutate task state → new hash
-bankai inspect <h> # render the task state for a given hash (audit)
-```
+
+All command output is a JSON envelope — `{"ok": <json>}` on success, `{"error": "<msg>"}` on failure — so agents parse results uniformly.
 
 ## Status
 
@@ -55,6 +62,16 @@ bankai inspect <h> # render the task state for a given hash (audit)
 - [x] Pillar 2: mobile-rule registry + sandbox (isolated / timeout / monitor) + `repl` eval
 - [x] CLI, supervision tree, UNIX-socket daemon + client mode
 - [x] CI (GitHub Actions: format-check → deps → test); gleamunison as a git dep
+- [x] v0.1.0 released; audit BUG-01..12 addressed (10 fixed, 2 deferred — see [issue #1](https://github.com/moneyacademyKE/bankai/issues/1))
+
+## Roadmap (Beads parity)
+
+| Phase | Items | Status |
+|---|---|---|
+| **P0 — Make the graph usable** | G12 hash-prefix IDs · G9 `{"ok"}`/`{"error"}` envelopes · G2 `show` · G1 `dep add` · G8 `update --claim` | 🚧 in progress |
+| **P1 — Agent memory** | G4 `remember` + prime injection · G3 labels field + `--label` filter | queued |
+| **P2 — Ecosystem** | G10 hierarchical IDs (`bk-a3f8.1`) · G7 `setup claude` / `setup codex` (emit AGENTS.md) | queued |
+| **P3 — Scale** | G5 memory compaction (aarondb datalog) · G6 remote sync (`gleamunison/sync`) · G11 MCP server | queued |
 
 ## License
 

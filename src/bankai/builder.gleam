@@ -4,6 +4,7 @@
 import bankai/ast_bridge
 import bankai/types.{type Relationship, type Task, type TaskStatus, Task}
 import gleam/option.{type Option}
+import gleam/string
 import gleamunison/identity
 
 pub fn build(
@@ -38,4 +39,54 @@ pub fn update(task: Task, mutate: fn(Task) -> Task) -> Task {
   task
   |> mutate
   |> ast_bridge.rehash
+}
+
+/// Short, human-readable id derived from a content hash: "bk-" + first 4 hex
+/// (G12). Replaces the timestamp ids (BUG-08: ms ids collided under rapid
+/// creates; ns ids were 19 digits). A hash-prefix id is readable AND collision-
+/// resistant — the draft includes a ns `created_at`, so identical content made
+/// at different instants hashes to different ids. 4 hex matches the documented
+/// `bk-a3f8` form.
+pub fn short_id_from_hash(h: identity.Hash) -> String {
+  "bk-" <> string.slice(identity.hash_to_debug_string(h), 0, 4)
+}
+
+/// Build a Task whose id is DERIVED from its own (placeholder) content hash,
+/// not from the clock. The id is taken from the draft's hash (placeholder id
+/// `"__pending__"`), then the task is rebuilt with the real id + rehashed. No
+/// circularity: the id references the placeholder-hash, not the final hash.
+pub fn build_with_derived_id(
+  title: String,
+  description: String,
+  status: TaskStatus,
+  assignee: Option(String),
+  priority: Int,
+  created_at: Int,
+  updated_at: Int,
+  relationships: List(Relationship),
+) -> Task {
+  let draft =
+    build(
+      "__pending__",
+      title,
+      description,
+      status,
+      assignee,
+      priority,
+      created_at,
+      updated_at,
+      relationships,
+    )
+  let id = short_id_from_hash(draft.content_hash)
+  build(
+    id,
+    title,
+    description,
+    status,
+    assignee,
+    priority,
+    created_at,
+    updated_at,
+    relationships,
+  )
 }
