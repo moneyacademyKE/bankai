@@ -14,6 +14,27 @@ Two things:
 
 **2. Mobile rules (the novel bit).** An agent can define a validation rule or graph query and *ship that rule to other agents by its hash*, so they execute it without recompiling a binary. That's exactly what [`gleamunison`](https://github.com/moneyacademyKE/gleamunison) is uniquely built for — and it's the part no other agent-coordination tool has.
 
+## Installation
+
+bankai needs **Erlang/OTP** (the escript wraps `erl`) — its honest tradeoff vs
+beads's single static Go binary. No OTP, no bankai.
+
+```sh
+# from a checkout — builds the escript and installs `bankai` on PATH
+./install.sh
+
+# or build only:
+make escript   # -> ./dist/bankai
+```
+
+`install.sh` installs to `~/.local/bin` (no sudo) by default; override with
+`BINDIR=/usr/local/bin ./install.sh`. It sanity-checks for `erl` and `gleam`
+first.
+
+> The escript is a thin wrapper over the compiled BEAM modules, so the
+> installed `bankai` currently needs OTP *and* the built source tree present.
+> A fully portable bundled-`.beam` archive is a later distribution step.
+
 ## Architecture
 
 The foundational decision is [ADR-0001](docs/adrs/0001-hybrid-content-addressing.md): **separate data identity from code mobility.**
@@ -50,6 +71,10 @@ bankai list [--label L]                    # all current tasks
 bankai ready [--label L]                   # unblocked tasks (topological filter)
 bankai count [--label L]                   # number of current tasks
 bankai blocked [--label L]                 # tasks in the Blocked state
+bankai epic <id>                           # roll up a parent's hierarchical children
+bankai cycles                              # report dependency edges on a cycle
+bankai duplicates                          # task pairs linked by a Duplicates relation
+bankai stale [--days N]                    # active tasks not updated in N days (drift)
 
 # — relations —
 bankai dep add <id> <target> [--type T]    # blocks|relates-to|duplicates|supersedes|replies-to
@@ -60,22 +85,33 @@ bankai update <id> --claim [assignee]      # claim: in_progress + assignee (defa
 bankai update <id> --label L               # add a label
 bankai update <id> --priority N            # set the priority
 
+# — messaging —
+bankai msg add <task-id> <text> [--reply <msg-id>]   # post a threaded message
+bankai msg list <task-id>                   # messages for a task (newest first)
+
 # — memory & compaction —
 bankai remember "insight"                  # persist a durable memory
 bankai memories                            # list persisted memories
 bankai prime                               # emit agent-injection prompt (with memories)
 bankai compact                             # retire closed tasks → archive.jsonl
 
+# — maintenance —
+bankai backup                              # copy tasks.jsonl to a timestamped .bak
+bankai export [--format md|json]           # render tasks as a checklist or JSON
+bankai gc                                  # retire closed tasks (alias of compact)
+
 # — sync —
 bankai sync [--from <path>]                # reconcile, or union-merge a remote tasks.jsonl
+bankai sync --peers <file>                 # pull + merge multiple peers (host:port per line)
 bankai sync-serve [--port N]               # TCP sync server (peers pull your tasks)
 bankai sync-pull --host H [--port N]       # pull + union-merge a running peer's tasks
 
 # — infrastructure —
 bankai inspect <hash>                      # render task state for a content hash (audit)
+bankai hooks install                       # install a pre-commit hook (runs `bankai gc`)
 bankai serve                               # daemon (warm JSON-RPC UNIX-socket path)
 bankai mcp                                 # MCP stdio server (Claude Code / Cursor / any MCP client)
-bankai setup <claude|codex|cursor>         # emit agent-instruction file
+bankai setup <claude|codex|cursor|factory|mux|opencode|windsurf>  # emit agent-instruction file
 ```
 
 All command output is a JSON envelope — `{"ok": <json>}` on success, `{"error": "<msg>"}` on failure — so agents parse results uniformly.
@@ -92,7 +128,8 @@ All command output is a JSON envelope — `{"ok": <json>}` on success, `{"error"
 - [x] v0.1.0 released; audit BUG-01..12 addressed (see [issue #1](https://github.com/moneyacademyKE/bankai/issues/1))
 - [x] Beads-parity roadmap (G1–G12) — **all phases shipped**
 - [x] Post-roadmap gap-closers: non-Blocks relations, priority, `count`/`blocked`, `setup cursor`, livesync
-- [x] **95 tests green**
+- [x] **Remaining-gaps sweep (Phases A–G):** graph queries (`cycles`/`duplicates`/`stale`), `epic` roll-up, task-scoped threaded `msg`, maintenance (`backup`/`export`/`gc`), multi-peer `sync --peers`, `hooks install` + setup matrix, escript distribution
+- [x] **120 tests green**
 
 ## Roadmap (Beads parity)
 
@@ -117,8 +154,21 @@ precedents (git-bug, Letta/Anthropic tiering, mcp_toolkit-as-reference).
 | `setup cursor` | `.cursorrules` for Cursor IDE |
 | Livesync | `sync-serve` / `sync-pull` — bankai-native TCP peer sync |
 
-Open follow-ups: messaging/threading, epics, federation/mesh, GitHub/GitLab
-integration, npm/PyPI distribution, SQL queries via Dolt.
+### Remaining-gaps sweep (Phases A–G)
+
+| Phase | What shipped (lean) | Beads's heavy option (rejected/deferred) |
+|---|---|---|
+| **A** graph queries | `cycles` / `duplicates` / `stale` | SQL via Dolt — **rejected** (JSONL + structured cmds) |
+| **B** epics | `epic <id>` roll-up over hierarchical IDs | a separate epic entity |
+| **C** messaging | content-addressed `Message` + `msg add/list --reply` | a new comms subsystem |
+| **D** maintenance | `backup` / `export md\|json` / `gc` | `batch`/`apply` + GitHub bidirectional |
+| **E** federation | `sync --peers <file>` multi-peer | mDNS auto-discovery — **deferred** |
+| **F** hooks + setup | `hooks install` + factory/mux/opencode/windsurf | — |
+| **G** distribution | escript target + `install.sh` | full npm/PyPI packaging (BEAM runtime = honest tradeoff) |
+
+GitHub/GitLab **bidirectional** sync: **rejected as core** (couples bankai to an
+external data model + auth + HTTP) — one-way `export md` covers the export half.
+Full remaining detail in `gap_analysis_bankai_vs_beads.md` §9.
 
 ## License
 

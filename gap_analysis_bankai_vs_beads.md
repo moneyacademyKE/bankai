@@ -341,3 +341,115 @@ A *separate* Rich Hickey gap analysis of the v0.1.0 codebase ran concurrently
 with regression tests, 2 deferred (BUG-08 long IDs → resolved by G12; BUG-10
 hash round-trip → no gleamunison stable-hex pair). Tracked in
 [issue #1](https://github.com/moneyacademyKE/bankai/issues/1).
+
+## 9. Resolution — Remaining Gaps Sweep (Phases A–G)
+
+§8 closed the G1–G12 roadmap. But the beads surface is roughly 5× larger, and a
+second gap pass (see §8B's sibling analysis) surfaced functional gaps beads has
+that bankai did not: messaging, epics, federation/mesh, deeper queries, git
+hooks, a wider setup matrix, maintenance commands, and distribution. **This §9
+resolves every one of them** via the same Rich Hickey decomplect pass used in
+§8B — separate each essential problem from its heaviest accidental option, ship
+the lean version, reject or defer the heavy one.
+
+### 9A. Decision matrix — build / reject / defer
+
+| Phase | What shipped (lean) | Reuses | Beads's heavy option | Verdict |
+|---|---|---|---|---|
+| **A** query depth | `cycles` / `duplicates` / `stale` | `graph.all_edges` + `reaches`, Duplicates relations, `updated_at` | SQL via Dolt | ✅ build |
+| **B** epics | `epic <id>` roll-up | hierarchical-ID prefix scan (already in `next_child_id`) | a separate epic entity | ✅ build |
+| **C** messaging | content-addressed `Message` + `msg add/list --reply` | `memory.gleam` pattern | a new comms subsystem | ✅ build |
+| **D** maintenance | `backup` / `export md\|json` / `gc` | `compact`, `simplifile` | `batch`/`apply` + GitHub bidir | ✅ build |
+| **E** federation | `sync --peers <file>` multi-peer | `sync_peer.pull` + union-merge | mDNS auto-discovery | ✅ build (discovery deferred) |
+| **F** hooks + setup | `hooks install` + factory/mux/opencode/windsurf | `setup_cmd` map | — | ✅ build |
+| **G** distribution | escript target + `install.sh` | Makefile | npm/PyPI full packaging | ✅ build |
+| — | GitHub/GitLab **bidirectional** | — | coupling + auth + HTTP | ❌ **rejected as core** |
+| — | SQL via Dolt / aarondb | — | query engine for a 3-line filter | ❌ **rejected** |
+| — | auto-discovery mesh | — | mDNS beacon | ⏸️ **deferred** |
+| — | live rule-sync | — | extend TCP protocol to rules | ⏸️ **deferred** |
+| — | portable bundled-`.beam` archive | — | self-contained binary | ⏸️ **deferred** |
+
+### 9B. Per-phase decomplect rationale
+
+- **A — query depth.** "SQL via Dolt" complects a status/edge filter with a SQL
+  engine. bankai's data is content-addressed JSONL, not free-text facts —
+  datalog solves a fact-contradiction problem bankai doesn't have (consistent
+  with §8B's aarondb rejection). Decomplected into three structured commands
+  over primitives that already exist: `cycles` runs `graph.cycle_edges` (an edge
+  is on a cycle iff `reaches(edges, to, from)`); `duplicates` lists `Duplicates`
+  relation pairs; `stale` filters active tasks by `updated_at` age. No engine.
+- **B — epics.** "Epic grouping" complects a roll-up *view* with a new *entity*.
+  Decomplected: hierarchical IDs (`bk-XXXX.N`) already encode parent→child; an
+  epic is a read-only roll-up (child count + status breakdown + % complete) over
+  the same prefix scan `next_child_id` already does. No new entity, no new state.
+- **C — messaging.** "Threaded / ephemeral / mail delegation" complects a
+  conversation log with a new subsystem. Decomplected: a `Message` is a
+  content-addressed record (the *same* pattern `memory.gleam` proved) with a
+  `parent_msg_id` for threading and a `task_id` scope. Threading is a parent
+  pointer, not a tree type.
+- **D — maintenance.** `compact` already tiers+retires; `gc` aliases it;
+  `backup` is a timestamped copy; `export` renders md/json. The spec's
+  `batch`/`apply` bulk-runner is deferred — no real need yet.
+- **E — federation.** "Auto-discovery mesh" complects *convergence* (already
+  free — the union-merge is deterministic by content-addressing) with a
+  *discovery* protocol (mDNS beacon). Decomplected: `sync --peers <file>` pulls
+  a list of `host:port` lines and merges each; convergence is unchanged.
+  Discovery is convenience, not correctness → deferred.
+- **F — hooks + setup.** `hooks install` writes a `.git/hooks/pre-commit`;
+  `setup` gains factory/mux/opencode/windsurf cases. Trivial — no decomposition.
+- **G — distribution.** "npm + PyPI" complects *distribution* with *packaging
+  systems*. Decomplected: the essential artifact is a single runnable binary →
+  `make escript` emits `dist/bankai` (an `erl` wrapper over the compiled BEAM
+  modules) and `install.sh` puts it on PATH. **BEAM runtime is bankai's honest
+  tradeoff vs beads's single static Go binary** — stated plainly, not hidden.
+
+### 9C. Rejected (with rationale)
+
+- **SQL via Dolt / aarondb** — a query engine for filters a pure function solves.
+  Structured commands (`cycles`/`duplicates`/`stale`/`count`/`blocked`) cover the
+  real need without dragging a database or datalog layer.
+- **GitHub/GitLab bidirectional** — couples bankai (a pure data tool) to an
+  external data model + auth + HTTP. bankai is *composed into* a pipeline; the
+  agent using it is the integration layer. One-way `export md` covers the export
+  half (an agent can pipe it to `gh issue create`); import is a thin adapter the
+  agent writes when it has the need. Making it core would violate the lean-deps
+  stance ADR-0001 established.
+
+### 9D. Deferred (genuine needs, not now)
+
+- **auto-discovery mesh** — multi-peer pull already converges; mDNS discovery is
+  convenience.
+- **live rule-sync** — the TCP peer protocol streams task sets; extending it to
+  stream the mobile-rule registry is real but has no live need yet.
+- **portable bundled-`.beam` archive** — the escript wrapper needs OTP + the
+  built source tree; a fully self-contained archive is later distribution work.
+- **`batch`/`apply`** — bulk command runner; no real need yet.
+- **full npm/PyPI/Homebrew packaging** — release-engineering follow-up; the
+  escript + `install.sh` path works today.
+
+### 9E. Qualitative gaps — status after the sweep
+
+| Gap | Before | After |
+|---|---|---|
+| **Distribution** | source-only (`gleam run`) | escript + `install.sh` (full npm/PyPI/brew = release-eng follow-up) |
+| **Maturity** | 95 unit tests, no benchmarks | **120 unit tests**, no benchmarks yet, zero real-world usage (honest) |
+| **Docs** | README + ADRs | README now comprehensive (full CLI ref + install + sweep matrix); dedicated user guide still future |
+| **Release eng** | basic CI | basic CI; release-gates/codecov/renovate still future |
+
+### 9F. Certification
+
+- **Does it do what it says?** Yes — verified per phase, not just compiled:
+  `cycles` reports back-edges; `epic` rolls up children; `msg` threads via
+  `--reply`; `sync --peers` union-merges; `dist/bankai` runs end-to-end without
+  hanging (the `-s init stop` fix). 120 tests green.
+- **Is it simple?** Phases A–G added **zero heavy deps** — no Dolt, no mDNS, no
+  HTTP/auth stack, no packaging-runtime dependency. Each was decomplected from
+  its heaviest option and built on primitives bankai already had.
+- **Are the abstractions honest?** messaging reuses memory's content-addressing
+  pattern; an epic is a *view* not an *entity*; federation is multi-peer *pull*
+  not a discovery *protocol*; distribution is a *binary* not a package-manager
+  *dependency*. Each names the thing it actually is.
+
+**Commit head:** the sweep lands across commits `69af8d2`..`ed2a734` (Phases A
+through G + distribution). Roadmap + remaining-gaps both resolved; bankai now
+matches beads on core workflow *and* the breadth the §8 sibling analysis flagged.
