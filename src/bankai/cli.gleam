@@ -50,6 +50,8 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     // Phase 1 — aarondb temporal analytics over the content-addressed history
     ["history", id, ..] -> envelope(history_cmd(tasks_path, id))
     ["analytics", ..] -> envelope(analytics_cmd(tasks_path))
+    // Phase 2 — full-text search via aarondb BM25
+    ["search", ..rest] -> envelope(search_cmd(workspace, tasks_path, rest))
     // Phase C — task-scoped threaded messages
     ["msg", "add", task_id, text, ..rest] ->
       envelope(msg_add_cmd(workspace, tasks_path, task_id, text, rest))
@@ -436,6 +438,37 @@ fn status_counts_to_json(counts: Dict(String, Int)) -> json.Json {
     #(k, json.int(v))
   })
   |> json.object
+}
+
+/// bankai search <query>: full-text search across task titles/descriptions and
+/// memories via aarondb's BM25 index. Returns ranked matches (score > 0).
+fn search_cmd(
+  workspace: String,
+  tasks_path: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  let query = string.join(rest, " ")
+  let tasks = store.current_tasks(load_store(tasks_path))
+  let task_docs =
+    list.map(tasks, fn(t) { #("task", t.id, t.title <> " " <> t.description) })
+  let mem_docs = case memory.load(from: workspace <> "/memories.jsonl") {
+    Ok(mems) ->
+      list.map(mems, fn(m) {
+        #("memory", store.hash_key(m.content_hash), m.text)
+      })
+    Error(_) -> []
+  }
+  let results = aarondb_bridge.search(list.append(task_docs, mem_docs), query)
+  Ok(
+    json.array(results, of: fn(r) {
+      let #(kind, id, score) = r
+      json.object([
+        #("kind", json.string(kind)),
+        #("id", json.string(id)),
+        #("score", json.float(score)),
+      ])
+    }),
+  )
 }
 
 // G2 — find by id, print JSON.
@@ -1041,6 +1074,7 @@ pub fn usage() -> String {
   <> "  stale [--days N]              active tasks not updated in N days (drift)\n"
   <> "  history <id>                  status timeline for a task (aarondb)\n"
   <> "  analytics                     counts by status + avg cycle time (aarondb)\n"
+  <> "  search <query>                full-text search across tasks/memories (BM25)\n"
   <> "  msg list <task-id>            list messages for a task (newest first)\n"
   <> "  msg add <task-id> <text> [--reply <msg-id>]\n"
   <> "                                post a threaded message\n"

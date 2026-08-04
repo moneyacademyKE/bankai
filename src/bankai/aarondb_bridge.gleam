@@ -9,11 +9,13 @@
 
 import aarondb
 import aarondb/fact
+import aarondb/index/bm25
 import aarondb/q
 import bankai/serde
 import bankai/storage/store
 import bankai/types.{type Task}
 import gleam/dict.{type Dict}
+import gleam/float
 import gleam/int
 import gleam/list
 import gleam/result
@@ -150,5 +152,39 @@ pub fn cycle_times(db: aarondb.Db) -> List(Int) {
         }
       _, _, _ -> Error(Nil)
     }
+  })
+}
+
+// --- full-text search (BM25) ---
+
+fn entity_id(key: String) -> fact.EntityId {
+  let assert fact.Uid(eid) = fact.deterministic_uid(key)
+  eid
+}
+
+/// Full-text search over documents via aarondb's BM25 index. `docs` are
+/// (kind, id, text) triples; returns (kind, id, score) ranked desc, score > 0.
+pub fn search(
+  docs: List(#(String, String, String)),
+  query: String,
+) -> List(#(String, String, Float)) {
+  let idx =
+    list.fold(docs, bm25.empty("text"), fn(i, d) {
+      let #(_, id, text) = d
+      bm25.add(i, entity_id(id), text)
+    })
+  docs
+  |> list.filter_map(fn(d) {
+    let #(kind, id, _) = d
+    let sc = bm25.score(idx, entity_id(id), query, 1.2, 0.75)
+    case sc >. 0.0 {
+      True -> Ok(#(kind, id, sc))
+      False -> Error(Nil)
+    }
+  })
+  |> list.sort(by: fn(a, b) {
+    let #(_, _, sa) = a
+    let #(_, _, sb) = b
+    float.compare(sb, sa)
   })
 }
