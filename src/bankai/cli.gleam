@@ -16,7 +16,7 @@ import bankai/sync/jsonl
 import bankai/sync/merge
 import bankai/sync_peer
 import bankai/time
-import bankai/types.{Blocked, Blocks, InProgress, Open}
+import bankai/types.{Blocked, Blocks, Duplicates, InProgress, Open}
 import gleam/int
 import gleam/json
 import gleam/list
@@ -39,6 +39,9 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     ["ready", ..rest] -> envelope(ready_cmd(tasks_path, rest))
     ["count", ..rest] -> envelope(count_cmd(tasks_path, rest))
     ["blocked", ..rest] -> envelope(blocked_cmd(tasks_path, rest))
+    ["cycles", ..] -> envelope(cycles_cmd(tasks_path))
+    ["duplicates", ..] -> envelope(duplicates_cmd(tasks_path))
+    ["stale", ..rest] -> envelope(stale_cmd(tasks_path, rest))
     ["show", id, ..] -> envelope(show_cmd(tasks_path, id))
     ["dep", "add", task_id, target_id, ..rest] ->
       envelope(dep_add_cmd(tasks_path, task_id, target_id, rest))
@@ -193,6 +196,64 @@ fn blocked_cmd(
     |> store.current_tasks()
     |> list.filter(fn(t) { t.status == Blocked })
   let tasks = filter_by_label(tasks, parse_label_filter(rest))
+  Ok(json.array(tasks, of: serde.task_to_json))
+}
+
+/// bankai cycles: report dependency edges that participate in a cycle (drift
+/// detection over the task DAG). Empty array when the graph is acyclic. Pure
+/// over graph.cycle_edges — no SQL engine needed.
+fn cycles_cmd(tasks_path: String) -> Result(json.Json, String) {
+  let edges =
+    load_store(tasks_path)
+    |> store.current_tasks()
+    |> graph.cycle_edges()
+  Ok(
+    json.array(edges, of: fn(e) {
+      let #(from, to) = e
+      json.object([
+        #("from", json.string(from)),
+        #("to", json.string(to)),
+      ])
+    }),
+  )
+}
+
+/// bankai duplicates: list task pairs linked by a Duplicates relation. Honest to
+/// the data — the relation is a directional annotation (a "duplicates" b), so we
+/// emit the pairs the model already holds rather than inventing similarity.
+fn duplicates_cmd(tasks_path: String) -> Result(json.Json, String) {
+  let pairs =
+    load_store(tasks_path)
+    |> store.current_tasks()
+    |> list.flat_map(fn(t) {
+      t.relationships
+      |> list.filter(fn(r) { r.relation == Duplicates })
+      |> list.map(fn(r) { #(t.id, r.target_id) })
+    })
+  Ok(
+    json.array(pairs, of: fn(p) {
+      let #(a, b) = p
+      json.object([
+        #("a", json.string(a)),
+        #("b", json.string(b)),
+      ])
+    }),
+  )
+}
+
+/// bankai stale [--days N]: active tasks (Open/InProgress/Blocked) not updated
+/// in N days (drift). Default 7. Completed/Closed tasks are excluded — a done
+/// task that sits idle is not "drift".
+fn stale_cmd(
+  tasks_path: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  let days = parse_days(rest)
+  let cutoff = time.now() - days * 86_400
+  let tasks =
+    load_store(tasks_path)
+    |> store.current_tasks()
+    |> list.filter(fn(t) { graph.is_active(t.status) && t.updated_at < cutoff })
   Ok(json.array(tasks, of: serde.task_to_json))
 }
 
@@ -528,6 +589,19 @@ fn parse_priority(args: List(String)) -> Int {
   }
 }
 
+/// stale --days: the value after `--days` (default 7). Invalid -> 7.
+fn parse_days(args: List(String)) -> Int {
+  case args {
+    ["--days", v, ..] ->
+      case int.parse(v) {
+        Ok(n) -> n
+        Error(_) -> 7
+      }
+    [_, ..rest] -> parse_days(rest)
+    [] -> 7
+  }
+}
+
 /// G10: next hierarchical child id "<parent>.<n>" — max existing child number
 /// for the parent + 1 (starts at 1). Scans current tasks (unique ids).
 fn next_child_id(index: store.Store, parent_id: String) -> String {
@@ -607,6 +681,9 @@ pub fn usage() -> String {
   <> "  ready [--label L]             list unblocked tasks (JSON array)\n"
   <> "  count [--label L]             count current tasks\n"
   <> "  blocked [--label L]           list blocked tasks (JSON array)\n"
+  <> "  cycles                        report dependency edges on a cycle\n"
+  <> "  duplicates                    list task pairs linked by Duplicates\n"
+  <> "  stale [--days N]              active tasks not updated in N days (drift)\n"
   <> "  dep add <id> <target> [--type T]\n"
   <> "                                add a relation (blocks|relates-to|duplicates|supersedes|replies-to)\n"
   <> "  update <id> <status>          open|in_progress|blocked|completed|closed\n"

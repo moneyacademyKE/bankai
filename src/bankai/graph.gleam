@@ -29,6 +29,20 @@ pub fn all_edges(tasks: List(Task)) -> List(#(String, String)) {
   list.flat_map(tasks, dependency_edges)
 }
 
+/// Edges that participate in a dependency cycle (the `cycles` query). An edge
+/// (a -> b) — "a depends on b" — is on a cycle iff the dependency b can already
+/// reach the dependent a (b -> ... -> a). Pure over the task DAG; self-loops
+/// count. Only Blocks relations can cycle (they are the only directional edges),
+/// which is why `all_edges` filters to Blocks.
+pub fn cycle_edges(tasks: List(Task)) -> List(#(String, String)) {
+  let edges = all_edges(tasks)
+  edges
+  |> list.filter(fn(e) {
+    let #(from, to) = e
+    reaches(edges, to, from)
+  })
+}
+
 /// Would adding edge `proposed = #(dependent, dependency)` to `edges` create a
 /// cycle? Yes iff the dependency can already reach the dependent (closing the
 /// loop), or it's a self-loop. Used to gate `AddRelation`.
@@ -126,7 +140,10 @@ fn neighbors(edges: List(#(String, String)), node: String) -> List(String) {
   })
 }
 
-fn is_active(status: TaskStatus) -> Bool {
+/// Is this status "active" (work that still bears on readiness — not done and
+/// not abandoned)? Pub so the CLI's `stale` drift filter reuses the single
+/// definition of "active" instead of re-deriving it.
+pub fn is_active(status: TaskStatus) -> Bool {
   case status {
     Completed -> False
     Closed -> False
