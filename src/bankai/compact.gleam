@@ -51,7 +51,9 @@ pub fn run(workspace: String, tasks_path: String) -> String {
 
       // Record a summary memory (the agent may elaborate; bankai just notes it).
       let note =
-        "Compacted " <> int.to_string(n) <> " closed task(s) retired into archive.jsonl"
+        "Compacted "
+        <> int.to_string(n)
+        <> " closed task(s) retired into archive.jsonl"
       let mem = memory.new(note, time.now())
       let mems = case memory.load(from: workspace <> "/memories.jsonl") {
         Ok(m) -> m

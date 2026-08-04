@@ -3,9 +3,9 @@
 //// These reuse graph primitives / the relation model — no SQL engine.
 //// `cycles` is a diagnostic over merged/foreign data: the local `dep add`
 //// guards against adding cycles, so a cycle can only reach the store through a
-/// union-merge with a peer that did not guard. The test seeds one directly to
 //// mimic that path.
 
+/// union-merge with a peer that did not guard. The test seeds one directly to
 import bankai/builder
 import bankai/cli
 import bankai/serde
@@ -60,7 +60,8 @@ pub fn cycles_empty_on_acyclic_graph_test() {
   let _ = cli.run_in(ws, ["init"])
   let a = task_of(cli.run_in(ws, ["create", "A"])).id
   let b = task_of(cli.run_in(ws, ["create", "B"])).id
-  let _ = cli.run_in(ws, ["dep", "add", a, b]) // A depends on B — acyclic
+  let _ = cli.run_in(ws, ["dep", "add", a, b])
+  // A depends on B — acyclic
   let out = cli.run_in(ws, ["cycles"])
   out |> string.contains("\"from\"") |> should.be_false
 }
@@ -103,7 +104,8 @@ pub fn duplicates_ignores_blocks_relations_test() {
   let _ = cli.run_in(ws, ["init"])
   let a = task_of(cli.run_in(ws, ["create", "A"])).id
   let b = task_of(cli.run_in(ws, ["create", "B"])).id
-  let _ = cli.run_in(ws, ["dep", "add", a, b]) // default Blocks
+  let _ = cli.run_in(ws, ["dep", "add", a, b])
+  // default Blocks
   cli.run_in(ws, ["duplicates"])
   |> string.contains("\"a\"")
   |> should.be_false
@@ -175,18 +177,20 @@ pub fn stale_uses_default_7_days_test() {
   let ws = "/tmp/bk_qd_stale_default"
   wipe(ws)
   let _ = cli.run_in(ws, ["init"])
-  let old = now() - 8 * 86_400 // 8 days -> stale under the default 7
-  let srv = builder.build(
-    "bk-old8",
-    "Old eight days",
-    "",
-    types.Open,
-    option.None,
-    1,
-    old,
-    old,
-    [],
-  )
+  let old = now() - 8 * 86_400
+  // 8 days -> stale under the default 7
+  let srv =
+    builder.build(
+      "bk-old8",
+      "Old eight days",
+      "",
+      types.Open,
+      option.None,
+      1,
+      old,
+      old,
+      [],
+    )
   seed(ws, [srv])
   cli.run_in(ws, ["stale"])
   |> string.contains("Old eight days")
@@ -200,12 +204,9 @@ pub fn stale_uses_default_7_days_test() {
 /// guard, which mirrors a merged peer that did not guard).
 fn add_block(t: types.Task, target: String) -> types.Task {
   builder.update(t, fn(task) {
-    types.Task(
-      ..task,
-      relationships: [
-        types.Relationship(target_id: target, relation: types.Blocks),
-        ..task.relationships
-      ],
-    )
+    types.Task(..task, relationships: [
+      types.Relationship(target_id: target, relation: types.Blocks),
+      ..task.relationships
+    ])
   })
 }

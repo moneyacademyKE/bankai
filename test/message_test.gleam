@@ -83,11 +83,20 @@ pub fn msg_add_threading_via_reply_test() {
   let task = task_of(cli.run_in(ws, ["create", "Work item"]))
   // Post a top-level message, capture its id from the output.
   let add_out = cli.run_in(ws, ["msg", "add", task.id, "parent message"])
-  let parent_msg = should.be_ok(message.message_from_json_string(task_json(add_out)))
+  let parent_msg =
+    should.be_ok(message.message_from_json_string(task_json(add_out)))
   // Reply to it.
   let reply_out =
-    cli.run_in(ws, ["msg", "add", task.id, "reply text", "--reply", parent_msg.id])
-  let reply_msg = should.be_ok(message.message_from_json_string(task_json(reply_out)))
+    cli.run_in(ws, [
+      "msg",
+      "add",
+      task.id,
+      "reply text",
+      "--reply",
+      parent_msg.id,
+    ])
+  let reply_msg =
+    should.be_ok(message.message_from_json_string(task_json(reply_out)))
   // The reply should reference the parent.
   reply_msg.parent_msg_id |> should.equal(parent_msg.id)
   // List should show both, newest first.

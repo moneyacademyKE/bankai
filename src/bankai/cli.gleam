@@ -17,7 +17,9 @@ import bankai/sync/jsonl
 import bankai/sync/merge
 import bankai/sync_peer
 import bankai/time
-import bankai/types.{Blocked, Blocks, Closed, Completed, Duplicates, InProgress, Open}
+import bankai/types.{
+  Blocked, Blocks, Closed, Completed, Duplicates, InProgress, Open,
+}
 import gleam/int
 import gleam/json
 import gleam/list
@@ -46,10 +48,11 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     // Phase C — task-scoped threaded messages
     ["msg", "add", task_id, text, ..rest] ->
       envelope(msg_add_cmd(workspace, tasks_path, task_id, text, rest))
-    ["msg", "list", task_id, ..] ->
-      envelope(msg_list_cmd(workspace, task_id))
+    ["msg", "list", task_id, ..] -> envelope(msg_list_cmd(workspace, task_id))
     ["msg", ..] ->
-      envelope(Error("usage: msg add <task-id> <text> [--reply <msg-id>] | msg list <task-id>"))
+      envelope(Error(
+        "usage: msg add <task-id> <text> [--reply <msg-id>] | msg list <task-id>",
+      ))
     // Phase D — maintenance & export
     ["backup", ..] -> envelope(backup_cmd(workspace, tasks_path))
     ["export", ..rest] -> envelope(export_cmd(tasks_path, rest))
@@ -301,7 +304,10 @@ fn msg_add_cmd(
 
 /// bankai msg list <task-id>: return all messages for a task,
 /// ordered newest-first (threaded by parent_msg_id).
-fn msg_list_cmd(workspace: String, task_id: String) -> Result(json.Json, String) {
+fn msg_list_cmd(
+  workspace: String,
+  task_id: String,
+) -> Result(json.Json, String) {
   let path = workspace <> "/messages.jsonl"
   let msgs = case message.load(from: path) {
     Ok(m) -> m
@@ -316,22 +322,20 @@ fn msg_list_cmd(workspace: String, task_id: String) -> Result(json.Json, String)
 
 // Phase D — bankai backup: copy tasks.jsonl to a timestamped
 // backup file. Simple, atomic, no deps.
-fn backup_cmd(workspace: String, tasks_path: String) -> Result(json.Json, String) {
+fn backup_cmd(
+  workspace: String,
+  tasks_path: String,
+) -> Result(json.Json, String) {
   case simplifile.read(from: tasks_path) {
     Error(_) -> Error("no tasks file: " <> tasks_path)
     Ok(body) -> {
       let ts = time.now()
       let backup_path = workspace <> "/tasks.jsonl.bak." <> int.to_string(ts)
-  case simplifile.write(body, to: backup_path) {
-    Error(_) -> Error("backup failed: could not write " <> backup_path)
-    Ok(_) ->
-      Ok(json.string(
-        "backed up "
-        <> tasks_path
-        <> " -> "
-        <> backup_path,
-      ))
-  }
+      case simplifile.write(body, to: backup_path) {
+        Error(_) -> Error("backup failed: could not write " <> backup_path)
+        Ok(_) ->
+          Ok(json.string("backed up " <> tasks_path <> " -> " <> backup_path))
+      }
     }
   }
 }
@@ -340,7 +344,10 @@ fn backup_cmd(workspace: String, tasks_path: String) -> Result(json.Json, String
 // tasks as a markdown checklist (default) or JSON array.
 // The markdown format doubles as a one-way GitHub-issue export
 // (rejects full bidirectional GitHub coupling as core).
-fn export_cmd(tasks_path: String, rest: List(String)) -> Result(json.Json, String) {
+fn export_cmd(
+  tasks_path: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
   let fmt = parse_export_format(rest)
   let tasks = load_store(tasks_path) |> store.current_tasks()
   case fmt {
@@ -348,12 +355,11 @@ fn export_cmd(tasks_path: String, rest: List(String)) -> Result(json.Json, Strin
       let lines =
         tasks
         |> list.map(fn(t) {
-          let check =
-            case t.status {
-              Completed -> "x"
-              Closed -> "x"
-              _ -> " "
-            }
+          let check = case t.status {
+            Completed -> "x"
+            Closed -> "x"
+            _ -> " "
+          }
           "- [" <> check <> "] " <> t.title
         })
       Ok(json.string(string.join(lines, "\n")))
@@ -646,18 +652,26 @@ fn sync_cmd(
                   case int.parse(port_str) {
                     Ok(port) -> {
                       case sync_peer.pull(workspace, host, port) {
-                        Error(msg) ->
-                          [#("error", host <> ":" <> port_str, msg), ..reports]
-                        Ok(n) ->
-                          [#("pulled", host <> ":" <> port_str, int.to_string(n)), ..reports]
+                        Error(msg) -> [
+                          #("error", host <> ":" <> port_str, msg),
+                          ..reports
+                        ]
+                        Ok(n) -> [
+                          #("pulled", host <> ":" <> port_str, int.to_string(n)),
+                          ..reports
+                        ]
                       }
                     }
-                    Error(_) ->
-                      [#("error", peer_line, "invalid port"), ..reports]
+                    Error(_) -> [
+                      #("error", peer_line, "invalid port"),
+                      ..reports
+                    ]
                   }
                 }
-                _ ->
-                  [#("error", peer_line, "invalid host:port format"), ..reports]
+                _ -> [
+                  #("error", peer_line, "invalid host:port format"),
+                  ..reports
+                ]
               }
             })
           let report_lines =
@@ -685,7 +699,9 @@ fn sync_cmd(
               let _ = jsonl.flush(result.tasks, to: tasks_path)
               let nc = list.length(result.conflicts)
               let base =
-                "merged " <> int.to_string(list.length(result.tasks)) <> " task(s)"
+                "merged "
+                <> int.to_string(list.length(result.tasks))
+                <> " task(s)"
               Ok(
                 json.string(case nc {
                   0 -> base
