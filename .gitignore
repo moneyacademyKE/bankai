@@ -11,3 +11,4 @@ erl/
 # scratch
 .bash_history
 *.dump
+dist/
