@@ -5,6 +5,7 @@
 //// `main()` (in the root module) wires system argv and tries the warm daemon
 //// path first, falling back to this single-shot path.
 
+import bankai/aarondb_bridge
 import bankai/actors/apply
 import bankai/builder
 import bankai/compact
@@ -20,6 +21,7 @@ import bankai/time
 import bankai/types.{
   Blocked, Blocks, Closed, Completed, Duplicates, InProgress, Open,
 }
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/json
 import gleam/list
@@ -45,6 +47,9 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     ["cycles", ..] -> envelope(cycles_cmd(tasks_path))
     ["duplicates", ..] -> envelope(duplicates_cmd(tasks_path))
     ["stale", ..rest] -> envelope(stale_cmd(tasks_path, rest))
+    // Phase 1 — aarondb temporal analytics over the content-addressed history
+    ["history", id, ..] -> envelope(history_cmd(tasks_path, id))
+    ["analytics", ..] -> envelope(analytics_cmd(tasks_path))
     // Phase C — task-scoped threaded messages
     ["msg", "add", task_id, text, ..rest] ->
       envelope(msg_add_cmd(workspace, tasks_path, task_id, text, rest))
@@ -374,6 +379,63 @@ fn export_cmd(
 // that matches the maintenance vocabulary.
 fn gc_cmd(workspace: String, tasks_path: String) -> Result(json.Json, String) {
   Ok(json.string(compact.run(workspace, tasks_path)))
+}
+
+// Phase 1 — temporal analytics via aarondb.
+
+/// bankai history <id>: status timeline for a task over the content-addressed
+/// version history, via an aarondb Datalog query.
+fn history_cmd(tasks_path: String, id: String) -> Result(json.Json, String) {
+  let versions = store.list(load_store(tasks_path))
+  case aarondb_bridge.db_from_versions(versions) {
+    Error(e) -> Error(e)
+    Ok(db) -> {
+      let timeline = aarondb_bridge.history_timeline(db, id)
+      Ok(
+        json.array(timeline, of: fn(p) {
+          let #(at, status) = p
+          json.object([#("at", json.int(at)), #("status", json.string(status))])
+        }),
+      )
+    }
+  }
+}
+
+/// bankai analytics: aggregate metrics over the current task set via aarondb
+/// Datalog queries — counts by status + average cycle time for completed work.
+fn analytics_cmd(tasks_path: String) -> Result(json.Json, String) {
+  let tasks = store.current_tasks(load_store(tasks_path))
+  case aarondb_bridge.db_from_tasks(tasks) {
+    Error(e) -> Error(e)
+    Ok(db) -> {
+      let by_status = aarondb_bridge.count_by_status(db)
+      let cycles = aarondb_bridge.cycle_times(db)
+      let completed = list.length(cycles)
+      let avg = case completed {
+        0 -> 0
+        n -> int.sum(cycles) / n
+      }
+      Ok(
+        json.object([
+          #("total", json.int(list.length(tasks))),
+          #("completed", json.int(completed)),
+          #("avg_cycle_time_nanoseconds", json.int(avg)),
+          #("by_status", status_counts_to_json(by_status)),
+        ]),
+      )
+    }
+  }
+}
+
+fn status_counts_to_json(counts: Dict(String, Int)) -> json.Json {
+  counts
+  |> dict.to_list()
+  |> list.sort(by: fn(a, b) { string.compare(a.0, b.0) })
+  |> list.map(fn(p) {
+    let #(k, v) = p
+    #(k, json.int(v))
+  })
+  |> json.object
 }
 
 // G2 — find by id, print JSON.
@@ -977,6 +1039,8 @@ pub fn usage() -> String {
   <> "  cycles                        report dependency edges on a cycle\n"
   <> "  duplicates                    list task pairs linked by Duplicates\n"
   <> "  stale [--days N]              active tasks not updated in N days (drift)\n"
+  <> "  history <id>                  status timeline for a task (aarondb)\n"
+  <> "  analytics                     counts by status + avg cycle time (aarondb)\n"
   <> "  msg list <task-id>            list messages for a task (newest first)\n"
   <> "  msg add <task-id> <text> [--reply <msg-id>]\n"
   <> "                                post a threaded message\n"
