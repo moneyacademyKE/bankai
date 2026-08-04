@@ -10,6 +10,7 @@ import bankai/builder
 import bankai/compact
 import bankai/graph
 import bankai/memory
+import bankai/message
 import bankai/serde
 import bankai/storage/store
 import bankai/sync/jsonl
@@ -42,6 +43,13 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     ["cycles", ..] -> envelope(cycles_cmd(tasks_path))
     ["duplicates", ..] -> envelope(duplicates_cmd(tasks_path))
     ["stale", ..rest] -> envelope(stale_cmd(tasks_path, rest))
+    // Phase C — task-scoped threaded messages
+    ["msg", "add", task_id, text, ..rest] ->
+      envelope(msg_add_cmd(workspace, tasks_path, task_id, text, rest))
+    ["msg", "list", task_id, ..] ->
+      envelope(msg_list_cmd(workspace, task_id))
+    ["msg", ..] ->
+      envelope(Error("usage: msg add <task-id> <text> [--reply <msg-id>] | msg list <task-id>"))
     ["show", id, ..] -> envelope(show_cmd(tasks_path, id))
     ["epic", id, ..] -> envelope(epic_cmd(tasks_path, id))
     ["dep", "add", task_id, target_id, ..rest] ->
@@ -256,6 +264,47 @@ fn stale_cmd(
     |> store.current_tasks()
     |> list.filter(fn(t) { graph.is_active(t.status) && t.updated_at < cutoff })
   Ok(json.array(tasks, of: serde.task_to_json))
+}
+
+// Phase C — bankai msg add <task-id> <text> [--reply <msg-id>]:
+// content-address a message, persist to messages.jsonl, return it.
+fn msg_add_cmd(
+  workspace: String,
+  tasks_path: String,
+  task_id: String,
+  text: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  let _ = jsonl.ensure_dir(workspace)
+  case store.find_by_id(load_store(tasks_path), task_id) {
+    Error(Nil) -> Error("no such task: " <> task_id)
+    Ok(_) -> {
+      let parent = msg_add_parse_reply(rest)
+      let msg = message.new(task_id, parent, "agent", text, time.now())
+      let path = workspace <> "/messages.jsonl"
+      let existing = case message.load(from: path) {
+        Ok(m) -> m
+        Error(_) -> []
+      }
+      let _ = message.flush([msg, ..existing], to: path)
+      Ok(message.message_to_json(msg))
+    }
+  }
+}
+
+/// bankai msg list <task-id>: return all messages for a task,
+/// ordered newest-first (threaded by parent_msg_id).
+fn msg_list_cmd(workspace: String, task_id: String) -> Result(json.Json, String) {
+  let path = workspace <> "/messages.jsonl"
+  let msgs = case message.load(from: path) {
+    Ok(m) -> m
+    Error(_) -> []
+  }
+  let task_msgs =
+    msgs
+    |> list.filter(fn(m) { m.task_id == task_id })
+    |> list.sort(fn(a, b) { int.compare(b.ts, a.ts) })
+  Ok(json.array(task_msgs, of: message.message_to_json))
 }
 
 // G2 — find by id, print JSON.
@@ -655,6 +704,15 @@ fn parse_days(args: List(String)) -> Int {
   }
 }
 
+/// msg add --reply: the value after `--reply` (empty = top-level).
+fn msg_add_parse_reply(args: List(String)) -> String {
+  case args {
+    ["--reply", v, ..] -> v
+    [_, ..rest] -> msg_add_parse_reply(rest)
+    [] -> ""
+  }
+}
+
 /// G10: next hierarchical child id "<parent>.<n>" — max existing child number
 /// for the parent + 1 (starts at 1). Scans current tasks (unique ids).
 fn next_child_id(index: store.Store, parent_id: String) -> String {
@@ -738,6 +796,9 @@ pub fn usage() -> String {
   <> "  cycles                        report dependency edges on a cycle\n"
   <> "  duplicates                    list task pairs linked by Duplicates\n"
   <> "  stale [--days N]              active tasks not updated in N days (drift)\n"
+  <> "  msg add <task-id> <text> [--reply <msg-id>]\n"
+  <> "                                post a threaded message\n"
+  <> "  msg list <task-id>            list messages for a task (newest first)\n"
   <> "  dep add <id> <target> [--type T]\n"
   <> "                                add a relation (blocks|relates-to|duplicates|supersedes|replies-to)\n"
   <> "  update <id> <status>          open|in_progress|blocked|completed|closed\n"
