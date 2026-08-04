@@ -13,10 +13,9 @@ gleam_otp = ">= 1.2.0 and < 2.0.0"
 gleam_json = ">= 3.1.0 and < 4.0.0"
 simplifile = ">= 2.4.0 and < 3.0.0"
 gleam_crypto = ">= 1.5.1 and < 2.0.0"
-# aarondb Datalog core — gleamcms-stripped fork (drops lustre/mist/wisp web deps
-# so it resolves on gleam_stdlib 1.x). Local path dep; publish-to-remote is a
-# deferred follow-up (the escript bundles its .beam files regardless).
-aarondb = { path = "../aarondb-core" }
+# aarondb Datalog core (>= 3.0.0). Upstream 3.0.0 dropped the gleamcms CMS and
+# its web deps (lustre/mist/wisp), so it resolves natively on gleam_stdlib 1.x.
+aarondb = ">= 3.0.0 and < 4.0.0"
 gleamunison = { git = "https://github.com/moneyacademyKE/gleamunison.git", ref = "11b4d5814f37390a73b41b51663c1e05196ba13d" }
 
 [dev-dependencies]
