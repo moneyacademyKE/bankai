@@ -83,7 +83,7 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     // G6 (eventual) — reconcile local, or union-merge a remote tasks.jsonl
     // (--from). The transport (git pull / rsync) is the agent's job; bankai is
     // the merge.
-    ["sync", ..rest] -> envelope(sync_cmd(tasks_path, rest))
+    ["sync", ..rest] -> envelope(sync_cmd(workspace, tasks_path, rest))
     // G6 livesync — pull a running peer's task set over TCP and union-merge.
     // (sync-serve, the TCP server, lives in the root main — it blocks.)
     ["sync-pull", ..rest] -> envelope(sync_pull_cmd(workspace, rest))
@@ -619,36 +619,87 @@ fn inspect_cmd(tasks_path: String, hash: String) -> Result(json.Json, String) {
 // G6 (eventual) — bankai sync: reconcile local, or union-merge a remote
 // tasks.jsonl (--from). The transport (git pull / rsync) is the agent's job;
 // bankai is the (content-addressed, deterministic) merge primitive.
+// --peers: pull from multiple peers (a file of host:port lines) and
+// union-merge all. Convergence is free (content-addressed).
 fn sync_cmd(
+  workspace: String,
   tasks_path: String,
   rest: List(String),
 ) -> Result(json.Json, String) {
-  case parse_from(rest) {
-    option.Some(remote_path) -> {
-      let local = store.list(load_store(tasks_path))
-      case jsonl.load(from: remote_path) {
-        Error(_) -> Error("could not read remote: " <> remote_path)
-        Ok(remote_tasks) -> {
-          let result = merge.merge(local, remote_tasks)
-          let _ = jsonl.flush(result.tasks, to: tasks_path)
-          let nc = list.length(result.conflicts)
-          let base =
-            "merged " <> int.to_string(list.length(result.tasks)) <> " task(s)"
-          Ok(
-            json.string(case nc {
-              0 -> base
-              _ -> base <> " (" <> int.to_string(nc) <> " conflict(s))"
-            }),
-          )
+  case parse_peers(rest) {
+    option.Some(peers_file) -> {
+      case simplifile.read(from: peers_file) {
+        Error(_) -> Error("could not read peers file: " <> peers_file)
+        Ok(contents) -> {
+          let peers =
+            contents
+            |> string.split("\n")
+            |> list.filter(fn(line) { line != "" })
+          let reports =
+            list.fold(peers, [], fn(reports, peer_line) {
+              let host_port = string.split(peer_line, ":")
+              case host_port {
+                [host, port_str, ..] -> {
+                  case int.parse(port_str) {
+                    Ok(port) -> {
+                      case sync_peer.pull(workspace, host, port) {
+                        Error(msg) ->
+                          [#("error", host <> ":" <> port_str, msg), ..reports]
+                        Ok(n) ->
+                          [#("pulled", host <> ":" <> port_str, int.to_string(n)), ..reports]
+                      }
+                    }
+                    Error(_) ->
+                      [#("error", peer_line, "invalid port"), ..reports]
+                  }
+                }
+                _ ->
+                  [#("error", peer_line, "invalid host:port format"), ..reports]
+              }
+            })
+          let report_lines =
+            reports
+            |> list.map(fn(r) {
+              let #(kind, peer, msg) = r
+              case kind {
+                "pulled" -> "pulled " <> msg <> " task(s) from " <> peer
+                "error" -> "error from " <> peer <> ": " <> msg
+                _ -> peer <> ": " <> msg
+              }
+            })
+          Ok(json.string(string.join(report_lines, "\n")))
         }
       }
     }
     option.None -> {
-      let tasks = store.list(load_store(tasks_path))
-      let _ = jsonl.flush(tasks, to: tasks_path)
-      Ok(json.string(
-        "synced " <> int.to_string(list.length(tasks)) <> " task(s)",
-      ))
+      case parse_from(rest) {
+        option.Some(remote_path) -> {
+          let local = store.list(load_store(tasks_path))
+          case jsonl.load(from: remote_path) {
+            Error(_) -> Error("could not read remote: " <> remote_path)
+            Ok(remote_tasks) -> {
+              let result = merge.merge(local, remote_tasks)
+              let _ = jsonl.flush(result.tasks, to: tasks_path)
+              let nc = list.length(result.conflicts)
+              let base =
+                "merged " <> int.to_string(list.length(result.tasks)) <> " task(s)"
+              Ok(
+                json.string(case nc {
+                  0 -> base
+                  _ -> base <> " (" <> int.to_string(nc) <> " conflict(s))"
+                }),
+              )
+            }
+          }
+        }
+        option.None -> {
+          let tasks = store.list(load_store(tasks_path))
+          let _ = jsonl.flush(tasks, to: tasks_path)
+          Ok(json.string(
+            "synced " <> int.to_string(list.length(tasks)) <> " task(s)",
+          ))
+        }
+      }
     }
   }
 }
@@ -712,6 +763,15 @@ fn parse_from(args: List(String)) -> Option(String) {
     [] -> option.None
     ["--from", v, ..] -> option.Some(v)
     [_, ..rest] -> parse_from(rest)
+  }
+}
+
+/// sync --peers: the value after the first `--peers`, if any.
+fn parse_peers(args: List(String)) -> Option(String) {
+  case args {
+    [] -> option.None
+    ["--peers", v, ..] -> option.Some(v)
+    [_, ..rest] -> parse_peers(rest)
   }
 }
 
@@ -885,6 +945,7 @@ pub fn usage() -> String {
   <> "  prime                         emit agent-injection prompt (with memories)\n"
   <> "  setup <claude|codex|cursor>   write agent-instruction file\n"
   <> "  sync [--from <path>]          reconcile, or union-merge a remote tasks.jsonl\n"
+  <> "  sync --peers <file>         pull from multiple peers (host:port per line)\n"
   <> "  sync-serve [--port N]         run the TCP sync server (peers pull your tasks)\n"
   <> "  sync-pull --host H [--port N] pull + union-merge a running peer's tasks\n"
   <> "  init                          initialize .bankai/\n"

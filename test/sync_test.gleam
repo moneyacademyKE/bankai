@@ -1,4 +1,5 @@
 import bankai/builder
+import bankai/cli
 import bankai/serde
 import bankai/sync/jsonl
 import bankai/sync/merge
@@ -13,6 +14,14 @@ import simplifile
 
 pub fn main() {
   gleeunit.main()
+}
+
+fn wipe(ws: String) -> Nil {
+  let _ = simplifile.create_directory_all(ws)
+  let _ = simplifile.write("", to: ws <> "/tasks.jsonl")
+  let _ = simplifile.write("", to: ws <> "/memories.jsonl")
+  let _ = simplifile.write("", to: ws <> "/messages.jsonl")
+  Nil
 }
 
 fn fresh() {
@@ -116,5 +125,15 @@ pub fn flush_writes_trailing_newline_test() {
   let _ = jsonl.flush([fresh()], to: path)
   let raw = should.be_ok(simplifile.read(from: path))
   string.ends_with(raw, "\n")
+  |> should.be_true
+}
+
+/// sync --peers with a missing file returns a clear error.
+pub fn sync_peers_missing_file_test() {
+  let ws = "/tmp/bk_sync_peers_missing"
+  wipe(ws)
+  let _ = cli.run_in(ws, ["init"])
+  cli.run_in(ws, ["sync", "--peers", "/tmp/nonexistent_peers.txt"])
+  |> string.contains("could not read peers file")
   |> should.be_true
 }
