@@ -14,3 +14,6 @@ erl/
 # build output: root escript (gleam export escript writes ./bankai)
 /bankai
 dist/
+
+# aarondb Mnesia runtime storage (created by the Datalog backend during runs)
+Mnesia.*/

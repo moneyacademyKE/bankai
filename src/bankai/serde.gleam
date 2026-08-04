@@ -116,7 +116,7 @@ fn relationship_decoder() -> decode.Decoder(Relationship) {
 
 // --- enum string mappings ---
 
-fn status_to_string(s: TaskStatus) -> String {
+pub fn status_to_string(s: TaskStatus) -> String {
   case s {
     Open -> "open"
     InProgress -> "in_progress"
