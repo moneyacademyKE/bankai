@@ -16,7 +16,7 @@ import bankai/sync/jsonl
 import bankai/sync/merge
 import bankai/sync_peer
 import bankai/time
-import bankai/types.{Blocked, Blocks, Duplicates, InProgress, Open}
+import bankai/types.{Blocked, Blocks, Closed, Completed, Duplicates, InProgress, Open}
 import gleam/int
 import gleam/json
 import gleam/list
@@ -43,6 +43,7 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     ["duplicates", ..] -> envelope(duplicates_cmd(tasks_path))
     ["stale", ..rest] -> envelope(stale_cmd(tasks_path, rest))
     ["show", id, ..] -> envelope(show_cmd(tasks_path, id))
+    ["epic", id, ..] -> envelope(epic_cmd(tasks_path, id))
     ["dep", "add", task_id, target_id, ..rest] ->
       envelope(dep_add_cmd(tasks_path, task_id, target_id, rest))
     ["dep", ..] ->
@@ -262,6 +263,58 @@ fn show_cmd(tasks_path: String, id: String) -> Result(json.Json, String) {
   case store.find_by_id(load_store(tasks_path), id) {
     Ok(task) -> Ok(serde.task_to_json(task))
     Error(Nil) -> Error("no such task: " <> id)
+  }
+}
+
+/// bankai epic <id>: roll up a parent task's hierarchical children
+/// (bk-XXXX.N). Returns children count, per-status breakdown, and
+/// completion percentage. Reuses the id-prefix scan already in
+/// next_child_id — no new model code.
+fn epic_cmd(tasks_path: String, id: String) -> Result(json.Json, String) {
+  let index = load_store(tasks_path)
+  case store.find_by_id(index, id) {
+    Error(Nil) -> Error("no such task: " <> id)
+    Ok(_) -> {
+      let prefix = id <> "."
+      let children =
+        store.current_tasks(index)
+        |> list.filter(fn(t) { string.starts_with(t.id, prefix) })
+      let total = list.length(children)
+      let by_status =
+        list.fold(children, #(0, 0, 0, 0, 0), fn(acc, t) {
+          let #(open, in_progress, blocked, completed, closed) = acc
+          case t.status {
+            types.Open -> #(open + 1, in_progress, blocked, completed, closed)
+            InProgress -> #(open, in_progress + 1, blocked, completed, closed)
+            Blocked -> #(open, in_progress, blocked + 1, completed, closed)
+            Completed -> #(open, in_progress, blocked, completed + 1, closed)
+            Closed -> #(open, in_progress, blocked, completed, closed + 1)
+          }
+        })
+      let #(open, in_progress, blocked, completed, closed) = by_status
+      let done = completed + closed
+      let pct = case total {
+        0 -> 0.0
+        _ -> int.to_float(done) /. int.to_float(total) *. 100.0
+      }
+      Ok(
+        json.object([
+          #("parent", json.string(id)),
+          #("children", json.int(total)),
+          #(
+            "status",
+            json.object([
+              #("open", json.int(open)),
+              #("in_progress", json.int(in_progress)),
+              #("blocked", json.int(blocked)),
+              #("completed", json.int(completed)),
+              #("closed", json.int(closed)),
+            ]),
+          ),
+          #("completion_pct", json.float(pct)),
+        ]),
+      )
+    }
   }
 }
 
@@ -677,6 +730,7 @@ pub fn usage() -> String {
   <> "  create <title> [--label L].. [--parent <id>] [--priority N]\n"
   <> "                                create a task / subtask\n"
   <> "  show <id>                     print a task by id (JSON)\n"
+  <> "  epic <id>                     roll up a parent's hierarchical children\n"
   <> "  list [--label L]              list current tasks (JSON array)\n"
   <> "  ready [--label L]             list unblocked tasks (JSON array)\n"
   <> "  count [--label L]             count current tasks\n"
