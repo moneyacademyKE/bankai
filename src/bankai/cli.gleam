@@ -77,6 +77,9 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     ["inspect", hash, ..] -> envelope(inspect_cmd(tasks_path, hash))
     ["prime", ..] -> envelope(Ok(json.string(prime_text(workspace))))
     // G7 — emit agent-instruction file (claude -> CLAUDE.md, codex -> AGENTS.md)
+    // Phase F — git hooks + setup matrix
+    ["hooks", "install", ..] -> envelope(hooks_install_cmd(workspace))
+    ["hooks", ..] -> envelope(Error("usage: hooks install"))
     ["setup", agent, ..] -> envelope(setup_cmd(agent))
     // G5 — retire closed tasks into archive.jsonl + a summary memory
     ["compact", ..] -> envelope(compact_cmd(workspace, tasks_path))
@@ -735,13 +738,46 @@ fn compact_cmd(
   Ok(json.string(compact.run(workspace, tasks_path)))
 }
 
+// Phase F — bankai hooks install: writes a .git/hooks/pre-commit
+// script that runs bankai compact on every commit.
+fn hooks_install_cmd(workspace: String) -> Result(json.Json, String) {
+  let hooks_dir = workspace <> "/.git/hooks"
+  let hook_path = hooks_dir <> "/pre-commit"
+  let hook_content =
+    "#!/bin/sh\n"
+    <> "# bankai pre-commit hook — auto-compact on commit\n"
+    <> "cd \"$(git rev-parse --show-toplevel)\"\n"
+    <> "bankai compact\n"
+  case simplifile.create_directory_all(hooks_dir) {
+    Error(_) -> Error("could not create hooks dir: " <> hooks_dir)
+    Ok(_) -> {
+      case simplifile.write(hook_content, to: hook_path) {
+        Error(_) -> Error("could not write hook: " <> hook_path)
+        Ok(_) ->
+          Ok(json.string(
+            "installed pre-commit hook at "
+            <> hook_path
+            <> " (make it executable: chmod +x "
+            <> hook_path
+            <> ")",
+          ))
+      }
+    }
+  }
+}
+
 // G7 — bankai setup <agent>: write an agent-instruction file into the project
 // (cwd) so Claude Code / Codex / Cursor / opencode discover the bankai workflow.
+// Extended with factory/mux/opencode/windsurf (the setup matrix).
 fn setup_cmd(agent: String) -> Result(json.Json, String) {
   let filename = case agent {
     "claude" -> "CLAUDE.md"
     "codex" -> "AGENTS.md"
     "cursor" -> ".cursorrules"
+    "factory" -> ".factory.md"
+    "mux" -> ".mux.md"
+    "opencode" -> ".opencode.md"
+    "windsurf" -> ".windsurf.md"
     other -> other <> ".md"
   }
   let _ = simplifile.write(agent_instructions(), to: filename)
