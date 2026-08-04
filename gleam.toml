@@ -1,5 +1,5 @@
 name = "bankai"
-version = "0.1.0"
+version = "0.2.0"
 description = "Content-addressed task-memory graph for distributed AI agent swarms (Gleam OTP + gleamunison)"
 licences = ["Apache-2.0"]
 target = "erlang"
