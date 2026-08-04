@@ -11,4 +11,6 @@ erl/
 # scratch
 .bash_history
 *.dump
+# build output: root escript (gleam export escript writes ./bankai)
+/bankai
 dist/

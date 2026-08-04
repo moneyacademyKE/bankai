@@ -17,15 +17,16 @@ deps:
 clean:
 	rm -rf build erl dist
 
-# escript: produce ./dist/bankai, a runnable wrapper over the compiled BEAM
-# modules (invokes `erl` directly — no per-run gleam rebuild, no daemon). The
-# wrapper bakes the absolute -pa path to this tree's compiled ebin at build
-# time, so the installed `bankai` needs Erlang/OTP and this built source tree
-# present: bankai's honest tradeoff vs beads's single static Go binary. A
-# fully portable bundled-.beam archive is a later distribution step.
+# escript: bundle every compiled .beam/.app into a single self-contained
+# executable via `gleam export escript` (prod build → zip archive with the
+# `%%!-escript main bankai@@main` header). The result runs on any machine with
+# Erlang/OTP installed — copy the one file, no source tree, no per-run gleam
+# rebuild. bankai's honest tradeoff vs beads's static Go binary: the target
+# needs a BEAM runtime. (The root ./bankai dev-wrapper was removed to free the
+# `gleam export escript` output path; use `gleam run -m bankai -- <cmd>` for
+# source-tree development.)
 escript:
-	gleam build --target erlang
+	gleam export escript
 	@mkdir -p dist
-	@printf '#!/bin/sh\nexport PATH="/opt/homebrew/bin:$$PATH"\nexec erl -noshell -pa %s/build/dev/erlang/*/ebin -s bankai main -s init stop -- "$$@"\n' "$(CURDIR)" > dist/bankai
-	@chmod +x dist/bankai
-	@echo "Built ./dist/bankai (requires Erlang/OTP + this built source tree)"
+	@mv -f bankai dist/bankai
+	@echo "Built ./dist/bankai (self-contained escript; requires Erlang/OTP)"

@@ -16,24 +16,25 @@ Two things:
 
 ## Installation
 
-bankai needs **Erlang/OTP** (the escript wraps `erl`) — its honest tradeoff vs
-beads's single static Go binary. No OTP, no bankai.
+bankai needs **Erlang/OTP** (the escript is a BEAM archive) — its honest tradeoff
+vs beads's single static Go binary. No OTP, no bankai.
 
 ```sh
 # from a checkout — builds the escript and installs `bankai` on PATH
 ./install.sh
 
 # or build only:
-make escript   # -> ./dist/bankai
+make escript   # -> ./dist/bankai (single self-contained file)
 ```
 
 `install.sh` installs to `~/.local/bin` (no sudo) by default; override with
 `BINDIR=/usr/local/bin ./install.sh`. It sanity-checks for `erl` and `gleam`
 first.
 
-> The escript is a thin wrapper over the compiled BEAM modules, so the
-> installed `bankai` currently needs OTP *and* the built source tree present.
-> A fully portable bundled-`.beam` archive is a later distribution step.
+> `dist/bankai` is a **fully portable escript**: every compiled `.beam`/`.app`
+> is bundled into the one file (`gleam export escript`), so you can copy it to
+> any machine with Erlang/OTP and run it — **no source tree, no per-run rebuild.**
+> From source during development, use `gleam run -m bankai -- <command>`.
 
 ## Architecture
 

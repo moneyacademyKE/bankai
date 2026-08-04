@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-# bankai CLI wrapper. gleam/erl live in /opt/homebrew/bin (off the stripped PATH).
-set -euo pipefail
-export PATH="/opt/homebrew/bin:$PATH"
-cd "$(dirname "$0")"
-exec gleam run -m bankai -- "$@"

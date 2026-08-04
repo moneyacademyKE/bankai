@@ -367,7 +367,7 @@ the lean version, reject or defer the heavy one.
 | — | SQL via Dolt / aarondb | — | query engine for a 3-line filter | ❌ **rejected** |
 | — | auto-discovery mesh | — | mDNS beacon | ⏸️ **deferred** |
 | — | live rule-sync | — | extend TCP protocol to rules | ⏸️ **deferred** |
-| — | portable bundled-`.beam` archive | — | self-contained binary | ⏸️ **deferred** |
+| — | portable bundled-`.beam` archive | — | self-contained binary | ✅ **resolved** (§9G) |
 
 ### 9B. Per-phase decomplect rationale
 
@@ -421,17 +421,18 @@ the lean version, reject or defer the heavy one.
   convenience.
 - **live rule-sync** — the TCP peer protocol streams task sets; extending it to
   stream the mobile-rule registry is real but has no live need yet.
-- **portable bundled-`.beam` archive** — the escript wrapper needs OTP + the
-  built source tree; a fully self-contained archive is later distribution work.
 - **`batch`/`apply`** — bulk command runner; no real need yet.
 - **full npm/PyPI/Homebrew packaging** — release-engineering follow-up; the
   escript + `install.sh` path works today.
+
+> The **portable bundled-`.beam` archive** (previously listed here) is now
+> **resolved** — see §9G. The escript is a single self-contained file.
 
 ### 9E. Qualitative gaps — status after the sweep
 
 | Gap | Before | After |
 |---|---|---|
-| **Distribution** | source-only (`gleam run`) | escript + `install.sh` (full npm/PyPI/brew = release-eng follow-up) |
+| **Distribution** | source-only (`gleam run`) | **portable self-contained escript** (`gleam export escript`) + `install.sh` (full npm/PyPI/brew = release-eng follow-up) |
 | **Maturity** | 95 unit tests, no benchmarks | **120 unit tests**, no benchmarks yet, zero real-world usage (honest) |
 | **Docs** | README + ADRs | README now comprehensive (full CLI ref + install + sweep matrix); dedicated user guide still future |
 | **Release eng** | basic CI | basic CI; release-gates/codecov/renovate still future |
@@ -441,8 +442,8 @@ the lean version, reject or defer the heavy one.
 - **Does it do what it says?** Yes — verified per phase, not just compiled:
   `cycles` reports back-edges; `epic` rolls up children; `msg` threads via
   `--reply`; `sync --peers` union-merges; `dist/bankai` runs end-to-end without
-  hanging (the `-s init stop` fix). 120 tests green.
-- **Is it simple?** Phases A–G added **zero heavy deps** — no Dolt, no mDNS, no
+  `--reply`; `sync --peers` union-merges; `dist/bankai` (a self-contained escript
+  since §9G) runs end-to-end without hanging. 120 tests green.
   HTTP/auth stack, no packaging-runtime dependency. Each was decomplected from
   its heaviest option and built on primitives bankai already had.
 - **Are the abstractions honest?** messaging reuses memory's content-addressing
@@ -453,3 +454,42 @@ the lean version, reject or defer the heavy one.
 **Commit head:** the sweep lands across commits `69af8d2`..`ed2a734` (Phases A
 through G + distribution). Roadmap + remaining-gaps both resolved; bankai now
 matches beads on core workflow *and* the breadth the §8 sibling analysis flagged.
+
+### 9G. Deferred item resolved — portable bundled-`.beam` archive (2026-08-04)
+
+The §9D "portable bundled-`.beam` archive" was the largest remaining
+distribution gap: the Phase-G `dist/bankai` was a *shell wrapper* baked with an
+absolute `-pa` path, so it needed OTP **and the built source tree** — not
+portable. Resolved.
+
+**Decomplect.** The heavy option was a self-bundled *runtime* (Elixir release /
+`relx` — megabytes of BEAM). The essential need was a single *portable code
+file*. `gleam export escript` (compiler-native, gleam ≥ 1.16) bundles every
+compiled `.beam`/`.app` into one escript with the `%%!-escript main bankai@@main`
+header — no hand-rolled zip, no external bundler. The target still needs OTP
+(bankai's honest tradeoff vs beads's static Go binary — unchanged), but **no
+source tree, no per-run rebuild.** Copy the one file; run it anywhere OTP lives.
+
+**The one real fix — argv FFI.** `init:get_plain_arguments/0` leads with the
+escript's own path in escript mode, but not under `gleam run --`. The naïve
+discriminator `escript:script_name/0` was **unreliable** — empirically it equals
+`Plain[0]` in *both* modes (it returned `"list"` under `gleam run`, falsely
+matching and stripping the command). The robust discriminator: strip the first
+arg only when it **resolves to an existing file** (the script path) — a bare
+command word never does. (`src/bankai_argv_ffi.erl`.)
+
+**The collision.** `gleam export escript` writes `./bankai`, which collided with
+the tracked root dev-wrapper (`exec gleam run -m bankai`). Untracked the wrapper
+(its job is fully covered by the documented `gleam run -m bankai -- <cmd>`),
+gitignored `/bankai`, and the `Makefile` `escript` target now builds → `dist/bankai`.
+
+**Verification (bytes, not claims).** Copied the single 1.0M `dist/bankai` to a
+fresh directory with **no source tree present** → `init`, `create`, `list`,
+`cycles`, `stale --days 7` all return correct JSON envelopes, no hang. `gleam
+run -m bankai -- list` still passes clean args (`{"ok":[]}`). **120 tests green.**
+
+**Rich Hickey certification.** Does it do what it says? Yes — a 1.0M file runs
+standalone. Is it simple? One compiler flag, one 6-line FFI fix, zero new deps.
+Are the abstractions honest? The escript *is* a single bundled archive (not a
+wrapper over a source tree); the FFI strips the script path *only when it's a
+real file* (not a heuristic guess at the command surface).
