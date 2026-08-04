@@ -50,6 +50,10 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
       envelope(msg_list_cmd(workspace, task_id))
     ["msg", ..] ->
       envelope(Error("usage: msg add <task-id> <text> [--reply <msg-id>] | msg list <task-id>"))
+    // Phase D — maintenance & export
+    ["backup", ..] -> envelope(backup_cmd(workspace, tasks_path))
+    ["export", ..rest] -> envelope(export_cmd(tasks_path, rest))
+    ["gc", ..] -> envelope(gc_cmd(workspace, tasks_path))
     ["show", id, ..] -> envelope(show_cmd(tasks_path, id))
     ["epic", id, ..] -> envelope(epic_cmd(tasks_path, id))
     ["dep", "add", task_id, target_id, ..rest] ->
@@ -305,6 +309,62 @@ fn msg_list_cmd(workspace: String, task_id: String) -> Result(json.Json, String)
     |> list.filter(fn(m) { m.task_id == task_id })
     |> list.sort(fn(a, b) { int.compare(b.ts, a.ts) })
   Ok(json.array(task_msgs, of: message.message_to_json))
+}
+
+// Phase D — bankai backup: copy tasks.jsonl to a timestamped
+// backup file. Simple, atomic, no deps.
+fn backup_cmd(workspace: String, tasks_path: String) -> Result(json.Json, String) {
+  case simplifile.read(from: tasks_path) {
+    Error(_) -> Error("no tasks file: " <> tasks_path)
+    Ok(body) -> {
+      let ts = time.now()
+      let backup_path = workspace <> "/tasks.jsonl.bak." <> int.to_string(ts)
+  case simplifile.write(body, to: backup_path) {
+    Error(_) -> Error("backup failed: could not write " <> backup_path)
+    Ok(_) ->
+      Ok(json.string(
+        "backed up "
+        <> tasks_path
+        <> " -> "
+        <> backup_path,
+      ))
+  }
+    }
+  }
+}
+
+// Phase D — bankai export [--format md|json]: render all current
+// tasks as a markdown checklist (default) or JSON array.
+// The markdown format doubles as a one-way GitHub-issue export
+// (rejects full bidirectional GitHub coupling as core).
+fn export_cmd(tasks_path: String, rest: List(String)) -> Result(json.Json, String) {
+  let fmt = parse_export_format(rest)
+  let tasks = load_store(tasks_path) |> store.current_tasks()
+  case fmt {
+    "md" -> {
+      let lines =
+        tasks
+        |> list.map(fn(t) {
+          let check =
+            case t.status {
+              Completed -> "x"
+              Closed -> "x"
+              _ -> " "
+            }
+          "- [" <> check <> "] " <> t.title
+        })
+      Ok(json.string(string.join(lines, "\n")))
+    }
+    "json" -> Ok(json.array(tasks, of: serde.task_to_json))
+    _ -> Error("unknown format: " <> fmt <> " (use md or json)")
+  }
+}
+
+// Phase D — bankai gc: retire closed tasks into archive.jsonl.
+// Extends compact (same tier+retire semantics) under a name
+// that matches the maintenance vocabulary.
+fn gc_cmd(workspace: String, tasks_path: String) -> Result(json.Json, String) {
+  Ok(json.string(compact.run(workspace, tasks_path)))
 }
 
 // G2 — find by id, print JSON.
@@ -713,6 +773,15 @@ fn msg_add_parse_reply(args: List(String)) -> String {
   }
 }
 
+/// export --format: the value after `--format` (default "md").
+fn parse_export_format(args: List(String)) -> String {
+  case args {
+    ["--format", v, ..] -> v
+    [_, ..rest] -> parse_export_format(rest)
+    [] -> "md"
+  }
+}
+
 /// G10: next hierarchical child id "<parent>.<n>" — max existing child number
 /// for the parent + 1 (starts at 1). Scans current tasks (unique ids).
 fn next_child_id(index: store.Store, parent_id: String) -> String {
@@ -796,9 +865,13 @@ pub fn usage() -> String {
   <> "  cycles                        report dependency edges on a cycle\n"
   <> "  duplicates                    list task pairs linked by Duplicates\n"
   <> "  stale [--days N]              active tasks not updated in N days (drift)\n"
+  <> "  msg list <task-id>            list messages for a task (newest first)\n"
   <> "  msg add <task-id> <text> [--reply <msg-id>]\n"
   <> "                                post a threaded message\n"
   <> "  msg list <task-id>            list messages for a task (newest first)\n"
+  <> "  backup                        copy tasks.jsonl to a timestamped .bak\n"
+  <> "  export [--format md|json]     render tasks as checklist or JSON\n"
+  <> "  gc                            retire closed tasks into archive.jsonl\n"
   <> "  dep add <id> <target> [--type T]\n"
   <> "                                add a relation (blocks|relates-to|duplicates|supersedes|replies-to)\n"
   <> "  update <id> <status>          open|in_progress|blocked|completed|closed\n"
