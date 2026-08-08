@@ -1,27 +1,52 @@
 //// The task dependency graph — pure functions, no AST evaluation.
 ////
 //// SEMANTICS (documented once, used everywhere):
-////   A `Blocks` relationship `Relationship(target, Blocks)` on task T means
-////   "T is blocked by target" — i.e. target must be Completed before T can be
-////   ready. This keeps dependency info local to the dependent task.
+////   A blocking relationship `Relationship(target, relation)` on task T means
+////   "T cannot proceed until target is Completed" — this holds for Blocks,
+////   WaitsFor, and ConditionalBlocks. ParentChild establishes hierarchy but
+////   does NOT block readiness. All other relation types (RelatesTo, Duplicates,
+////   Supersedes, RepliesTo, DiscoveredFrom, Tracks, CausedBy, Validates) are
+////   informational — they do not affect readiness or cycle detection.
 ////
-//// A dependency edge is therefore (dependent -> dependency):
-////   edge (a, b)  ==  "a depends on b"  ==  "a is blocked by b".
+//// READINESS POLICY:
+////   Blocks, WaitsFor, ConditionalBlocks → target must be Completed.
+////   ParentChild → informational; child tasks can be ready independently.
+////   All other types → informational only.
+////
+//// CYCLE DETECTION:
+////   Blocks/WaitsFor/ConditionalBlocks edges are cycle-checked in the dep graph.
+////   ParentChild is cycle-checked through the parent_id chain (hierarchy cycles).
+////   Informational relations are not cycle-checked.
 ////
 //// Per ADR-0001 amendment these are bankai's own small pure functions over the
 //// task DAG (cycle_detect / topological_sort are trivial here; aarondb's graph
 //// module is coupled to its internal index and drags a web-framework dep tree).
 
-import bankai/types.{type Task, type TaskStatus, Blocks, Closed, Completed}
+import bankai/types.{
+  type Task, type TaskKind, type TaskStatus, Blocks, Closed, Completed,
+  ConditionalBlocks, Gate, WaitsFor,
+}
 import gleam/list
+import gleam/option
 import gleam/set.{type Set}
 import gleam/string
 
-/// Dependency edges (dependent -> dependency) for one task's Blocks relations.
+/// Dependency edges (dependent -> dependency) for one task's blocking relations.
+/// Blocks, WaitsFor, and ConditionalBlocks all constitute blocking edges.
 pub fn dependency_edges(task: Task) -> List(#(String, String)) {
   task.relationships
-  |> list.filter(fn(r) { r.relation == Blocks })
+  |> list.filter(fn(r) { is_blocking_relation(r.relation) })
   |> list.map(fn(r) { #(task.id, r.target_id) })
+}
+
+/// Returns True if the relation type blocks readiness (target must be Completed).
+pub fn is_blocking_relation(rel: types.RelationType) -> Bool {
+  case rel {
+    Blocks -> True
+    WaitsFor -> True
+    ConditionalBlocks -> True
+    _ -> False
+  }
 }
 
 /// All dependency edges across a set of tasks.
@@ -57,26 +82,93 @@ pub fn would_cycle(
   }
 }
 
-/// All dependency edges for a task plus a proposed new Blocks relationship,
-/// without mutating the task. Used by the actor to validate before applying.
-pub fn edges_with(
-  task: Task,
-  proposed_target: String,
-) -> List(#(String, String)) {
-  let proposed = #(task.id, proposed_target)
-  [proposed, ..dependency_edges(task)]
+/// Would adding a child with `parent_id` to `tasks` create a parent hierarchy
+/// cycle? A cycle occurs if the proposed parent is already a descendant of the
+/// proposed child (walking parent_id chains upward).
+pub fn would_cycle_parent_chain(
+  tasks: List(Task),
+  child_id: String,
+  proposed_parent_id: String,
+) -> Bool {
+  // Self-loop
+  case child_id == proposed_parent_id {
+    True -> True
+    // A parent cannot already have child_id in its own ancestor chain upward.
+    False -> parent_chain_reaches(tasks, proposed_parent_id, child_id)
+  }
 }
 
-/// A task is ready iff it is active (not Completed/Closed) AND every task it is
-/// blocked by is Completed. Unknown/missing blockers count as blocking.
+/// Walk parent_id chains from `start_id` upward. Return True if `target_id`
+/// appears as any ancestor's parent_id.
+fn parent_chain_reaches(
+  tasks: List(Task),
+  start_id: String,
+  target_id: String,
+) -> Bool {
+  parent_chain_walk(tasks, start_id, target_id, set.new())
+}
+
+fn parent_chain_walk(
+  tasks: List(Task),
+  current_id: String,
+  target_id: String,
+  visited: Set(String),
+) -> Bool {
+  case set.contains(visited, current_id) {
+    True -> False
+    False -> {
+      let visited = set.insert(visited, current_id)
+      case list.find(tasks, fn(t) { t.id == current_id }) {
+        Error(Nil) -> False
+        Ok(task) ->
+          case task.parent_id {
+            option.Some(pid) ->
+              case pid == target_id {
+                True -> True
+                False -> parent_chain_walk(tasks, pid, target_id, visited)
+              }
+            option.None -> False
+          }
+      }
+    }
+  }
+}
+
+/// A task is ready iff it is active (not Completed/Closed) AND every blocking
+/// relationship's target is Completed. Unknown/missing blockers count as blocking.
+/// ParentChild and informational relations do not block readiness.
 pub fn is_ready(task: Task, done: Set(String)) -> Bool {
+  is_ready_at(task, done, 0)
+}
+
+pub fn is_ready_at(task: Task, done: Set(String), now: Int) -> Bool {
   is_active(task.status)
+  && gate_is_open(task, now)
   && list.all(task.relationships, fn(r) {
-    case r.relation {
-      Blocks -> set.contains(done, r.target_id)
-      _ -> True
+    case is_blocking_relation(r.relation) {
+      True -> set.contains(done, r.target_id)
+      False -> True
     }
   })
+}
+
+/// Gates do not derive readiness from task status. A manual gate opens only
+/// after explicit satisfaction; a timer gate opens once its due timestamp is
+/// reached. This pure policy is credential-free and leaves PR/CI/remote gate
+/// adapters as future producers of the same `gate_satisfied` fact.
+pub fn gate_is_open(task: Task, now: Int) -> Bool {
+  case task.kind {
+    Gate ->
+      case task.gate_satisfied {
+        True -> True
+        False ->
+          case task.gate_due {
+            option.Some(due) -> due <= now
+            option.None -> False
+          }
+      }
+    _ -> True
+  }
 }
 
 /// All currently-ready tasks. Plain function — NOT a gleamunison eval.
@@ -192,5 +284,21 @@ fn do_topo(
         }
       }
     }
+  }
+}
+
+/// Ready work at `now`, excluding tasks deferred into the future.
+pub fn ready_tasks_at(tasks: List(Task), now: Int) -> List(Task) {
+  let done = satisfied_ids(tasks)
+  tasks
+  |> list.filter(fn(task) { is_ready_at(task, done, now) })
+  |> list.filter(fn(task) { !is_deferred(task, now) })
+  |> list.sort(by: fn(a, b) { string.compare(a.id, b.id) })
+}
+
+pub fn is_deferred(task: Task, now: Int) -> Bool {
+  case task.defer_until {
+    option.Some(until) -> until > now
+    option.None -> False
   }
 }

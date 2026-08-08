@@ -7,6 +7,17 @@
 import gleam/option.{type Option}
 import gleamunison/identity.{type Hash}
 
+pub type TaskKind {
+  DefaultTask
+  Bug
+  Feature
+  Epic
+  Decision
+  Chore
+  Gate
+  Wisp
+}
+
 pub type TaskStatus {
   Open
   InProgress
@@ -21,6 +32,13 @@ pub type RelationType {
   Duplicates
   Supersedes
   RepliesTo
+  ParentChild
+  WaitsFor
+  DiscoveredFrom
+  Tracks
+  CausedBy
+  Validates
+  ConditionalBlocks
 }
 
 /// A single directed edge from the owning task to `target_id`.
@@ -31,6 +49,10 @@ pub type Relationship {
 /// A task in the dependency graph. `content_hash` is the SHA-256 of the task's
 /// canonical byte encoding (which deliberately EXCLUDES content_hash itself — a
 /// hash cannot include itself). Mutations recompute it; `id` stays stable.
+///
+/// `parent_id` is explicit parent linkage, separate from hierarchical display
+/// IDs (bk-XXXX.N). Set via `create --parent <id>`. A ParentChild relation is
+/// also created in `relationships`.
 pub type Task {
   Task(
     id: String,
@@ -44,5 +66,11 @@ pub type Task {
     relationships: List(Relationship),
     labels: List(String),
     content_hash: Hash,
+    parent_id: Option(String),
+    kind: TaskKind,
+    defer_until: Option(Int),
+    closure_reason: Option(String),
+    gate_due: Option(Int),
+    gate_satisfied: Bool,
   )
 }

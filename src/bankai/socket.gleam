@@ -1,20 +1,13 @@
-//// The daemon transport + protocol layer (warm path for the sub-5ms NFR).
-////
-//// A resident daemon (`bankai serve`) listens on .bankai/bankai.sock and
-//// answers line-delimited JSON-RPC requests without paying the BEAM cold-start
-//// cost of a single-shot `gleam run` per command. The dominant latency for the
-//// single-shot path is process/VM boot; the daemon keeps that paid once.
-////
-//// Transport = gen_tcp over a UNIX-domain socket (bankai_socket_ffi.erl).
-//// Protocol = one JSON request line -> one JSON response line, reusing the same
-//// ops as the CLI via `handle_request`. `handle_request` stays the pure,
-//// testable protocol entry point; `serve`/`client_request` add the wire.
+//// The daemon transport + protocol layer. A resident daemon owns the Mnesia
+//// write authority; JSONL is no longer a fallback for mutations.
 
 import bankai/cli
+import bankai/daemon_store
 import bankai/sync/jsonl
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/erlang/process
+import gleam/int
 import gleam/io
 import gleam/json
 import gleam/string
@@ -40,30 +33,163 @@ pub fn socket_path(workspace: String) -> String {
 
 pub fn handle_request(workspace: String, request: Request) -> Response {
   case request.method {
-    "ready" -> OkResponse(value: cli.run_in(workspace, ["ready"]))
-    "list" -> OkResponse(value: cli.run_in(workspace, ["list"]))
+    "ready" ->
+      case request.params {
+        ["--claim", ..rest] ->
+          daemon_result(daemon_store.claim_next_ready(workspace, rest))
+        _ -> daemon_result(daemon_store.ready_tasks(workspace, request.params))
+      }
+
+    "list" -> daemon_result(daemon_store.list_tasks(workspace, request.params))
     "create" ->
       case request.params {
-        [title, ..] ->
-          OkResponse(value: cli.run_in(workspace, ["create", title]))
+        [title, ..rest] ->
+          daemon_result(daemon_store.create(workspace, title, rest))
         _ -> ErrorResponse(message: "create requires a title")
       }
     "update" ->
       case request.params {
+        [id, "--defer-until", until, ..] ->
+          daemon_result(daemon_store.defer_until(workspace, id, until))
+        [id, "--satisfy-gate", ..] ->
+          daemon_result(daemon_store.satisfy_gate(workspace, id))
+        [id, "--close", reason, ..] ->
+          daemon_result(daemon_store.close(workspace, id, reason))
+        [id, "--claim", ..rest] ->
+          daemon_result(daemon_store.claim(workspace, id, rest))
+        [id, "--label", label, ..] ->
+          daemon_result(daemon_store.add_label(workspace, id, label))
+        [id, "--priority", value, ..] ->
+          daemon_result(daemon_store.set_priority(workspace, id, value))
         [id, status, ..] ->
-          OkResponse(value: cli.run_in(workspace, ["update", id, status]))
-        _ -> ErrorResponse(message: "update requires <id> <status>")
+          daemon_result(daemon_store.update(workspace, id, status))
+        _ ->
+          ErrorResponse(
+            message: "update requires <id> <status> or --claim [assignee]",
+          )
+      }
+    "merge" ->
+      case request.params {
+        [source_id, canonical_id, ..] ->
+          daemon_result(daemon_store.merge_duplicate(
+            workspace,
+            source_id,
+            canonical_id,
+          ))
+        _ -> ErrorResponse(message: "merge requires <source-id> <canonical-id>")
+      }
+    "dep_add" ->
+      case request.params {
+        [task_id, target_id, ..rest] ->
+          daemon_result(daemon_store.add_dependency(
+            workspace,
+            task_id,
+            target_id,
+            rest,
+          ))
+        _ -> ErrorResponse(message: "dep_add requires <task-id> <target-id>")
+      }
+    "dep_list" ->
+      case request.params {
+        [id, ..] -> daemon_result(daemon_store.dependency_list(workspace, id))
+        _ -> ErrorResponse(message: "dep_list requires <task-id>")
+      }
+    "dep_tree" ->
+      case request.params {
+        [id, ..] -> daemon_result(daemon_store.dependency_tree(workspace, id))
+        _ -> ErrorResponse(message: "dep_tree requires <task-id>")
+      }
+    "doctor" -> daemon_result(daemon_store.doctor(workspace))
+    "backup" -> daemon_result(daemon_store.backup_jsonl(workspace))
+    "export" -> daemon_result(daemon_store.export_jsonl(workspace))
+    "import" ->
+      case request.params {
+        [path, ..] -> daemon_result(daemon_store.import_jsonl(workspace, path))
+        _ -> ErrorResponse(message: "import requires <path>")
+      }
+    "sync_pull" ->
+      case request.params {
+        ["--host", host, "--port", port_text, ..] ->
+          case int.parse(port_text) {
+            Ok(port) ->
+              daemon_result(daemon_store.pull_peer(workspace, host, port))
+            Error(_) ->
+              ErrorResponse(message: "sync_pull port must be an integer")
+          }
+        ["--host", host, ..] ->
+          daemon_result(daemon_store.pull_peer(workspace, host, 7654))
+        _ ->
+          ErrorResponse(
+            message: "sync_pull requires --host <host> [--port <n>]",
+          )
+      }
+    "remember" ->
+      case request.params {
+        [text, ..] -> daemon_result(daemon_store.remember(workspace, text))
+        _ -> ErrorResponse(message: "remember requires an insight")
+      }
+    "memories" -> daemon_result(daemon_store.memories(workspace))
+    "compact" -> daemon_result(daemon_store.compact(workspace))
+    "show" ->
+      case request.params {
+        [id, ..] -> daemon_result(daemon_store.show_task(workspace, id))
+        _ -> ErrorResponse(message: "show requires <id>")
+      }
+    "count" ->
+      daemon_result(daemon_store.count_tasks(workspace, request.params))
+    "blocked" ->
+      daemon_result(daemon_store.blocked_tasks(workspace, request.params))
+    "cycles" -> daemon_result(daemon_store.cycle_edges(workspace))
+    "duplicates" ->
+      case request.params {
+        ["--semantic", ..rest] ->
+          daemon_result(daemon_store.semantic_duplicates(workspace, rest))
+        _ -> daemon_result(daemon_store.duplicate_pairs(workspace))
+      }
+    "stale" ->
+      daemon_result(daemon_store.stale_tasks(workspace, request.params))
+    "history" ->
+      case request.params {
+        [id, ..] -> daemon_result(daemon_store.history(workspace, id))
+        _ -> ErrorResponse(message: "history requires <id>")
+      }
+    "analytics" -> daemon_result(daemon_store.analytics(workspace))
+    "search" -> daemon_result(daemon_store.search(workspace, request.params))
+    "prime_query" ->
+      case request.params {
+        [query, ..] -> daemon_result(daemon_store.prime_query(workspace, query))
+        _ -> ErrorResponse(message: "prime_query requires <query>")
+      }
+    "epic" ->
+      case request.params {
+        [id, ..] -> daemon_result(daemon_store.epic(workspace, id))
+        _ -> ErrorResponse(message: "epic requires <id>")
       }
     "inspect" ->
       case request.params {
-        [hash, ..] ->
-          OkResponse(value: cli.run_in(workspace, ["inspect", hash]))
-        _ -> ErrorResponse(message: "inspect requires a hash")
+        [hash, ..] -> daemon_result(daemon_store.inspect(workspace, hash))
+        _ -> ErrorResponse(message: "inspect requires <hash>")
       }
-    "prime" -> OkResponse(value: cli.run_in(workspace, ["prime"]))
-    "sync" -> OkResponse(value: cli.run_in(workspace, ["sync"]))
-    "init" -> OkResponse(value: cli.run_in(workspace, ["init"]))
+    "sync" ->
+      case request.params {
+        ["--from", path, ..] ->
+          daemon_result(daemon_store.reconcile_jsonl(workspace, path))
+        _ -> ErrorResponse(message: "sync requires --from <path>")
+      }
+    "init" ->
+      case daemon_store.boot(workspace) {
+        Ok(_) -> OkResponse(value: cli.run_in(workspace, ["init"]))
+        Error(message) -> ErrorResponse(message: message)
+      }
     _ -> ErrorResponse(message: "unknown method: " <> request.method)
+  }
+}
+
+fn daemon_result(result: Result(json.Json, String)) -> Response {
+  case result {
+    Ok(value) ->
+      OkResponse(value: json.to_string(json.object([#("ok", value)])))
+    Error(message) -> ErrorResponse(message: message)
   }
 }
 
@@ -164,13 +290,19 @@ fn ffi_controlling_process(
 /// Start the daemon: listen on <workspace>/bankai.sock and serve forever.
 pub fn serve(workspace: String) -> Nil {
   let _ = jsonl.ensure_dir(workspace)
-  let path = socket_path(workspace)
-  let _ = ffi_delete_path(path)
-  case ffi_listen(path) {
-    Error(_) -> io.println_error("bankai: failed to listen on " <> path)
-    Ok(ls) -> {
-      io.println("bankai daemon listening on " <> path)
-      serve_loop(workspace, ls)
+  case daemon_store.boot(workspace) {
+    Error(message) ->
+      io.println_error("bankai: Mnesia boot failed: " <> message)
+    Ok(_) -> {
+      let path = socket_path(workspace)
+      let _ = ffi_delete_path(path)
+      case ffi_listen(path) {
+        Error(_) -> io.println_error("bankai: failed to listen on " <> path)
+        Ok(ls) -> {
+          io.println("bankai daemon listening on " <> path)
+          serve_loop(workspace, ls)
+        }
+      }
     }
   }
 }

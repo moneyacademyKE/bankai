@@ -148,11 +148,31 @@ and is undermined by the project's own cold-start findings. **Rejected** on NFR 
 
 ---
 
-## Post-approval amendment (2026-08-03, Phase 0)
+### Current architecture amendment (2026-08-08)
 
-**Composition strategy revised: drop the aarondb dependency; keep bankai lean.**
+The original ADR predates the daemon/Mnesia migration and later aarondb retrieval work. Its historical discussion of JSONL persistence, aarondb removal, `gleamunison/storage.mnesia`, and a sub-5 ms warm-path target is not the current implementation contract.
 
-During Phase 0 scaffolding, two facts surfaced that change the "compose aarondb" row of the Composition table:
+**Current task truth:** Bankai-owned Mnesia tables behind the resident daemon, as specified by ADR-0004. Task heads and immutable content-addressed versions are committed transactionally; JSONL is export/import/backup/snapshot-reconciliation interchange.
+
+**Current derived views:** aarondb is intentionally present as a rebuildable, non-authoritative projection engine for Datalog history/analytics, BM25 search, and lexical HNSW retrieval. Bankai still owns its small pure readiness/cycle graph policy because that policy is domain logic, not an aarondb storage concern.
+
+**Performance:** no sub-5 ms end-to-end latency claim is made. The [projection benchmark](../projection-benchmark-2026-08-08.md) measures derived work separately and documents the current HNSW scaling limitation.
+
+The original content-addressing and mobile-rule reasoning remains the historical decision record; ADR-0004, ADR-0005, and ADR-0006 govern the current storage, workflow, and federation boundaries.
+
+> **Historical Phase 0 note:** the following “drop aarondb” amendment describes an earlier dependency decision. It is retained for provenance only and is superseded by the current-derived-views statement above.
+
+ADR-0004 supersedes the **storage** recommendation in this ADR. Bankai task
+truth now lives in Bankai-owned, daemon-mediated Mnesia tables; immutable task
+versions remain content-addressed, while JSONL is explicit
+export/import/backup/reconciliation interchange. aarondb has since been
+reintroduced only as a rebuildable derived-query engine (Datalog, BM25, and
+HNSW); it owns neither task heads nor task history. The original rules and
+content-addressing decisions above remain unchanged.
+
+**Historical composition strategy: drop the aarondb dependency; keep bankai lean.**
+
+The remaining paragraphs are historical notes from the original Phase 0 decision. They are not the active dependency or storage configuration.
 
 1. `aarondb/algo/graph.gleam` (which has `cycle_detect`, `topological_sort`, `reachable`) is **coupled to aarondb internals** (`aarondb/fact`, `aarondb/index`, `aarondb/shared/state`). Consuming it requires building an aarondb datom-graph index — not a plain edge list.
 2. `aarondb` pulls **lustre / mist / wisp** (web framework) as transitive deps — heavy incidental weight for a CLI that needs none of it.

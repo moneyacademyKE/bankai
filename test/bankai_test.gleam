@@ -8,5 +8,5 @@ pub fn main() {
 
 pub fn version_string_test() {
   bankai.version_string()
-  |> should.equal("0.1.0")
+  |> should.equal("0.2.0")
 }

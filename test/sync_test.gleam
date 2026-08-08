@@ -1,9 +1,10 @@
+import bankai/ast_bridge
 import bankai/builder
 import bankai/cli
 import bankai/serde
 import bankai/sync/jsonl
 import bankai/sync/merge
-import bankai/types.{InProgress, Open}
+import bankai/types.{InProgress, Open, Task}
 import gleam/list
 import gleam/option
 import gleam/string
@@ -70,6 +71,30 @@ pub fn jsonl_flush_load_roundtrip_test() {
   tasks
   |> list.length()
   |> should.equal(2)
+}
+
+pub fn tampered_json_identity_is_rejected_test() {
+  let task = fresh()
+  let tampered = Task(..task, title: "Edited without rehashing")
+  ast_bridge.validate(tampered)
+  |> should.be_error
+  serde.task_from_json_string(serde.task_to_json_string(tampered))
+  |> should.be_error
+}
+
+pub fn jsonl_load_rejects_tampered_identity_test() {
+  let path = "/tmp/bankai_tampered_tasks.jsonl"
+  let task = fresh()
+  let tampered = Task(..task, title: "Edited without rehashing")
+  let _ =
+    simplifile.write(serde.task_to_json_string(tampered) <> "\n", to: path)
+  jsonl.load(from: path) |> should.be_error
+}
+
+pub fn rehash_is_the_explicit_update_path_test() {
+  let task = fresh()
+  let updated = ast_bridge.rehash(Task(..task, title: "Rehashed update"))
+  ast_bridge.validate(updated) |> should.be_ok
 }
 
 pub fn clean_merge_unions_identical_hashes_test() {

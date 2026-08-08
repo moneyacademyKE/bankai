@@ -1,4 +1,32 @@
+
 # Bankai vs Beads — Rich Hickey Gap Analysis
+
+## Current capability contract — 2026-08-08
+
+This section is the authoritative current comparison. Later sections preserve the historical audits and shipped-roadmap rationale; they are not a statement of current feature parity. Evidence is the named Bankai source/tests, current README command surface, the [projection benchmark](docs/projection-benchmark-2026-08-08.md), and ADRs 0004–0006.
+
+**Bankai has not reached full Beads parity.** It has a stronger local truth boundary in some areas, but deliberately defers or rejects several Beads-shaped workflow and federation capabilities.
+
+| Capability | Bankai disposition | Evidence / boundary |
+|---|---|---|
+| Durable single-writer task state and immutable history | **Shipped; intentionally different** | `mnesia_store.gleam`, `daemon_store.gleam`, ADR-0004 |
+| CLI and MCP daemon-mediated task commands | **Shipped** | `socket.gleam`, `mcp.gleam`, socket/MCP tests |
+| Atomic ready-and-claim | **Shipped** | `daemon_store.gleam`, CLI/socket tests |
+| Short IDs, labels, priorities, basic hierarchy, relation graph | **Shipped; partial hierarchy** | `cli.gleam`, `graph.gleam`, CLI tests |
+| Full-text, temporal, and lexical-vector retrieval | **Shipped; intentionally different** | `aarondb_bridge.gleam`, `vector_bridge.gleam`, Phase 3 tests |
+| Portable JSONL export/import/backup/reconciliation | **Shipped; not consensus** | `mnesia_store.gleam`, `sync_peer.gleam`, ADR-0004 |
+| Task kinds, explicit parent relation, and Beads-level dependency semantics | **Shipped** | `types.gleam`, `graph.gleam`, daemon/MCP regressions |
+| Deferral, closure reason, and comprehensive explainable views | **Shipped** | `types.gleam`, `daemon_store.gleam`, Mnesia regressions |
+| Auditable duplicate consolidation | **Shipped** | `daemon_store.gleam`, Mnesia merge regressions; semantic search remains candidates only |
+| Gates and local-only wisps | **Shipped locally** | `types.gleam`, `graph.gleam`, daemon/socket/MCP coverage; external adapters remain deferred |
+| Transactional molecules/templates | **Deferred** | No command or template data model exists; ADR-0005 records the boundary |
+| Doctor, richer graph traversal, broad setup registry | **Shipped** | `daemon_store.gleam`, `socket.gleam`, MCP coverage |
+| Incremental aarondb projections | **Rejected for generic use; vector follow-up required** | [Projection benchmark](docs/projection-benchmark-2026-08-08.md) |
+| Multi-machine consensus, Raft, remote dependency/gate semantics | **Designed, not shipped** | ADR-0006 distinguishes snapshot reconciliation from federation |
+| Dolt/SQL ownership and vendor-coupled GitHub sync | **Rejected as core** | ADR-0005; structured commands + mobile-rule extensions are Bankai-native |
+| Real embedding providers | **Deferred** | `embed.gleam` exposes an explicit lexical term-hash backend |
+
+The capability standard is deliberately narrower than “copy Beads.” Bankai owns transactional task truth in Mnesia, derives query views through aarondb, keeps JSONL as portable interchange, and uses structured workflow commands and mobile rules instead of Dolt coupling. A capability is only called shipped when it is available through the documented CLI/daemon/MCP boundary and covered by source tests.
 
 > "Programmers know the benefits of everything and the tradeoffs of nothing." — Rich Hickey
 >
@@ -10,7 +38,15 @@
 
 ---
 
-## 1. Feature Set Comparison
+## Current benchmark result
+
+The latest recorded result is **149 passing, 0 failures**. The isolated mobile-rule crash-survival test deliberately emits a BEAM crash report while proving that the supervisor contains it. Build output still has known unused-import/helper warnings; they are not test failures.
+
+
+## Historical audit archive
+
+The remainder of this document is preserved as an **August 2026 historical audit and delivery record**. Its red/yellow gap tables, test counts, implementation notes, and dependency decisions describe earlier repository states. Do not use them as a current feature contract; use the matrix above, `README.md`, and ADRs 0004–0006 instead.
+
 
 ### 1A. CLI Surface
 
@@ -312,7 +348,7 @@ to a live-sync spike. ✅ shipped.
 tools; `socket.gleam`'s dispatch already does JSON-RPC method→command +
 `{"ok"}`/`{"error"}` envelopes + line-framing. MCP is a *thin adapter* — the
 method set (initialize / tools/list / tools/call) + a tool catalog + envelope
-translation + stdio framing, reusing `cli.run_in`. *Research:* `mcp_toolkit`
+translation + stdio framing, routing task calls through the daemon socket. *Research:* `mcp_toolkit`
 v0.3.1 on Hex has the full MCP protocol (Gleam 1.12+/OTP 27 — compatible) —
 **but hard-depends on `mist`** (`optional: false`), the exact web-framework
 weight aarondb was dropped for. So: thin hand-rolled adapter (stdio, no Mist) for
@@ -443,7 +479,7 @@ the lean version, reject or defer the heavy one.
   `cycles` reports back-edges; `epic` rolls up children; `msg` threads via
   `--reply`; `sync --peers` union-merges; `dist/bankai` runs end-to-end without
   `--reply`; `sync --peers` union-merges; `dist/bankai` (a self-contained escript
-  since §9G) runs end-to-end without hanging. 120 tests green.
+  since §9G) runs end-to-end without hanging. The current suite is tracked in the README.
   HTTP/auth stack, no packaging-runtime dependency. Each was decomplected from
   its heaviest option and built on primitives bankai already had.
 - **Are the abstractions honest?** messaging reuses memory's content-addressing
@@ -486,7 +522,8 @@ gitignored `/bankai`, and the `Makefile` `escript` target now builds → `dist/b
 **Verification (bytes, not claims).** Copied the single 1.0M `dist/bankai` to a
 fresh directory with **no source tree present** → `init`, `create`, `list`,
 `cycles`, `stale --days 7` all return correct JSON envelopes, no hang. `gleam
-run -m bankai -- list` still passes clean args (`{"ok":[]}`). **120 tests green.**
+run -m bankai -- list` still passes clean args (`{"ok":[]}`). Historical count
+superseded; see the README for the current suite result.
 
 **Rich Hickey certification.** Does it do what it says? Yes — a 1.0M file runs
 standalone. Is it simple? One compiler flag, one 6-line FFI fix, zero new deps.

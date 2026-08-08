@@ -32,6 +32,7 @@ pub fn initialize_responds_with_capabilities_test() {
   resp |> string.contains("\"protocolVersion\"") |> should.be_true
   resp |> string.contains("\"tools\"") |> should.be_true
   resp |> string.contains("\"id\":1") |> should.be_true
+  resp |> string.contains("\"version\":\"0.2.0\"") |> should.be_true
 }
 
 pub fn tools_list_advertises_bankai_commands_test() {
@@ -42,21 +43,25 @@ pub fn tools_list_advertises_bankai_commands_test() {
     )
   resp |> string.contains("ready") |> should.be_true
   resp |> string.contains("create") |> should.be_true
-  resp |> string.contains("dep_add") |> should.be_true
-  resp |> string.contains("compact") |> should.be_true
+  resp |> string.contains("dep_list") |> should.be_true
+  resp |> string.contains("dep_tree") |> should.be_true
+  resp |> string.contains("doctor") |> should.be_true
 }
 
-pub fn tools_call_routes_to_bankai_and_returns_content_test() {
+pub fn tools_call_reports_daemon_requirement_without_jsonl_fallback_test() {
   wipe(ws)
   let _ = cli.run_in(ws, ["init"])
-  let _ = cli.run_in(ws, ["create", "Callable task"])
   let resp =
     mcp.handle_message(
       ws,
-      "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"list\",\"arguments\":{\"args\":[]}}}",
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"create\",\"arguments\":{\"args\":[\"Must not write JSONL\"]}}}",
     )
   resp |> string.contains("\"content\"") |> should.be_true
-  resp |> string.contains("Callable task") |> should.be_true
+  resp |> string.contains("\"isError\":true") |> should.be_true
+  resp |> string.contains("daemon required") |> should.be_true
+  cli.run_in(ws, ["list"])
+  |> string.contains("Must not write JSONL")
+  |> should.be_false
 }
 
 pub fn initialized_notification_emits_no_response_test() {

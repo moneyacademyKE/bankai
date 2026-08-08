@@ -13,9 +13,11 @@
 //// content_hash is intentionally NOT encoded — it is derived from these bytes.
 
 import bankai/types.{
-  type RelationType, type Relationship, type Task, type TaskStatus, Blocked,
-  Blocks, Closed, Completed, Duplicates, InProgress, Open, RelatesTo, RepliesTo,
-  Supersedes,
+  type RelationType, type Relationship, type Task, type TaskKind,
+  type TaskStatus, Blocked, Blocks, Bug, CausedBy, Chore, Closed, Completed,
+  ConditionalBlocks, Decision, DefaultTask, DiscoveredFrom, Duplicates, Epic,
+  Feature, Gate, InProgress, Open, ParentChild, RelatesTo, RepliesTo, Supersedes,
+  Tracks, Validates, WaitsFor, Wisp,
 }
 import gleam/bit_array
 import gleam/int
@@ -26,9 +28,10 @@ import gleam/string
 
 /// Bump if the encoding changes; it invalidates every prior content hash.
 /// v2 (G3): added the `labels` list.
-const canonical_version = 2
+/// v4 (workflow controls): added `defer_until` and `closure_reason`.
+/// v5 (parity Task 5): added explicit gate due/satisfaction state.
+const canonical_version = 5
 
-/// Encode a Task as a stable, unambiguous BitArray (excludes content_hash).
 pub fn canonical_bytes(task: Task) -> BitArray {
   <<canonical_version:size(8)>>
   |> put_str(task.id)
@@ -41,6 +44,12 @@ pub fn canonical_bytes(task: Task) -> BitArray {
   |> put_int(task.updated_at)
   |> put_relationships(task.relationships)
   |> put_labels(task.labels)
+  |> put_byte(kind_code(task.kind))
+  |> put_option_str(task.parent_id)
+  |> put_option_int(task.defer_until)
+  |> put_option_str(task.closure_reason)
+  |> put_option_int(task.gate_due)
+  |> put_byte(bool_code(task.gate_satisfied))
 }
 
 // --- segment builders ---
@@ -64,6 +73,13 @@ fn put_option_str(acc: BitArray, opt: Option(String)) -> BitArray {
   case opt {
     option.None -> <<acc:bits, 0:size(8)>>
     option.Some(s) -> put_str(<<acc:bits, 1:size(8)>>, s)
+  }
+}
+
+fn put_option_int(acc: BitArray, opt: Option(Int)) -> BitArray {
+  case opt {
+    option.None -> <<acc:bits, 0:size(8)>>
+    option.Some(value) -> put_int(<<acc:bits, 1:size(8)>>, value)
   }
 }
 
@@ -111,5 +127,32 @@ fn relation_code(r: RelationType) -> Int {
     Duplicates -> 3
     Supersedes -> 4
     RepliesTo -> 5
+    ParentChild -> 6
+    WaitsFor -> 7
+    DiscoveredFrom -> 8
+    Tracks -> 9
+    CausedBy -> 10
+    Validates -> 11
+    ConditionalBlocks -> 12
+  }
+}
+
+fn bool_code(value: Bool) -> Int {
+  case value {
+    True -> 1
+    False -> 0
+  }
+}
+
+fn kind_code(k: TaskKind) -> Int {
+  case k {
+    DefaultTask -> 1
+    Bug -> 2
+    Feature -> 3
+    Epic -> 4
+    Decision -> 5
+    Chore -> 6
+    Gate -> 7
+    Wisp -> 8
   }
 }

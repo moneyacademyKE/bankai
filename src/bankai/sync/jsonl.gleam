@@ -30,7 +30,8 @@ pub fn flush(
 }
 
 /// Load tasks from a JSONL file. A missing file or empty body yields [].
-/// Unparseable lines are skipped (never crash the supervisor — fault-tolerance NFR).
+/// Every non-empty record must decode and pass the content-address integrity
+/// check; a corrupt snapshot is rejected rather than partially loaded.
 pub fn load(from path: String) -> Result(List(Task), String) {
   case simplifile.read(from: path) {
     Ok(body) ->
@@ -39,18 +40,8 @@ pub fn load(from path: String) -> Result(List(Task), String) {
         _ ->
           body
           |> string.split("\n")
-          |> list.filter_map(fn(line) {
-            case string.trim(line) {
-              "" -> Error(Nil)
-              _ ->
-                case serde.task_from_json_string(line) {
-                  Ok(t) -> Ok(t)
-                  Error(_) -> Error(Nil)
-                  // skip unparseable line
-                }
-            }
-          })
-          |> Ok
+          |> list.filter(fn(line) { string.trim(line) != "" })
+          |> list.try_map(serde.task_from_json_string)
       }
     Error(_) -> Ok([])
     // missing file -> empty store

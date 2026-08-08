@@ -1,6 +1,6 @@
 # bankai
 
-> A shared, content-addressed task-memory graph for swarms of AI agents — fault-tolerant, zero-drift, built on Gleam + the BEAM VM.
+> A content-addressed task-memory graph for AI agents — durable local truth on Gleam + the BEAM VM, with derived retrieval powered by aarondb and explicit JSONL snapshot reconciliation between machines.
 
 ## What it is
 
@@ -38,138 +38,124 @@ first.
 
 ## Architecture
 
-The foundational decision is [ADR-0001](docs/adrs/0001-hybrid-content-addressing.md): **separate data identity from code mobility.**
+Bankai separates **operational truth**, **derived retrieval**, and **portable interchange**. The daemon is the single writer: it owns Bankai’s Mnesia tables and commits each head advance together with its immutable, content-addressed version. JSONL is no longer a live database; it is a deliberate export/import/backup/reconciliation format.
 
-- Task **state** → cheap SHA-256 hash (`gleamunison/identity.hash_bytes`) — fast, used constantly.
-- **Rules that travel between agents** → full Unison hashing + sync — powerful, used rarely.
+The foundational decisions are [ADR-0001](docs/adrs/0001-hybrid-content-addressing.md), [ADR-0004](docs/adrs/0004-daemon-owned-transactional-store.md), [ADR-0005](docs/adrs/0005-bankai-native-workflow-parity.md), and [ADR-0006](docs/adrs/0006-federation-is-explicit-replication.md): keep stable task identity distinct from mobile code and rebuildable indexes, pursue workflow capability without importing Beads’s storage model, and distinguish snapshot reconciliation from federation.
 
-bankai is intentionally lean — no web framework, no SQL engine, no heavy deps. Its layers:
+| Concern | Implementation | Authority / lifetime |
+|---|---|---|
+| Current task heads | Bankai-owned Mnesia `bankai_current_v2` | Durable source of truth, keyed by `{workspace, task_id}` |
+| Immutable task history | Bankai-owned Mnesia `bankai_versions_v2` | Durable content-addressed versions, keyed by `{workspace, content_hash}` |
+| Migration checkpoint | Bankai-owned Mnesia `bankai_meta_v2` | One-time legacy JSONL bootstrap state |
+| Mutations and fresh `list` / `ready` reads | UNIX-socket daemon → `daemon_store` → `mnesia_store` | Transactional daemon path |
+| Full-text, temporal, and vector retrieval | aarondb Datalog, BM25, HNSW, and vector helpers | Rebuildable in-memory projections; never authoritative |
+| Portable exchange | deterministic `.bankai/tasks.jsonl` | Explicit export, import, backup, and peer reconciliation |
+| Mobile rules + eval | `gleamunison/codebase` + `gleamunison/repl` | Allow-listed/sandboxed code mobility |
+| Graph readiness and cycle checks | bankai’s own pure graph module | Derived from current task heads |
+| MCP server | bankai’s thin stdio adapter | Protocol surface over Bankai commands |
 
-| Layer | Implementation |
-|---|---|
-| Content addressing | `gleamunison/identity` (SHA-256 over canonical bytes) |
-| Mobile rules + eval | `gleamunison/codebase` + `gleamunison/repl` (allow-listed, sandboxed — see [ADR-0003](docs/adrs/0003-mobile-rule-sandbox.md)) |
-| Graph (cycle-detect, topo sort, ready filter) | bankai's own ~40 LOC of pure functions |
-| Storage | bankai's own `dict`-backed store + `simplifile` JSONL |
-| Actors + supervision | `gleam_otp` (OneForOne supervisor tree) |
-| MCP server | bankai's own thin stdio adapter (no Mist — see gap-analysis research) |
-| Sync | bankai's own union-merge + git transport + TCP livesync |
+`aarondb` is deliberately **not** Bankai’s task database. It supplies derived views: Datalog-backed `history`/`analytics`, BM25 `search`, and HNSW retrieval for `duplicates --semantic` and `prime --query`. The default vector backend is a deterministic term-hash lexical embedding; it finds overlapping terminology, not genuine semantic synonyms.
 
-([aarondb](https://github.com/moneyacademyKE/gleamdb) was evaluated and **dropped** — see ADR-0001 amendment — because it drags lustre/mist/wisp web-framework deps for a graph problem that ~40 LOC of pure functions solves.)
+The legacy in-process actors remain useful for supervision and sequencing, but Mnesia transactions—not actor memory—are the correctness boundary. Native CLI and MCP task operations route through the daemon and do not fall back to JSONL when it is unavailable. Mnesia runtime files (`Mnesia.*/`) are ignored by Git; recover a workspace by starting the daemon to bootstrap/import its JSONL snapshot, or import a known-good `bankai backup` snapshot.
 
 ## Product surface
 
-Modeled on [beads](https://github.com/gastownhall/beads) (a Go/Dolt graph issue tracker): short hash-IDed tasks (`bk-a3f8`), full relation graph, JSON output envelopes, and mergeable sync across rigs.
+Modeled on [beads](https://github.com/gastownhall/beads) (a Go/Dolt graph issue tracker): short hash-IDed tasks (`bk-a3f8`), full relation graph, JSON output envelopes, and portable snapshot reconciliation. Bankai provides durable local concurrency; cross-machine consensus remains a separate replication decision.
 
 ```sh
 # — tasks —
-bankai init                                # set up .bankai/ workspace
-bankai create "title" [--label L]..        # create a task (id = hash prefix bk-XXXX)
-                   [--parent <id>]         #   subtask: bk-XXXX.N
-                   [--priority N]          #   default 1
-bankai show <id>                           # print a task by id
-bankai list [--label L]                    # all current tasks
-bankai ready [--label L]                   # unblocked tasks (topological filter)
-bankai count [--label L]                   # number of current tasks
-bankai blocked [--label L]                 # tasks in the Blocked state
-bankai epic <id>                           # roll up a parent's hierarchical children
-bankai cycles                              # report dependency edges on a cycle
-bankai duplicates                          # task pairs linked by a Duplicates relation
-bankai stale [--days N]                    # active tasks not updated in N days (drift)
+bankai init                                      # create .bankai/
+bankai create "title" [--label L]..              # create a task
+                   [--kind K] [--priority N]     # kinds: task|bug|feature|epic|decision|chore|gate|wisp
+                   [--parent <id>]                # explicit parent + hierarchical display id
+                   [--due <unix-seconds>]         # timer gate only
+                   [--satisfied]                  # create an already-open gate
+bankai show <id>                                 # task, children, unresolved blockers, deferred state
+bankai list [--label L]                          # all current heads
+bankai ready [--label L]                         # active, unblocked, non-deferred, open-gate tasks
+bankai ready --claim [assignee] [--label L]      # atomically select + claim ready work
+bankai count [--label L]                         # number of current heads
+bankai blocked [--label L]                       # tasks in the Blocked status
+bankai epic <id>                                 # immediate-child roll-up for a parent
+bankai cycles                                    # blocking dependency cycles
+bankai duplicates                                # explicit Duplicates relations
+bankai duplicates --semantic [--threshold N]     # lexical term-hash similarity candidates
+bankai stale [--days N]                          # active heads not updated in N days
+bankai doctor                                    # read-only task-store diagnostics
 
-# — relations —
-bankai dep add <id> <target> [--type T]    # blocks|relates-to|duplicates|supersedes|replies-to
+# — dependencies and consolidation —
+bankai dep add <id> <target> [--type T]          # typed relation; blocking types are cycle-checked
+bankai dep list <id>                             # typed outgoing relations
+bankai dep tree <id>                             # cycle-safe dependency tree
+bankai merge <duplicate-id> <canonical-id>       # transactional, idempotent duplicate consolidation
 
 # — mutations —
-bankai update <id> <status>                # open|in_progress|blocked|completed|closed
-bankai update <id> --claim [assignee]      # claim: in_progress + assignee (default: agent)
-bankai update <id> --label L               # add a label
-bankai update <id> --priority N            # set the priority
+bankai update <id> <status>                      # open|in_progress|blocked|completed|closed
+bankai update <id> --claim [assignee]            # claim one named open task
+bankai update <id> --label L                     # add a label
+bankai update <id> --priority N                  # set priority
+bankai update <id> --defer-until <unix-seconds>  # hide from ready until due
+bankai update <id> --close <reason>              # close with durable reason
+bankai update <gate-id> --satisfy-gate           # open a manual gate
 
-# — messaging —
-bankai msg add <task-id> <text> [--reply <msg-id>]   # post a threaded message
-bankai msg list <task-id>                   # messages for a task (newest first)
+# — derived retrieval —
+bankai history <id>                              # derive immutable version timeline
+bankai analytics                                 # derive status/cycle-time metrics
+bankai search <query>                            # BM25 full-text search over tasks and memories
+bankai prime                                     # emit agent-injection prompt with memories
+bankai prime --query "topic"                     # add lexical-vector task/memory context
 
-# — memory & compaction —
-bankai remember "insight"                  # persist a durable memory
-bankai memories                            # list persisted memories
-bankai prime                               # emit agent-injection prompt (with memories)
-bankai compact                             # retire closed tasks → archive.jsonl
+# — messages and memories (separate JSONL domains) —
+bankai msg add <task-id> <text> [--reply <msg-id>]
+bankai msg list <task-id>
+bankai remember "insight"
+bankai memories
+bankai compact                                   # retire closed tasks → archive.jsonl
+bankai gc                                        # alias of compact
 
-# — maintenance —
-bankai backup                              # copy tasks.jsonl to a timestamped .bak
-bankai export [--format md|json]           # render tasks as a checklist or JSON
-bankai gc                                  # retire closed tasks (alias of compact)
-
-# — sync —
-bankai sync [--from <path>]                # reconcile, or union-merge a remote tasks.jsonl
-bankai sync --peers <file>                 # pull + merge multiple peers (host:port per line)
-bankai sync-serve [--port N]               # TCP sync server (peers pull your tasks)
-bankai sync-pull --host H [--port N]       # pull + union-merge a running peer's tasks
+# — Mnesia ↔ JSONL interchange —
+bankai export                                   # write non-wisp immutable versions to .bankai/tasks.jsonl
+bankai backup                                   # write a timestamped JSONL snapshot from Mnesia
+bankai import <path>                            # transactionally import a portable JSONL snapshot
+bankai sync --from <path>                       # reconcile an external snapshot through Mnesia
+bankai sync-serve [--port N]                    # serve a current non-wisp peer snapshot over TCP
+bankai sync-pull --host H [--port N]            # pull + reconcile a peer snapshot
 
 # — infrastructure —
-bankai inspect <hash>                      # render task state for a content hash (audit)
-bankai hooks install                       # install a pre-commit hook (runs `bankai gc`)
-bankai serve                               # daemon (warm JSON-RPC UNIX-socket path)
-bankai mcp                                 # MCP stdio server (Claude Code / Cursor / any MCP client)
-bankai setup <claude|codex|cursor|factory|mux|opencode|windsurf>  # emit agent-instruction file
+bankai inspect <hash>                           # render an immutable task version by hash
+bankai hooks install                            # install a pre-commit hook (runs bankai gc)
+bankai serve                                    # daemon: Mnesia authority + transactional task commands
+bankai mcp                                      # MCP stdio server; task tools require the daemon
+bankai setup <claude|codex|cursor|factory|mux|opencode|windsurf>
 ```
 
-All command output is a JSON envelope — `{"ok": <json>}` on success, `{"error": "<msg>"}` on failure — so agents parse results uniformly.
+All command output is a JSON envelope — `{"ok": <json>}` on success, `{"error": "<msg>"}` on failure — so agents parse results uniformly. Task operations require `bankai serve`; memory, messaging, compaction, setup, and hooks remain local file operations.
 
 ## Status
 
-- [x] [ADR-0001](docs/adrs/0001-hybrid-content-addressing.md) — Accepted
+The local transactional release is implemented and verified. Task kinds, explicit parent links, typed dependency semantics, deferral, gate state, local-only wisps, duplicate consolidation, diagnostics, MCP routing, and Mnesia-backed task reads are present.
+
+- [x] [ADR-0001](docs/adrs/0001-hybrid-content-addressing.md) — Accepted; storage amendment points to ADR-0004
 - [x] [ADR-0002](docs/adrs/0002-canonical-serialization-versioning.md) — Accepted
-- [x] [ADR-0003](docs/adrs/0003-mobile-rule-sandbox.md) — Accepted (implemented)
-- [x] Pillar 1: `Task` type + canonical serialization + `task_hash` bridge
-- [x] Pillar 2: mobile-rule registry + sandbox (isolated / timeout / monitor) + `repl` eval
-- [x] CLI, supervision tree, UNIX-socket daemon, **MCP stdio server**
-- [x] CI (GitHub Actions: format-check → deps → test); gleamunison as a git dep
-- [x] v0.1.0 released; audit BUG-01..12 addressed (see [issue #1](https://github.com/moneyacademyKE/bankai/issues/1))
-- [x] Beads-parity roadmap (G1–G12) — **all phases shipped**
-- [x] Post-roadmap gap-closers: non-Blocks relations, priority, `count`/`blocked`, `setup cursor`, livesync
-- [x] **Remaining-gaps sweep (Phases A–G):** graph queries (`cycles`/`duplicates`/`stale`), `epic` roll-up, task-scoped threaded `msg`, maintenance (`backup`/`export`/`gc`), multi-peer `sync --peers`, `hooks install` + setup matrix, escript distribution
-- [x] **120 tests green**
+- [x] [ADR-0003](docs/adrs/0003-mobile-rule-sandbox.md) — Accepted and implemented
+- [x] Content-addressed immutable task versions and canonical encoding
+- [x] Daemon-owned Mnesia task heads/history; transactional task commands and MCP task routing
+- [x] JSONL export, import, backup, and snapshot reconciliation
+- [x] aarondb derived retrieval: Datalog history/analytics, BM25 search, lexical HNSW retrieval
+- [x] Task kinds, explicit parent links, typed dependencies, deferral, gates, local-only wisps, duplicate merge, and `doctor`
+- [x] CI format/build/test coverage; current suite: **149 passing, 0 failures**
 
-## Roadmap (Beads parity)
+### Deliberately not shipped
 
-All 12 items shipped, each in the lean Rich-Hickey-compatible form — the spec's
-heavy options (aarondb, `gleamunison/sync`, Mist) replaced by simpler proven
-precedents (git-bug, Letta/Anthropic tiering, mcp_toolkit-as-reference).
+- Cross-machine consensus, signed federation envelopes, remote dependency/gate facts, and Raft: designed in [ADR-0006](docs/adrs/0006-federation-is-explicit-replication.md), not implemented.
+- Transactional molecules/templates: deferred; no `molecule` command or data model exists yet.
+- Real embedding providers: the default vector backend is lexical term hashing, not synonym-aware embeddings.
+- A scalable persistent vector-index lifecycle: the per-command HNSW projection is best-effort and unsuitable for large boards; see the [benchmark](docs/projection-benchmark-2026-08-08.md).
+- External PR/CI gate adapters and vendor-coupled GitHub/GitLab synchronization.
 
-| Phase | Items | Status |
-|---|---|---|
-| **P0 — Make the graph usable** | G12 hash-prefix IDs · G9 `{"ok"}`/`{"error"}` envelopes · G2 `show` · G1 `dep add` · G8 `update --claim` | ✅ |
-| **P1 — Agent memory** | G4 `remember` + prime injection · G3 labels + `--label` filter | ✅ |
-| **P2 — Ecosystem** | G10 hierarchical IDs (`bk-a3f8.1`) · G7 `setup claude/codex` | ✅ |
-| **P3 — Scale** | G5 `compact` (dep-free tier+retire) · G6 `sync --from` + livesync · G11 `mcp` (thin stdio adapter) | ✅ |
+## Historical Beads roadmap
 
-### Post-roadmap closures
-
-| Closure | What |
-|---|---|
-| Non-Blocks relations | `dep add --type` — all 5 RelationTypes settable (was Blocks-only) |
-| Priority | `create --priority` + `update --priority` (field existed, now exposed) |
-| `count` / `blocked` | query commands with `--label` filter |
-| `setup cursor` | `.cursorrules` for Cursor IDE |
-| Livesync | `sync-serve` / `sync-pull` — bankai-native TCP peer sync |
-
-### Remaining-gaps sweep (Phases A–G)
-
-| Phase | What shipped (lean) | Beads's heavy option (rejected/deferred) |
-|---|---|---|
-| **A** graph queries | `cycles` / `duplicates` / `stale` | SQL via Dolt — **rejected** (JSONL + structured cmds) |
-| **B** epics | `epic <id>` roll-up over hierarchical IDs | a separate epic entity |
-| **C** messaging | content-addressed `Message` + `msg add/list --reply` | a new comms subsystem |
-| **D** maintenance | `backup` / `export md\|json` / `gc` | `batch`/`apply` + GitHub bidirectional |
-| **E** federation | `sync --peers <file>` multi-peer | mDNS auto-discovery — **deferred** |
-| **F** hooks + setup | `hooks install` + factory/mux/opencode/windsurf | — |
-| **G** distribution | escript target + `install.sh` | full npm/PyPI packaging (BEAM runtime = honest tradeoff) |
-
-GitHub/GitLab **bidirectional** sync: **rejected as core** (couples bankai to an
-external data model + auth + HTTP) — one-way `export md` covers the export half.
-Full remaining detail in `gap_analysis_bankai_vs_beads.md` §9.
+The original G1–G12 roadmap and later A–G sweep are historical delivery records, not a claim of full current Beads parity. Bankai now has a stronger local transactional boundary and retrieval features Beads lacks, but it intentionally does not offer Dolt-style branching, SQL queries, or distributed consensus. See [the capability matrix](gap_analysis_bankai_vs_beads.md) and ADRs 0005–0006 for the current boundary.
 
 ## License
 

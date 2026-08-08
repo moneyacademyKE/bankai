@@ -19,13 +19,18 @@ import bankai/sync/merge
 import bankai/sync_peer
 import bankai/time
 import bankai/types.{
-  Blocked, Blocks, Closed, Completed, Duplicates, InProgress, Open,
+  type RelationType, type Task, type TaskKind, Blocked, Blocks, Closed,
+  Completed, DefaultTask, Duplicates, InProgress, Open, ParentChild,
+  Relationship, Task,
 }
+import bankai/vector_bridge
 import gleam/dict.{type Dict}
+import gleam/float
 import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option}
+import gleam/result
 import gleam/string
 import simplifile
 
@@ -45,6 +50,8 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     ["count", ..rest] -> envelope(count_cmd(tasks_path, rest))
     ["blocked", ..rest] -> envelope(blocked_cmd(tasks_path, rest))
     ["cycles", ..] -> envelope(cycles_cmd(tasks_path))
+    ["duplicates", "--semantic", ..rest] ->
+      envelope(semantic_duplicates_cmd(tasks_path, rest))
     ["duplicates", ..] -> envelope(duplicates_cmd(tasks_path))
     ["stale", ..rest] -> envelope(stale_cmd(tasks_path, rest))
     // Phase 1 — aarondb temporal analytics over the content-addressed history
@@ -85,6 +92,8 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     ["remember", text, ..] -> envelope(remember_cmd(workspace, text))
     ["memories", ..] -> envelope(memories_cmd(workspace))
     ["inspect", hash, ..] -> envelope(inspect_cmd(tasks_path, hash))
+    ["prime", "--query", query, ..] ->
+      envelope(Ok(json.string(prime_query_text(workspace, query))))
     ["prime", ..] -> envelope(Ok(json.string(prime_text(workspace))))
     // G7 — emit agent-instruction file (claude -> CLAUDE.md, codex -> AGENTS.md)
     // Phase F — git hooks + setup matrix
@@ -112,7 +121,10 @@ fn envelope(r: Result(json.Json, String)) -> String {
   }
 }
 
-// --- commands ---
+/// Render a normal Bankai JSON error envelope for process-boundary failures.
+pub fn error_envelope(message: String) -> String {
+  json.to_string(json.object([#("error", json.string(message))]))
+}
 
 fn init_cmd(workspace: String) -> Result(json.Json, String) {
   let _ = jsonl.ensure_dir(workspace)
@@ -129,6 +141,7 @@ fn create_cmd(
   let now = time.now()
   let labels = parse_labels(rest)
   let priority = parse_priority(rest)
+  let kind = parse_kind(rest)
   case parse_parent(rest) {
     // G10: hierarchical subtask id "<parent>.<n>" (parent must exist).
     option.Some(parent_id) -> {
@@ -136,27 +149,48 @@ fn create_cmd(
       case store.find_by_id(index, parent_id) {
         Error(Nil) -> Error("no such parent task: " <> parent_id)
         Ok(_) -> {
-          let id = next_child_id(index, parent_id)
-          let task =
-            builder.build(
-              id,
-              title,
-              "",
-              Open,
-              option.None,
-              priority,
-              now,
-              now,
-              [],
+          // Check for parent hierarchy cycle
+          let children =
+            index
+            |> store.current_tasks()
+            |> list.filter(fn(t) { string.starts_with(t.id, parent_id <> ".") })
+          case
+            graph.would_cycle_parent_chain(
+              store.current_tasks(index),
+              // We need an id — use a placeholder that won't exist yet
+              parent_id <> ".__probe__",
+              parent_id,
             )
-          // build defaults labels: []; apply any --label via a rehashed spread.
-          let task = case labels {
-            [] -> task
-            _ -> builder.update(task, fn(t) { types.Task(..t, labels: labels) })
+          {
+            True ->
+              Error(
+                "parent relation would create a hierarchy cycle: " <> parent_id,
+              )
+            False -> {
+              let id = next_child_id(index, parent_id)
+              let rels = [
+                Relationship(target_id: parent_id, relation: ParentChild),
+              ]
+              let task =
+                builder.build_full(
+                  id,
+                  title,
+                  "",
+                  Open,
+                  option.None,
+                  priority,
+                  now,
+                  now,
+                  rels,
+                  labels,
+                  option.Some(parent_id),
+                  kind,
+                )
+              let index = store.put(index, task)
+              let _ = jsonl.flush(store.list(index), to: tasks_path)
+              Ok(serde.task_to_json(task))
+            }
           }
-          let index = store.put(index, task)
-          let _ = jsonl.flush(store.list(index), to: tasks_path)
-          Ok(serde.task_to_json(task))
         }
       }
     }
@@ -173,6 +207,8 @@ fn create_cmd(
           now,
           [],
           labels,
+          option.None,
+          kind,
         )
       let index = store.put(load_store(tasks_path), task)
       let _ = jsonl.flush(store.list(index), to: tasks_path)
@@ -471,6 +507,103 @@ fn search_cmd(
   )
 }
 
+// Semantic duplicate candidates are deliberately separate from the existing
+// explicit Duplicates relation: similarity is a lead for human/agent review,
+// not a fact bankai should assert automatically.
+fn semantic_duplicates_cmd(
+  tasks_path: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  let threshold = parse_threshold(rest, 0.78)
+  let tasks = store.current_tasks(load_store(tasks_path))
+  let docs =
+    list.map(tasks, fn(t) {
+      vector_bridge.Document("task", t.id, t.title <> " " <> t.description)
+    })
+  let candidates =
+    list.flat_map(tasks, fn(task) {
+      let query = task.title <> " " <> task.description
+      vector_bridge.search(docs, query, threshold, 6)
+      |> list.filter(fn(m) { m.kind == "task" && m.id != task.id })
+      |> list.map(fn(m) {
+        json.object([
+          #("source", json.string(task.id)),
+          #("candidate", json.string(m.id)),
+          #("score", json.float(m.score)),
+          #("backend", json.string(vector_bridge.backend())),
+        ])
+      })
+    })
+  Ok(json.array(candidates, of: fn(x) { x }))
+}
+
+fn parse_threshold(args: List(String), default: Float) -> Float {
+  case args {
+    ["--threshold", value, ..] ->
+      case float.parse(value) {
+        Ok(n) -> n
+        Error(Nil) -> default
+      }
+    [_, ..rest] -> parse_threshold(rest, default)
+    [] -> default
+  }
+}
+
+// Phase 3 — semantic query context. Tasks and memories are indexed together,
+// but the returned prompt names the backend and keeps the existing base prompt.
+fn prime_query_text(workspace: String, query: String) -> String {
+  let tasks_path = workspace <> "/tasks.jsonl"
+  let tasks = store.current_tasks(load_store(tasks_path))
+  let task_docs =
+    list.map(tasks, fn(t) {
+      vector_bridge.Document("task", t.id, t.title <> " " <> t.description)
+    })
+  let mem_docs = case memory.load(from: workspace <> "/memories.jsonl") {
+    Ok(mems) ->
+      list.map(mems, fn(m) {
+        vector_bridge.Document("memory", store.hash_key(m.content_hash), m.text)
+      })
+    Error(_) -> []
+  }
+  let matches =
+    vector_bridge.search(list.append(task_docs, mem_docs), query, 0.18, 12)
+  let context =
+    matches
+    |> list.map(fn(m) {
+      "- ["
+      <> m.kind
+      <> ":"
+      <> m.id
+      <> "] "
+      <> match_text(m, task_docs, mem_docs)
+    })
+    |> string.join("\n")
+  let base = prime_text(workspace)
+  case context {
+    "" -> base <> "\n\n## Semantic context\nNo matches for: " <> query
+    _ ->
+      base
+      <> "\n\n## Semantic context ("
+      <> vector_bridge.backend()
+      <> ")\nQuery: "
+      <> query
+      <> "\n"
+      <> context
+  }
+}
+
+fn match_text(
+  m: vector_bridge.Match,
+  tasks: List(vector_bridge.Document),
+  memories: List(vector_bridge.Document),
+) -> String {
+  let docs = list.append(tasks, memories)
+  case list.find(docs, fn(d) { d.kind == m.kind && d.id == m.id }) {
+    Ok(vector_bridge.Document(_, _, text)) -> text
+    Error(Nil) -> ""
+  }
+}
+
 // G2 — find by id, print JSON.
 fn show_cmd(tasks_path: String, id: String) -> Result(json.Json, String) {
   case store.find_by_id(load_store(tasks_path), id) {
@@ -497,7 +630,7 @@ fn epic_cmd(tasks_path: String, id: String) -> Result(json.Json, String) {
         list.fold(children, #(0, 0, 0, 0, 0), fn(acc, t) {
           let #(open, in_progress, blocked, completed, closed) = acc
           case t.status {
-            types.Open -> #(open + 1, in_progress, blocked, completed, closed)
+            Open -> #(open + 1, in_progress, blocked, completed, closed)
             InProgress -> #(open, in_progress + 1, blocked, completed, closed)
             Blocked -> #(open, in_progress, blocked + 1, completed, closed)
             Completed -> #(open, in_progress, blocked, completed + 1, closed)
@@ -590,7 +723,7 @@ fn update_cmd(
         Ok(task) -> {
           let updated =
             builder.update(task, fn(t) {
-              types.Task(..t, status: new_status, updated_at: time.now())
+              Task(..t, status: new_status, updated_at: time.now())
             })
           let index = store.put(index, updated)
           let _ = jsonl.flush(store.list(index), to: tasks_path)
@@ -619,7 +752,7 @@ fn claim_cmd(
     Ok(task) -> {
       let updated =
         builder.update(task, fn(t) {
-          types.Task(
+          Task(
             ..t,
             status: InProgress,
             assignee: option.Some(assignee),
@@ -649,11 +782,7 @@ fn label_add_cmd(
             // idempotent — adding an existing label is a no-op (hash unchanged)
             True -> t
             False ->
-              types.Task(
-                ..t,
-                labels: [label, ..t.labels],
-                updated_at: time.now(),
-              )
+              Task(..t, labels: [label, ..t.labels], updated_at: time.now())
           }
         })
       let index = store.put(index, updated)
@@ -678,7 +807,7 @@ fn priority_update_cmd(
         Ok(task) -> {
           let updated =
             builder.update(task, fn(t) {
-              types.Task(..t, priority: priority, updated_at: time.now())
+              Task(..t, priority: priority, updated_at: time.now())
             })
           let index = store.put(index, updated)
           let _ = jsonl.flush(store.list(index), to: tasks_path)
@@ -692,25 +821,13 @@ fn priority_update_cmd(
 
 // G4 — bankai remember "insight": content-address a memory, persist it, return it.
 fn remember_cmd(workspace: String, text: String) -> Result(json.Json, String) {
-  let _ = jsonl.ensure_dir(workspace)
-  let path = workspace <> "/memories.jsonl"
-  let existing = case memory.load(from: path) {
-    Ok(m) -> m
-    Error(_) -> []
-  }
-  let mem = memory.new(text, time.now())
-  let _ = memory.flush([mem, ..existing], to: path)
-  Ok(memory.memory_to_json(mem))
+  memory.remember(workspace, text) |> result.map(memory.memory_to_json)
 }
 
 // G4 — bankai memories: list all persisted memories.
 fn memories_cmd(workspace: String) -> Result(json.Json, String) {
-  let path = workspace <> "/memories.jsonl"
-  let mems = case memory.load(from: path) {
-    Ok(m) -> m
-    Error(_) -> []
-  }
-  Ok(json.array(mems, of: memory.memory_to_json))
+  memory.all(workspace)
+  |> result.map(fn(memories) { json.array(memories, of: memory.memory_to_json) })
 }
 
 fn inspect_cmd(tasks_path: String, hash: String) -> Result(json.Json, String) {
@@ -746,13 +863,17 @@ fn sync_cmd(
                 [host, port_str, ..] -> {
                   case int.parse(port_str) {
                     Ok(port) -> {
-                      case sync_peer.pull(workspace, host, port) {
+                      case sync_peer.fetch(host, port) {
                         Error(msg) -> [
                           #("error", host <> ":" <> port_str, msg),
                           ..reports
                         ]
-                        Ok(n) -> [
-                          #("pulled", host <> ":" <> port_str, int.to_string(n)),
+                        Ok(snapshot) -> [
+                          #(
+                            "fetched",
+                            host <> ":" <> port_str,
+                            int.to_string(list.length(snapshot.versions)),
+                          ),
                           ..reports
                         ]
                       }
@@ -774,7 +895,7 @@ fn sync_cmd(
             |> list.map(fn(r) {
               let #(kind, peer, msg) = r
               case kind {
-                "pulled" -> "pulled " <> msg <> " task(s) from " <> peer
+                "fetched" -> "fetched " <> msg <> " task(s) from " <> peer
                 "error" -> "error from " <> peer <> ": " <> msg
                 _ -> peer <> ": " <> msg
               }
@@ -818,27 +939,28 @@ fn sync_cmd(
   }
 }
 
-// G6 livesync — bankai sync-pull: connect to a running peer's sync server
-// (bankai sync-serve), pull its task set over TCP, union-merge into local.
+// Transport-only helper retained for direct callers. The main CLI routes
+// sync-pull through the daemon, which performs the transactional import.
 fn sync_pull_cmd(
-  workspace: String,
+  _workspace: String,
   rest: List(String),
 ) -> Result(json.Json, String) {
   let host = parse_host(rest)
   let port = sync_peer.parse_port(rest, sync_peer.default_port)
-  case sync_peer.pull(workspace, host, port) {
-    Error(msg) -> Error(msg)
-    Ok(n) ->
-      Ok(json.string(
-        "pulled "
-        <> int.to_string(n)
-        <> " task(s) from "
-        <> host
-        <> ":"
-        <> int.to_string(port)
-        <> " (union-merged)",
-      ))
-  }
+  sync_peer.fetch(host, port)
+  |> result.map(fn(snapshot) {
+    json.string(
+      "fetched "
+      <> int.to_string(list.length(snapshot.versions))
+      <> " immutable version(s) and "
+      <> int.to_string(list.length(snapshot.heads))
+      <> " head(s) from "
+      <> host
+      <> ":"
+      <> int.to_string(port)
+      <> "; import requires the daemon",
+    )
+  })
 }
 
 // G5 — bankai compact: retire Closed tasks into archive.jsonl + a memory.
@@ -1016,7 +1138,14 @@ fn next_child_id(index: store.Store, parent_id: String) -> String {
   parent_id <> "." <> int.to_string(next)
 }
 
-/// G10: the value after the first `--parent`, if any.
+fn parse_kind(args: List(String)) -> TaskKind {
+  case args {
+    ["--kind", value, ..] -> serde.kind_from_string(value)
+    [_, ..rest] -> parse_kind(rest)
+    [] -> DefaultTask
+  }
+}
+
 fn parse_parent(args: List(String)) -> Option(String) {
   case args {
     [] -> option.None
@@ -1048,10 +1177,7 @@ fn parse_label_filter(args: List(String)) -> Option(String) {
   }
 }
 
-fn filter_by_label(
-  tasks: List(types.Task),
-  label: Option(String),
-) -> List(types.Task) {
+fn filter_by_label(tasks: List(Task), label: Option(String)) -> List(Task) {
   case label {
     option.None -> tasks
     option.Some(l) -> list.filter(tasks, fn(t) { list.contains(t.labels, l) })
@@ -1071,6 +1197,8 @@ pub fn usage() -> String {
   <> "  blocked [--label L]           list blocked tasks (JSON array)\n"
   <> "  cycles                        report dependency edges on a cycle\n"
   <> "  duplicates                    list task pairs linked by Duplicates\n"
+  <> "  duplicates --semantic [--threshold N]\n"
+  <> "                                list similarity candidates (review only)\n"
   <> "  stale [--days N]              active tasks not updated in N days (drift)\n"
   <> "  history <id>                  status timeline for a task (aarondb)\n"
   <> "  analytics                     counts by status + avg cycle time (aarondb)\n"
@@ -1092,12 +1220,12 @@ pub fn usage() -> String {
   <> "  memories                      list persisted memories\n"
   <> "  inspect <hash>                render the task for a content hash\n"
   <> "  compact                       retire closed tasks into archive.jsonl\n"
-  <> "  prime                         emit agent-injection prompt (with memories)\n"
+  <> "  prime [--query <text>]       emit agent prompt, optionally with relevant context\n"
   <> "  setup <claude|codex|cursor>   write agent-instruction file\n"
-  <> "  sync [--from <path>]          reconcile, or union-merge a remote tasks.jsonl\n"
-  <> "  sync --peers <file>         pull from multiple peers (host:port per line)\n"
-  <> "  sync-serve [--port N]         run the TCP sync server (peers pull your tasks)\n"
-  <> "  sync-pull --host H [--port N] pull + union-merge a running peer's tasks\n"
+  <> "  sync [--from <path>]          import a portable JSONL snapshot\n"
+  <> "  sync --peers <file>           replicate immutable history from peers\n"
+  <> "  sync-serve [--port N]         serve immutable history + current heads\n"
+  <> "  sync-pull --host H [--port N] replicate immutable history from a peer\n"
   <> "  init                          initialize .bankai/\n"
   <> "  serve                         run the daemon (warm JSON-RPC socket path)\n\n"
   <> "all command output is a JSON envelope: {\"ok\": ...} / {\"error\": ...}"
@@ -1120,7 +1248,7 @@ pub fn agent_instructions() -> String {
   <> "6. `bankai create <title> [--label L].. [--parent <id>] [--priority N]` — new task/subtask.\n"
   <> "7. `bankai remember \"insight\"` — persist a durable note for future runs.\n"
   <> "8. `bankai compact` — retire closed tasks (keeps `prime` bounded).\n"
-  <> "9. `bankai prime` — re-read this workflow + recent memories.\n\n"
+  <> "9. `bankai prime [--query \"topic\"]` — retrieve relevant context when needed.\n\n"
   <> "All command output is JSON: {\"ok\": ...} / {\"error\": ...}. A `closed` task\n"
   <> "(won't-do) does NOT satisfy a dependency — only `completed` does."
 }

@@ -5,6 +5,8 @@
 //// (text + created_at; content_hash excluded, just like Task). Lives in
 //// .bankai/memories.jsonl alongside tasks.jsonl.
 
+import bankai/sync/jsonl
+import bankai/time
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/int
@@ -77,6 +79,35 @@ pub fn memory_from_json_string(s: String) -> Result(Memory, String) {
     Ok(m) -> Ok(m)
     Error(_) -> Error("memory decode failed")
   }
+}
+
+// --- Shared memory operations ------------------------------------------------
+//
+// These are the one persistence boundary for both direct CLI use and daemon
+// requests. Task authority lives in Mnesia; memories are intentionally a
+// separate portable JSONL domain.
+
+pub fn remember(workspace: String, text: String) -> Result(Memory, String) {
+  case jsonl.ensure_dir(workspace) {
+    Error(_) -> Error("could not create memory workspace: " <> workspace)
+    Ok(_) -> {
+      let path = workspace <> "/memories.jsonl"
+      case load(from: path) {
+        Error(error) -> Error(error)
+        Ok(existing) -> {
+          let mem = new(text, time.now())
+          case flush([mem, ..existing], to: path) {
+            Ok(_) -> Ok(mem)
+            Error(_) -> Error("could not persist memories: " <> path)
+          }
+        }
+      }
+    }
+  }
+}
+
+pub fn all(workspace: String) -> Result(List(Memory), String) {
+  load(from: workspace <> "/memories.jsonl")
 }
 
 // --- JSONL persistence ---

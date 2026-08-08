@@ -1,16 +1,17 @@
-//// G11 — MCP (Model Context Protocol) stdio server: a thin adapter over the
-//// existing CLI dispatch. No Mist, no rebuild — bankai's commands ARE the tools.
+//// G11 — MCP (Model Context Protocol) stdio server. It shares Bankai's daemon
+//// boundary for task operations; it never invokes JSONL-backed task handlers.
 ////
 //// Transport: newline-delimited JSON-RPC over stdio (the MCP spec's only stdio
 //// framing — "Messages are delimited by newlines, and MUST NOT contain embedded
-//// newlines"). Each tools/call routes to `cli.run_in` and wraps the {"ok"}/
-//// {"error"} envelope as MCP text content.
+//// newlines"). Each tools/call wraps the daemon's existing {"ok"}/{"error"}
+//// envelope as MCP text content.
 ////
 //// This is the Hickey-compatible "compose don't build" path: mcp_toolkit exists
 //// on Hex but hard-depends on Mist (the web-framework weight aarondb was dropped
-//// for) — so for the stdio path we reuse bankai's own dispatch instead.
+//// for), so the stdio path reuses Bankai's daemon protocol instead.
 
-import bankai/cli
+import bankai/socket
+import bankai/version
 import gleam/dynamic/decode
 import gleam/io
 import gleam/json
@@ -68,7 +69,7 @@ fn initialize_result() -> json.Json {
       "serverInfo",
       json.object([
         #("name", json.string("bankai")),
-        #("version", json.string("0.1.0")),
+        #("version", json.string(version.current)),
       ]),
     ),
   ])
@@ -80,12 +81,11 @@ fn tools_list_result() -> json.Json {
 
 fn tools_call(workspace: String, line: String) -> json.Json {
   let #(name, args) = parse_call(line)
-  // Map the tool name to a bankai argv prefix (dep_add -> ["dep","add"]).
-  let argv = case name {
-    "dep_add" -> list.append(["dep", "add"], args)
-    other -> list.append([other], args)
+  let #(method, params) = daemon_request(name, args)
+  let envelope = case socket.client_request(workspace, method, params) {
+    Ok(value) -> value
+    Error(_) -> daemon_required_envelope(name)
   }
-  let envelope = cli.run_in(workspace, argv)
   let is_error = string.starts_with(envelope, "{\"error\"")
   json.object([
     #("content", json.array([text_content(envelope)], of: fn(j) { j })),
@@ -93,11 +93,68 @@ fn tools_call(workspace: String, line: String) -> json.Json {
   ])
 }
 
+fn daemon_request(name: String, args: List(String)) -> #(String, List(String)) {
+  case name {
+    "gate_satisfy" -> #("update", [id_from_args(args), "--satisfy-gate"])
+    "wisp_create" -> #("create", args_with_kind(args))
+    "dep_add" -> #("dep_add", args)
+    "dep_list" -> #("dep_list", args)
+    "dep_tree" -> #("dep_tree", args)
+    "doctor" -> #("doctor", args)
+    other -> #(other, args)
+  }
+}
+
+fn id_from_args(args: List(String)) -> String {
+  case args {
+    [id, ..] -> id
+    [] -> ""
+  }
+}
+
+fn args_with_kind(args: List(String)) -> List(String) {
+  list.append(args, ["--kind", "wisp"])
+}
+
+fn daemon_required_envelope(name: String) -> String {
+  case is_task_operation(name) {
+    True ->
+      "{\"error\":\"bankai daemon required for task operations; run bankai serve\"}"
+    False ->
+      "{\"error\":\"MCP tool is unavailable without a daemon: " <> name <> "\"}"
+  }
+}
+
+fn is_task_operation(name: String) -> Bool {
+  case name {
+    "ready"
+    | "list"
+    | "show"
+    | "create"
+    | "update"
+    | "dep_add"
+    | "dep_list"
+    | "dep_tree"
+    | "doctor"
+    | "merge"
+    | "inspect"
+    | "gate_satisfy"
+    | "wisp_create"
+    | "remember"
+    | "memories"
+    | "compact" -> True
+    _ -> False
+  }
+}
+
 // --- tool catalog ---
 
 fn tools() -> List(json.Json) {
   [
-    tool("ready", "List unblocked tasks. Optional: args [\"--label\", \"L\"]."),
+    tool(
+      "ready",
+      "List unblocked tasks, or atomically claim one. args: [\"--label\", \"L\"] | [\"--claim\", \"assignee\", \"--label\", \"L\"].",
+    ),
     tool("list", "List all current tasks. Optional: args [\"--label\", \"L\"]."),
     tool("show", "Show a task by id. args: [\"bk-xxxx\"]."),
     tool("create", "Create a task. args: [\"title\", \"--label\", \"L\"...]."),
@@ -106,13 +163,24 @@ fn tools() -> List(json.Json) {
       "Update a task. args: [\"bk-xxxx\", \"completed\"] | [\"bk-xxxx\", \"--claim\"] | [\"bk-xxxx\", \"--label\", \"L\"].",
     ),
     tool(
-      "dep_add",
-      "Mark a task blocked by a blocker. args: [\"bk-task\", \"bk-blocker\"].",
+      "dep_list",
+      "List typed dependency edges for a task. args: [\"bk-task\"].",
+    ),
+    tool(
+      "dep_tree",
+      "Return a cycle-safe dependency tree for a task. args: [\"bk-task\"].",
+    ),
+    tool("doctor", "Run read-only task-store integrity diagnostics. args: []."),
+    tool(
+      "merge",
+      "Consolidate a reviewed duplicate into a canonical task. args: [\"duplicate-id\", \"canonical-id\"].",
     ),
     tool("remember", "Persist a durable insight. args: [\"insight text\"]."),
     tool("memories", "List persisted memories."),
     tool("inspect", "Inspect a task by content hash. args: [\"<hex>\"]."),
     tool("compact", "Retire closed tasks into the archive."),
+    tool("gate_satisfy", "Satisfy a manual gate. args: [\"gate-id\"]."),
+    tool("wisp_create", "Create a local-only wisp. args: [\"title\"]."),
   ]
 }
 

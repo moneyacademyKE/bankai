@@ -45,7 +45,32 @@ pub fn handle_line_create_then_ready_test() {
   |> should.be_true
 }
 
-/// Malformed input becomes an error envelope, not a crash.
+/// Daemon dispatch owns the MCP memory surface; these operations must not fall
+/// through to the JSONL-backed CLI dispatcher.
+pub fn daemon_memory_operations_test() {
+  let _ = socket.handle_request(ws, socket.Request("init", []))
+
+  case
+    socket.handle_request(ws, socket.Request("remember", ["daemon insight"]))
+  {
+    socket.OkResponse(value) ->
+      value |> string.contains("daemon insight") |> should.be_true
+    socket.ErrorResponse(_) -> should.be_true(False)
+  }
+
+  case socket.handle_request(ws, socket.Request("memories", [])) {
+    socket.OkResponse(value) ->
+      value |> string.contains("daemon insight") |> should.be_true
+    socket.ErrorResponse(_) -> should.be_true(False)
+  }
+
+  case socket.handle_request(ws, socket.Request("compact", [])) {
+    socket.OkResponse(value) ->
+      value |> string.contains("nothing to compact") |> should.be_true
+    socket.ErrorResponse(_) -> should.be_true(False)
+  }
+}
+
 pub fn handle_line_parse_error_test() {
   socket.handle_line(ws, "not json")
   |> string.contains("\"error\"")

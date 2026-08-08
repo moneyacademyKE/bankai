@@ -35,6 +35,20 @@ pub fn content_hash_valid(task: Task) -> Bool {
   hash_equal(task_hash(task), task.content_hash)
 }
 
+/// Verify a stored Task at an authority boundary. A task's claimed identity
+/// must be the hash of its canonical content; callers must reject mismatches
+/// rather than silently assigning a new identity to untrusted data.
+pub fn validate(task: Task) -> Result(Task, String) {
+  case content_hash_valid(task) {
+    True -> Ok(task)
+    False ->
+      Error(
+        "task content_hash does not match canonical task content for id "
+        <> task.id,
+      )
+  }
+}
+
 /// Short human-readable id in beads style: "bk-" + first 4 hex chars.
 pub fn task_short_id(task: Task) -> String {
   "bk-" <> string.slice(hash_to_debug_string(task_hash(task)), 0, 4)

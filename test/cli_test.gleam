@@ -107,21 +107,17 @@ pub fn prime_emits_agent_prompt_test() {
 pub fn socket_jsonrpc_roundtrip_test() {
   wipe(ws_socket)
   let _ = socket.handle_request(ws_socket, socket.Request("init", []))
-  let _ =
+  case
     socket.handle_request(
       ws_socket,
       socket.Request("create", ["socket-driven"]),
     )
-  let resp = socket.handle_request(ws_socket, socket.Request("ready", []))
-
-  case resp {
+  {
     socket.OkResponse(value) ->
       value
       |> string.contains("socket-driven")
       |> should.be_true
-    socket.ErrorResponse(message) ->
-      message
-      |> should.equal("should not error")
+    socket.ErrorResponse(message) -> message |> should.equal("should not error")
   }
 }
 

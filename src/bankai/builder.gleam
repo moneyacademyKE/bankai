@@ -2,7 +2,10 @@
 //// content_hash is always correct. Reused by graph/actor/CLI layers.
 
 import bankai/ast_bridge
-import bankai/types.{type Relationship, type Task, type TaskStatus, Task}
+import bankai/types.{
+  type Relationship, type Task, type TaskKind, type TaskStatus, DefaultTask,
+  Task,
+}
 import gleam/option.{type Option}
 import gleam/string
 import gleamunison/identity
@@ -18,7 +21,36 @@ pub fn build(
   updated_at: Int,
   relationships: List(Relationship),
 ) -> Task {
-  // G3: labels default to [] — existing callers are unchanged.
+  build_full(
+    id,
+    title,
+    description,
+    status,
+    assignee,
+    priority,
+    created_at,
+    updated_at,
+    relationships,
+    [],
+    option.None,
+    DefaultTask,
+  )
+}
+
+pub fn build_full(
+  id: String,
+  title: String,
+  description: String,
+  status: TaskStatus,
+  assignee: Option(String),
+  priority: Int,
+  created_at: Int,
+  updated_at: Int,
+  relationships: List(Relationship),
+  labels: List(String),
+  parent_id: Option(String),
+  kind: TaskKind,
+) -> Task {
   let draft =
     Task(
       id: id,
@@ -30,8 +62,14 @@ pub fn build(
       created_at: created_at,
       updated_at: updated_at,
       relationships: relationships,
-      labels: [],
+      labels: labels,
       content_hash: identity.hash_bytes(<<>>),
+      parent_id: parent_id,
+      kind: kind,
+      defer_until: option.None,
+      closure_reason: option.None,
+      gate_due: option.None,
+      gate_satisfied: False,
     )
   ast_bridge.rehash(draft)
 }
@@ -69,6 +107,8 @@ pub fn build_with_derived_id(
   updated_at: Int,
   relationships: List(Relationship),
   labels: List(String),
+  parent_id: Option(String),
+  kind: TaskKind,
 ) -> Task {
   let draft =
     Task(
@@ -83,6 +123,12 @@ pub fn build_with_derived_id(
       relationships: relationships,
       labels: labels,
       content_hash: identity.hash_bytes(<<>>),
+      parent_id: parent_id,
+      kind: kind,
+      defer_until: option.None,
+      closure_reason: option.None,
+      gate_due: option.None,
+      gate_satisfied: False,
     )
   let draft = ast_bridge.rehash(draft)
   let id = short_id_from_hash(draft.content_hash)
@@ -99,6 +145,12 @@ pub fn build_with_derived_id(
       relationships: relationships,
       labels: labels,
       content_hash: identity.hash_bytes(<<>>),
+      parent_id: parent_id,
+      kind: kind,
+      defer_until: option.None,
+      closure_reason: option.None,
+      gate_due: option.None,
+      gate_satisfied: False,
     )
   ast_bridge.rehash(final)
 }
