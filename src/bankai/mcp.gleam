@@ -101,6 +101,8 @@ fn daemon_request(name: String, args: List(String)) -> #(String, List(String)) {
     "dep_list" -> #("dep_list", args)
     "dep_tree" -> #("dep_tree", args)
     "doctor" -> #("doctor", args)
+    "cluster_status" -> #("cluster_status", args)
+    "platform_status" -> #("cluster_status", args)
     other -> #(other, args)
   }
 }
@@ -136,6 +138,8 @@ fn is_task_operation(name: String) -> Bool {
     | "dep_list"
     | "dep_tree"
     | "doctor"
+    | "cluster_status"
+    | "platform_status"
     | "merge"
     | "inspect"
     | "gate_satisfy"
@@ -171,6 +175,14 @@ fn tools() -> List(json.Json) {
       "Return a cycle-safe dependency tree for a task. args: [\"bk-task\"].",
     ),
     tool("doctor", "Run read-only task-store integrity diagnostics. args: []."),
+    tool(
+      "cluster_status",
+      "Report local/cluster mode, transport admission, leader, quorum, ReadIndex, leases, projections, and recovery state. args: [].",
+    ),
+    tool(
+      "platform_status",
+      "Alias for cluster_status with transport and recovery diagnostics. args: [].",
+    ),
     tool(
       "merge",
       "Consolidate a reviewed duplicate into a canonical task. args: [\"duplicate-id\", \"canonical-id\"].",

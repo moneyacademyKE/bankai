@@ -31,6 +31,7 @@ fn ffi_put_new(
   id: String,
   hash: String,
   json: String,
+  operation: String,
 ) -> Result(String, String)
 
 @external(erlang, "bankai_mnesia_ffi", "compare_and_put")
@@ -40,6 +41,18 @@ fn ffi_compare_and_put(
   expected_hash: String,
   hash: String,
   json: String,
+  operation: String,
+) -> Result(String, String)
+
+@external(erlang, "bankai_mnesia_ffi", "compare_and_put_committed")
+fn ffi_compare_and_put_committed(
+  workspace: String,
+  command_id: String,
+  id: String,
+  expected_hash: String,
+  hash: String,
+  json: String,
+  operation: String,
 ) -> Result(String, String)
 
 @external(erlang, "bankai_mnesia_ffi", "import_if_needed")
@@ -53,6 +66,7 @@ fn ffi_import_if_needed(
 fn ffi_replace_many(
   workspace: String,
   rows: List(#(String, String, String, String)),
+  operation: String,
 ) -> Result(Nil, String)
 
 @external(erlang, "bankai_mnesia_ffi", "import_snapshot")
@@ -67,6 +81,33 @@ fn ffi_replace_current_snapshot(
   workspace: String,
   current: List(#(String, String, String)),
 ) -> Result(Nil, String)
+
+@external(erlang, "bankai_mnesia_ffi", "snapshot_json")
+fn ffi_snapshot_json(workspace: String) -> Result(String, String)
+
+@external(erlang, "bankai_mnesia_ffi", "projection_snapshot_rows")
+fn ffi_projection_snapshot_rows(
+  workspace: String,
+) -> Result(#(Int, List(String)), String)
+
+@external(erlang, "bankai_mnesia_ffi", "projection_checkpoint")
+fn ffi_projection_checkpoint(
+  workspace: String,
+  projection: String,
+) -> Result(Int, String)
+
+@external(erlang, "bankai_mnesia_ffi", "set_projection_checkpoint")
+fn ffi_set_projection_checkpoint(
+  workspace: String,
+  projection: String,
+  offset: Int,
+) -> Result(Nil, String)
+
+@external(erlang, "bankai_changefeed_ffi", "tail_json")
+fn ffi_change_tail_json(
+  workspace: String,
+  after: Int,
+) -> Result(List(String), String)
 
 pub fn init(workspace: String) -> Result(Nil, String) {
   ffi_init(workspace)
@@ -219,11 +260,50 @@ pub fn version_store(workspace: String) -> Result(store.Store, String) {
   })
 }
 
-/// Derived aarondb indexes are rebuilt from this committed current-head view.
-/// This narrow accessor is the change-feed seam: later cache/projection work can
-/// attach invalidation here without making an index authoritative.
-pub fn projection_source(workspace: String) -> Result(store.Store, String) {
-  current_store(workspace)
+/// Returns canonical snapshot/tail JSON payloads for AaronDB adapters. The
+/// payloads are already canonical bytes from the persistence boundary; callers
+/// choose their own decoder without widening Bankai's authority surface.
+pub fn projection_snapshot(workspace: String) -> Result(String, String) {
+  ffi_snapshot_json(workspace)
+}
+
+/// Returns canonical committed change records after `offset`, in ascending
+/// non-gapped workspace order. Event IDs make delivery replay-safe.
+pub fn change_tail(
+  workspace: String,
+  offset: Int,
+) -> Result(List(String), String) {
+  ffi_change_tail_json(workspace, offset)
+}
+
+/// Typed current-head snapshot paired with its exact committed event watermark.
+/// Unlike `projection_snapshot`, consumers never need to reparse the task JSON.
+pub fn projection_snapshot_rows(
+  workspace: String,
+) -> Result(#(Int, List(Task)), String) {
+  ffi_projection_snapshot_rows(workspace)
+  |> result.try(fn(snapshot) {
+    let #(offset, rows) = snapshot
+    rows
+    |> list.try_map(serde.task_from_json_string)
+    |> result.map(fn(tasks) { #(offset, tasks) })
+  })
+}
+
+/// Durable projection cursors are metadata beside, never inside, task state.
+pub fn projection_checkpoint(
+  workspace: String,
+  projection: String,
+) -> Result(Int, String) {
+  ffi_projection_checkpoint(workspace, projection)
+}
+
+pub fn set_projection_checkpoint(
+  workspace: String,
+  projection: String,
+  offset: Int,
+) -> Result(Nil, String) {
+  ffi_set_projection_checkpoint(workspace, projection, offset)
 }
 
 pub fn get_current(workspace: String, id: String) -> Result(Task, String) {
@@ -231,14 +311,21 @@ pub fn get_current(workspace: String, id: String) -> Result(Task, String) {
   |> result.try(serde.task_from_json_string)
 }
 
+/// Every task creation is a committed-change source event.
 pub fn create(workspace: String, task: Task) -> Result(Task, String) {
   let hash = identity.hash_to_debug_string(task.content_hash)
-  ffi_put_new(workspace, task.id, hash, serde.task_to_json_string(task))
+  ffi_put_new(
+    workspace,
+    task.id,
+    hash,
+    serde.task_to_json_string(task),
+    "create",
+  )
   |> result.try(serde.task_from_json_string)
 }
 
-/// Atomically advances one stable task head. A stale head is rejected, so a
-/// second concurrent claim/update cannot overwrite the first transaction.
+/// Atomically advances one stable task head and writes exactly one matching
+/// committed change record. A stale head leaves neither mutation nor event.
 pub fn replace(
   workspace: String,
   previous: Task,
@@ -250,13 +337,34 @@ pub fn replace(
     identity.hash_to_debug_string(previous.content_hash),
     identity.hash_to_debug_string(updated.content_hash),
     serde.task_to_json_string(updated),
+    "replace",
   )
   |> result.try(serde.task_from_json_string)
 }
 
-/// Atomically advances a related set of task heads. The FFI validates every
-/// expected hash before writing any version/current pair, so an incomplete
-/// duplicate merge cannot leak a half-rewritten graph.
+/// Apply a cluster-committed task transition exactly once. The command ID and
+/// expected head are validated atomically with version/head/event persistence.
+pub fn replace_committed(
+  workspace: String,
+  command_id: String,
+  previous: Task,
+  updated: Task,
+) -> Result(Task, String) {
+  ffi_compare_and_put_committed(
+    workspace,
+    command_id,
+    updated.id,
+    identity.hash_to_debug_string(previous.content_hash),
+    identity.hash_to_debug_string(updated.content_hash),
+    serde.task_to_json_string(updated),
+    "cluster-committed",
+  )
+  |> result.try(serde.task_from_json_string)
+}
+
+/// Atomically advances a related set of task heads and emits one batch event.
+/// The FFI validates every expected hash before writing any version/current
+/// pair, so an incomplete duplicate merge cannot leak a half-rewritten graph.
 pub fn replace_many(
   workspace: String,
   replacements: List(#(Task, Task)),
@@ -271,5 +379,5 @@ pub fn replace_many(
       serde.task_to_json_string(updated),
     )
   })
-  |> ffi_replace_many(workspace, _)
+  |> ffi_replace_many(workspace, _, "replace-many")
 }

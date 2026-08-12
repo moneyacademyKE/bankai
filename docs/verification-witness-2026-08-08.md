@@ -51,22 +51,23 @@ previous JSONL-only binary against that untouched snapshot.
 The test run intentionally logs one BEAM crash report from the isolated mobile
 rule crash-survival test. That test passes; the log is evidence that isolation
 contains the crash, not a suite failure.
+## Historical release witness — superseded 2026-08-12
 
-## Release limits
+This document records the completed **local workflow** release as it stood on
+2026-08-08. Its current-status claims are superseded by the
+[AaronDB 4.2 platform verification witness](verification-witness-2026-08-12-aarondb-platform.md).
+The local evidence above remains useful; the statements about unsigned
+replication, per-command HNSW, and missing clustered coordination are historical.
 
-- Bankai has local Mnesia transactions, not cross-machine consensus.
-  JSONL/peer exchange is snapshot reconciliation only; ADR-0006 specifies the
-  still-unimplemented signed identity, causality, conflict, and recovery model.
-- aarondb projections are derived and rebuildable. The generic incremental-cache
-  proposal was rejected by measurement. The current per-command HNSW vector
-  path is unsuitable for large boards and needs a separately bounded design.
-- The default vector backend is deterministic **term-hash lexical** matching;
-  it is not a real embedding provider and does not promise synonym recall.
+- AaronDB projections remain derived and rebuildable. The current managed HNSW
+  path is daemon-local and rebuildable from Mnesia; see the newer platform
+  witness for exact lifecycle and recovery constraints.
+- The default vector backend remains deterministic **term-hash lexical**
+  matching; it is not a real embedding provider and does not promise synonym recall.
 - External PR/CI/remote gate adapters and vendor-coupled GitHub sync are not
-  shipped. Local/manual/timer workflow primitives are the release scope.
+  shipped. Local/manual/timer workflow primitives are the original release scope.
 - Existing unused-import/helper warnings are pre-existing cleanup items. They
-  do not affect test success, but a warning-free release is a separate hygiene
-  task.
+  do not affect test success, but a warning-free release is separate hygiene work.
 
 ## Rich Hickey check
 

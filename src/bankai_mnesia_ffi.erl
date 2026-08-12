@@ -1,7 +1,9 @@
 -module(bankai_mnesia_ffi).
--export([init/1, reset_workspace/1, current_json/1, versions_json/1, get_current/2,
-         put_new/4, compare_and_put/5, replace_many/2, import_if_needed/3,
-         import_snapshot/3, replace_current_snapshot/2]).
+-export([init/1, reset_workspace/1, current_json/1, versions_json/1, snapshot_json/1,
+         projection_snapshot_rows/1, get_current/2, put_new/5, compare_and_put/6,
+         compare_and_put_committed/7, replace_many/3, import_if_needed/3, import_snapshot/3,
+         replace_current_snapshot/2, projection_checkpoint/2,
+         set_projection_checkpoint/3]).
 
 %% Versioned table names are intentional. The abandoned v1 schema keyed records
 %% by workspace alone, which could retain only one task per workspace. Leaving
@@ -29,6 +31,7 @@ init(_Workspace) ->
     ensure_table(?CURRENT, [key, workspace, id, hash, json]),
     ensure_table(?VERSIONS, [key, workspace, hash, json]),
     ensure_table(?META, [key, workspace, name, value]),
+    bankai_changefeed_ffi:init(),
     case mnesia:wait_for_tables([?CURRENT, ?VERSIONS, ?META], 5000) of
         ok -> {ok, nil};
         {timeout, Bad} -> {error, iolist_to_binary(io_lib:format("mnesia table timeout: ~p", [Bad]))}
@@ -40,6 +43,7 @@ reset_workspace(Workspace) -> transaction(fun() ->
     delete_workspace_rows(?CURRENT, Workspace),
     delete_workspace_rows(?VERSIONS, Workspace),
     delete_workspace_rows(?META, Workspace),
+    bankai_changefeed_ffi:reset_workspace(Workspace),
     {ok, nil}
 end).
 
@@ -71,6 +75,38 @@ versions_json(Workspace) -> transaction(fun() ->
     {ok, [Json || {?VERSIONS, _, _, _, Json} <- Rows]}
 end).
 
+%% A snapshot is paired with the exact committed change-stream offset while the
+%% read transaction is open. Consumers resume strictly after this watermark.
+snapshot_json(Workspace) -> transaction(fun() ->
+    Rows = mnesia:match_object({?CURRENT, '_', Workspace, '_', '_', '_'}),
+    Watermark = bankai_changefeed_ffi:high_watermark_in_transaction(Workspace),
+    Jsons = [Json || {?CURRENT, _, _, _, _, Json} <- Rows],
+    {ok, <<"{\"offset\":", (integer_to_binary(Watermark))/binary,
+          ",\"tasks\":[", (join_json(Jsons))/binary, "]}">>}
+end).
+
+%% Paired current-head snapshot plus exact stream watermark for the daemon's
+%% rebuildable AaronDB projections. This is one Mnesia read transaction.
+projection_snapshot_rows(Workspace) -> transaction(fun() ->
+    Rows = mnesia:match_object({?CURRENT, '_', Workspace, '_', '_', '_'}),
+    Watermark = bankai_changefeed_ffi:high_watermark_in_transaction(Workspace),
+    {ok, {Watermark, [Json || {?CURRENT, _, _, _, _, Json} <- Rows]}}
+end).
+
+projection_checkpoint(Workspace, Projection) -> transaction(fun() ->
+    Key = {Workspace, <<"projection:", Projection/binary>>},
+    case mnesia:read(?META, Key, read) of
+        [] -> {ok, -1};
+        [{?META, Key, Workspace, _Name, Offset}] -> {ok, Offset}
+    end
+end).
+
+set_projection_checkpoint(Workspace, Projection, Offset) -> transaction(fun() ->
+    Key = {Workspace, <<"projection:", Projection/binary>>},
+    mnesia:write({?META, Key, Workspace, <<"projection:", Projection/binary>>, Offset}),
+    {ok, nil}
+end).
+
 get_current(Workspace, Id) -> transaction(fun() ->
     Key = {Workspace, Id},
     case mnesia:read(?CURRENT, Key, read) of
@@ -79,25 +115,53 @@ get_current(Workspace, Id) -> transaction(fun() ->
     end
 end).
 
-put_new(Workspace, Id, Hash, Json) -> transaction(fun() ->
+put_new(Workspace, Id, Hash, Json, Operation) -> transaction(fun() ->
     Key = {Workspace, Id},
     case mnesia:read(?CURRENT, Key, write) of
-        [] -> write_version_and_current(Workspace, Id, Hash, Json), {ok, Json};
+        [] ->
+            write_version_and_current(Workspace, Id, Hash, Json),
+            record_change(Workspace, Operation, [{Id, <<"none">>, Hash}]),
+            {ok, Json};
         _ -> {error, <<"task already exists: ", Id/binary>>}
     end
 end).
 
-compare_and_put(Workspace, Id, ExpectedHash, Hash, Json) -> transaction(fun() ->
+compare_and_put(Workspace, Id, ExpectedHash, Hash, Json, Operation) -> transaction(fun() ->
+    compare_and_put_row(Workspace, Id, ExpectedHash, Hash, Json, Operation)
+end).
+
+%% Cluster command application is exactly-once by the committed command identity.
+%% The command journal and task/version CAS live in one Mnesia transaction, so a
+%% daemon crash can only retry the same accepted command, never publish a partial
+%% head advance. The journal uses Bankai meta because it is authority metadata,
+%% not an AaronDB projection.
+compare_and_put_committed(Workspace, CommandId, Id, ExpectedHash, Hash, Json, Operation) ->
+    transaction(fun() ->
+        Key = {Workspace, <<"cluster-command:", CommandId/binary>>},
+        case mnesia:read(?META, Key, write) of
+            [{?META, Key, Workspace, _Name, SavedJson}] -> {ok, SavedJson};
+            [] ->
+                case compare_and_put_row(Workspace, Id, ExpectedHash, Hash, Json, Operation) of
+                    {ok, AppliedJson} ->
+                        mnesia:write({?META, Key, Workspace,
+                                      <<"cluster-command:", CommandId/binary>>, AppliedJson}),
+                        {ok, AppliedJson};
+                    Error -> Error
+                end
+        end
+    end).
+
+compare_and_put_row(Workspace, Id, ExpectedHash, Hash, Json, Operation) ->
     Key = {Workspace, Id},
     case mnesia:read(?CURRENT, Key, write) of
         [{?CURRENT, Key, Workspace, Id, ExpectedHash, _}] ->
-            write_version_and_current(Workspace, Id, Hash, Json), {ok, Json};
+            write_version_and_current(Workspace, Id, Hash, Json),
+            record_change(Workspace, Operation, [{Id, ExpectedHash, Hash}]),
+            {ok, Json};
         [{?CURRENT, Key, Workspace, Id, _Actual, _}] ->
             {error, <<"task changed concurrently: ", Id/binary>>};
         [] -> {error, <<"no such task: ", Id/binary>>}
-    end
-end).
-
+    end.
 
 write_version_and_current(Workspace, Id, Hash, Json) ->
     VersionKey = {Workspace, Hash},
@@ -107,15 +171,17 @@ write_version_and_current(Workspace, Id, Hash, Json) ->
     end,
     mnesia:write({?CURRENT, {Workspace, Id}, Workspace, Id, Hash, Json}).
 
-
 %% Atomically compare-and-swap a planned set of current heads. Each row is
 %% {Id, ExpectedHash, NewHash, Json}; validate all heads before writing any row.
-replace_many(Workspace, Rows) -> transaction(fun() ->
+replace_many(Workspace, Rows, Operation) -> transaction(fun() ->
     case validate_replacements(Workspace, Rows) of
         ok ->
             lists:foreach(fun({Id, _ExpectedHash, Hash, Json}) ->
                 write_version_and_current(Workspace, Id, Hash, Json)
             end, Rows),
+            record_change(Workspace, Operation, [
+                {Id, ExpectedHash, Hash} || {Id, ExpectedHash, Hash, _Json} <- Rows
+            ]),
             {ok, nil};
         {error, Reason} -> {error, Reason}
     end
@@ -143,24 +209,35 @@ import_snapshot(Workspace, Versions, Current) -> transaction(fun() ->
             _ -> ok
         end
     end, Versions),
-    lists:foreach(fun({Id, Hash, Json}) ->
-        CurrentKey = {Workspace, Id},
-        case mnesia:read(?CURRENT, CurrentKey, write) of
-            [] -> mnesia:write({?CURRENT, CurrentKey, Workspace, Id, Hash, Json});
-            _ -> ok
-        end
+    Missing = lists:filter(fun({Id, _Hash, _Json}) ->
+        mnesia:read(?CURRENT, {Workspace, Id}, write) =:= []
     end, Current),
+    lists:foreach(fun({Id, Hash, Json}) ->
+        mnesia:write({?CURRENT, {Workspace, Id}, Workspace, Id, Hash, Json})
+    end, Missing),
+    case Missing of
+        [] -> ok;
+        _ -> record_change(Workspace, <<"import">>, [
+            {Id, <<"none">>, Hash} || {Id, Hash, _Json} <- Missing
+        ])
+    end,
     {ok, nil}
 end).
-
 
 %% Archival changes the active view only; version rows remain immutable and
 %% addressable so inspect/history never lose provenance.
 replace_current_snapshot(Workspace, Current) -> transaction(fun() ->
+    Existing = mnesia:match_object({?CURRENT, '_', Workspace, '_', '_', '_'}),
     delete_workspace_rows(?CURRENT, Workspace),
     lists:foreach(fun({Id, Hash, Json}) ->
         mnesia:write({?CURRENT, {Workspace, Id}, Workspace, Id, Hash, Json})
     end, Current),
+    case (Existing == []) andalso (Current == []) of
+        true -> ok;
+        false -> record_change(Workspace, <<"compact">>, [
+            {Id, <<"snapshot">>, Hash} || {Id, Hash, _Json} <- Current
+        ])
+    end,
     {ok, nil}
 end).
 
@@ -170,6 +247,12 @@ import_if_needed(Workspace, Versions, Current) -> transaction(fun() ->
         [] ->
             import_snapshot_rows(Workspace, Versions, Current),
             mnesia:write({?META, MetaKey, Workspace, legacy_jsonl_import_v1, done}),
+            case Current of
+                [] -> ok;
+                _ -> record_change(Workspace, <<"legacy-import">>, [
+                    {Id, <<"none">>, Hash} || {Id, Hash, _Json} <- Current
+                ])
+            end,
             {ok, nil};
         _ -> {ok, nil}
     end
@@ -186,6 +269,15 @@ import_snapshot_rows(Workspace, Versions, Current) ->
     lists:foreach(fun({Id, Hash, Json}) ->
         mnesia:write({?CURRENT, {Workspace, Id}, Workspace, Id, Hash, Json})
     end, Current).
+
+record_change(_Workspace, _Operation, []) -> ok;
+record_change(Workspace, Operation, Rows) ->
+    bankai_changefeed_ffi:record_in_transaction(Workspace, Operation, Rows),
+    ok.
+
+join_json([]) -> <<>>;
+join_json([Json]) -> Json;
+join_json([Json | Rest]) -> <<Json/binary, ",", (join_json(Rest))/binary>>.
 
 transaction(F) ->
     try mnesia:transaction(F) of

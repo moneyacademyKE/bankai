@@ -1,47 +1,40 @@
 
 # Bankai vs Beads — Rich Hickey Gap Analysis
 
-## Current capability contract — 2026-08-08
+## Current capability contract — 2026-08-12
 
-This section is the authoritative current comparison. Later sections preserve the historical audits and shipped-roadmap rationale; they are not a statement of current feature parity. Evidence is the named Bankai source/tests, current README command surface, the [projection benchmark](docs/projection-benchmark-2026-08-08.md), and ADRs 0004–0006.
+This section is the authoritative current comparison. Later sections preserve
+historical audits and shipped-roadmap rationale; they are not a statement of
+current feature parity. Evidence is the current README command surface, ADRs
+0004–0008, and the [AaronDB 4.2 platform verification witness](docs/verification-witness-2026-08-12-aarondb-platform.md).
 
-**Bankai has not reached full Beads parity.** It has a stronger local truth boundary in some areas, but deliberately defers or rejects several Beads-shaped workflow and federation capabilities.
+**Bankai has not reached full Beads product parity.** It now has explicit local
+and clustered-adapter authority contracts, while deliberately deferring workflow
+templates, provider-coupled gates, real embeddings, and production multi-node
+operations evidence.
 
 | Capability | Bankai disposition | Evidence / boundary |
 |---|---|---|
-| Durable single-writer task state and immutable history | **Shipped; intentionally different** | `mnesia_store.gleam`, `daemon_store.gleam`, ADR-0004 |
-| CLI and MCP daemon-mediated task commands | **Shipped** | `socket.gleam`, `mcp.gleam`, socket/MCP tests |
-| Atomic ready-and-claim | **Shipped** | `daemon_store.gleam`, CLI/socket tests |
-| Short IDs, labels, priorities, basic hierarchy, relation graph | **Shipped; partial hierarchy** | `cli.gleam`, `graph.gleam`, CLI tests |
-| Full-text, temporal, and lexical-vector retrieval | **Shipped; intentionally different** | `aarondb_bridge.gleam`, `vector_bridge.gleam`, Phase 3 tests |
-| Portable JSONL export/import/backup/reconciliation | **Shipped; not consensus** | `mnesia_store.gleam`, `sync_peer.gleam`, ADR-0004 |
-| Task kinds, explicit parent relation, and Beads-level dependency semantics | **Shipped** | `types.gleam`, `graph.gleam`, daemon/MCP regressions |
-| Deferral, closure reason, and comprehensive explainable views | **Shipped** | `types.gleam`, `daemon_store.gleam`, Mnesia regressions |
-| Auditable duplicate consolidation | **Shipped** | `daemon_store.gleam`, Mnesia merge regressions; semantic search remains candidates only |
-| Gates and local-only wisps | **Shipped locally** | `types.gleam`, `graph.gleam`, daemon/socket/MCP coverage; external adapters remain deferred |
-| Transactional molecules/templates | **Deferred** | No command or template data model exists; ADR-0005 records the boundary |
-| Doctor, richer graph traversal, broad setup registry | **Shipped** | `daemon_store.gleam`, `socket.gleam`, MCP coverage |
-| Incremental aarondb projections | **Rejected for generic use; vector follow-up required** | [Projection benchmark](docs/projection-benchmark-2026-08-08.md) |
-| Multi-machine consensus, Raft, remote dependency/gate semantics | **Designed, not shipped** | ADR-0006 distinguishes snapshot reconciliation from federation |
-| Dolt/SQL ownership and vendor-coupled GitHub sync | **Rejected as core** | ADR-0005; structured commands + mobile-rule extensions are Bankai-native |
-| Real embedding providers | **Deferred** | `embed.gleam` exposes an explicit lexical term-hash backend |
-
-The capability standard is deliberately narrower than “copy Beads.” Bankai owns transactional task truth in Mnesia, derives query views through aarondb, keeps JSONL as portable interchange, and uses structured workflow commands and mobile rules instead of Dolt coupling. A capability is only called shipped when it is available through the documented CLI/daemon/MCP boundary and covered by source tests.
-
-> "Programmers know the benefits of everything and the tradeoffs of nothing." — Rich Hickey
->
-> This analysis asks: **What is Beads? What does bankai lack? What would each missing piece cost to build — and is it worth it?**
-
-**Date:** 2026-08-03  
-**Beads:** [gastownhall/beads](https://github.com/gastownhall/beads) — Go + Dolt, by Steve Yegge  
-**Bankai:** [moneyacademyKE/bankai](https://github.com/moneyacademyKE/bankai) — Gleam + BEAM, content-addressed + mobile rules
-
----
+| Durable local task state and immutable history | **Shipped; intentionally different** | Mnesia daemon authority; ADR-0004 |
+| Local and clustered command admission | **Shipped adapter contract** | AaronDB command/consensus/lease/fence + idempotent Mnesia materialization; ADR-0007 |
+| Atomic ready-and-claim | **Shipped** | Local CAS or clustered quorum admission with fence token |
+| Full-text, temporal, and lexical-vector retrieval | **Shipped; intentionally different** | AaronDB changefeed/replay projections and managed HNSW |
+| Portable JSONL and signed snapshot exchange | **Shipped; not consensus** | Explicit import/export plus signed replica envelopes; ADR-0008 |
+| Task kinds, parent relation, dependency semantics, deferral, duplicate merge, gates, wisps | **Shipped locally** | Daemon/socket/MCP workflow contract |
+| Doctor, dependency graph, MCP health/status | **Shipped** | `doctor`, `cluster_status`, MCP `platform_status` |
+| Authenticated cluster transport admission | **Shipped configuration boundary** | TLS BEAM-distribution profile validation; missing config is recovery-required |
+| Production multi-node HA operation | **Not yet evidenced** | One-voter rehearsal and deterministic fault schedules are not a live deployment |
+| Transactional molecules/templates | **Deferred** | No data model or command |
+| Remote dependency/gate provider facts | **Deferred** | Credential-free core remains local |
+| Real embedding providers | **Deferred** | Term-hash backend is lexical |
+| Dolt/SQL ownership and vendor-coupled GitHub sync | **Rejected as core** | Bankai-native data/extension boundary |
 
 ## Current benchmark result
 
-The latest recorded result is **149 passing, 0 failures**. The isolated mobile-rule crash-survival test deliberately emits a BEAM crash report while proving that the supervisor contains it. Build output still has known unused-import/helper warnings; they are not test failures.
-
+The current full suite has **177 passing, 0 failures**. The isolated mobile-rule
+crash-survival test deliberately emits a BEAM crash report while proving its
+supervisor contains the crash. Build output still has pre-existing unused
+import/helper warnings; those are hygiene work, not test failures.
 
 ## Historical audit archive
 

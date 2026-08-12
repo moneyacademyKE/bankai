@@ -2,7 +2,9 @@
 //// write authority; JSONL is no longer a fallback for mutations.
 
 import bankai/cli
+import bankai/cluster_transport
 import bankai/daemon_store
+import bankai/platform_profile
 import bankai/sync/jsonl
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -10,6 +12,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/json
+import gleam/result
 import gleam/string
 
 pub type Request {
@@ -49,6 +52,10 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
       }
     "update" ->
       case request.params {
+        [id, "--fence", fence, status, ..] ->
+          daemon_result(daemon_store.update_fenced(workspace, id, status, fence))
+        [id, status, "--fence", fence, ..] ->
+          daemon_result(daemon_store.update_fenced(workspace, id, status, fence))
         [id, "--defer-until", until, ..] ->
           daemon_result(daemon_store.defer_until(workspace, id, until))
         [id, "--satisfy-gate", ..] ->
@@ -100,6 +107,7 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
         _ -> ErrorResponse(message: "dep_tree requires <task-id>")
       }
     "doctor" -> daemon_result(daemon_store.doctor(workspace))
+    "cluster_status" -> daemon_result(daemon_store.cluster_status(workspace))
     "backup" -> daemon_result(daemon_store.backup_jsonl(workspace))
     "export" -> daemon_result(daemon_store.export_jsonl(workspace))
     "import" ->
@@ -287,22 +295,52 @@ fn ffi_controlling_process(
 // Daemon: `bankai serve` — blocks in an accept loop.
 // ---------------------------------------------------------------------------
 
-/// Start the daemon: listen on <workspace>/bankai.sock and serve forever.
+/// Start an explicit local-mode daemon. A clustered profile is refused here so
+/// callers cannot accidentally create a second independent writer.
 pub fn serve(workspace: String) -> Nil {
+  platform_profile.load(workspace)
+  |> result.try(platform_profile.require_local_daemon)
+  |> serve_with_profile(workspace, "local")
+}
+
+/// Start an explicit clustered daemon. The platform profile and TLS-distribution
+/// admission config must agree before command admission can materialize Mnesia
+/// state. A bad config fails closed rather than emitting local-only cluster lies.
+pub fn serve_clustered(workspace: String) -> Nil {
+  platform_profile.load(workspace)
+  |> result.try(platform_profile.require_clustered_daemon)
+  |> result.try(fn(_) {
+    platform_profile.load(workspace)
+    |> result.try(fn(profile) {
+      cluster_transport.require_ready(workspace, profile)
+    })
+  })
+  |> serve_with_profile(workspace, "clustered")
+}
+
+fn serve_with_profile(
+  profile: Result(Nil, String),
+  workspace: String,
+  mode: String,
+) -> Nil {
   let _ = jsonl.ensure_dir(workspace)
-  case daemon_store.boot(workspace) {
-    Error(message) ->
+  case profile, daemon_store.boot(workspace) {
+    Error(message), _ ->
+      io.println_error("bankai: platform profile failed: " <> message)
+    _, Error(message) ->
       io.println_error("bankai: Mnesia boot failed: " <> message)
-    Ok(_) -> {
-      let path = socket_path(workspace)
-      let _ = ffi_delete_path(path)
-      case ffi_listen(path) {
-        Error(_) -> io.println_error("bankai: failed to listen on " <> path)
-        Ok(ls) -> {
-          io.println("bankai daemon listening on " <> path)
-          serve_loop(workspace, ls)
-        }
-      }
+    Ok(_), Ok(_) -> listen(workspace, mode)
+  }
+}
+
+fn listen(workspace: String, mode: String) -> Nil {
+  let path = socket_path(workspace)
+  let _ = ffi_delete_path(path)
+  case ffi_listen(path) {
+    Error(_) -> io.println_error("bankai: failed to listen on " <> path)
+    Ok(ls) -> {
+      io.println("bankai " <> mode <> " daemon listening on " <> path)
+      serve_loop(workspace, ls)
     }
   }
 }

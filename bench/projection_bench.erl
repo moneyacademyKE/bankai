@@ -1,11 +1,11 @@
-%% Task-7 benchmark runner. Uses compiled Bankai modules so it measures the
-%% exact pure projection path used by daemon_store: fresh Datalog/BM25/HNSW
-%% construction and one representative query per dataset size.
+%% Task-4 benchmark runner. It compares the legacy request-scoped HNSW build
+%% against Bankai's managed projection: one warm-up build followed by a steady
+%% query at the identical committed offset.
 -module(projection_bench).
 -export([run/0]).
 
 run() ->
-    io:format("tasks,datalog_build_us,datalog_query_us,bm25_build_query_us,hnsw_build_query_us~n"),
+    io:format("tasks,datalog_build_us,datalog_query_us,bm25_build_query_us,hnsw_fresh_us,hnsw_managed_build_us,hnsw_managed_steady_query_us~n"),
     lists:foreach(fun benchmark/1, [100, 1000, 5000]),
     ok.
 
@@ -15,14 +15,31 @@ benchmark(N) ->
     {BuildUs, Db} = timer:tc(bankai@aarondb_bridge, db_from_tasks, [Tasks]),
     {QueryUs, _} = timer:tc(bankai@aarondb_bridge, count_by_status, [element(2, Db)]),
     {Bm25Us, _} = timer:tc(bankai@aarondb_bridge, search, [Docs, <<"authentication worker">>]),
+    Workspace = iolist_to_binary(io_lib:format("bench-~B", [N])),
+    ok = reset_vector(Workspace),
     VectorDocs = [vector_doc(I) || I <- lists:seq(1, N)],
-    {HnswUs, _} = timer:tc(bankai@vector_bridge, search, [VectorDocs, <<"authentication worker">>, 0.10, 12]),
-    io:format("~B,~B,~B,~B,~B~n", [N, BuildUs, QueryUs, Bm25Us, HnswUs]).
+    {FreshUs, _} = timer:tc(bankai@vector_bridge, search,
+                            [VectorDocs, <<"authentication worker">>, 0.10, 12]),
+    {ManagedBuildUs, _} = timer:tc(bankai@vector_bridge, projected_search,
+                                   [Workspace, 0, VectorDocs,
+                                    <<"authentication worker">>, 0.10, 12]),
+    {ManagedQueryUs, _} = timer:tc(bankai@vector_bridge, projected_search,
+                                   [Workspace, 0, VectorDocs,
+                                    <<"authentication worker">>, 0.10, 12]),
+    io:format("~B,~B,~B,~B,~B,~B,~B~n",
+              [N, BuildUs, QueryUs, Bm25Us, FreshUs, ManagedBuildUs, ManagedQueryUs]).
+
+reset_vector(Workspace) ->
+    case bankai@vector_bridge:reset_projection_for_test(Workspace) of
+        {ok, nil} -> ok;
+        _ -> ok
+    end.
 
 task(I) ->
     Id = id(I),
     Title = text(I),
-    {task, Id, Title, <<"">>, open, none, 1, I, I, [], [], <<>>, none, default_task, none, none, none, false}.
+    {task, Id, Title, <<"">>, open, none, 1, I, I, [], [], <<>>, none,
+     default_task, none, none, none, false}.
 
 doc(I) ->
     {<<"task">>, id(I), text(I)}.
