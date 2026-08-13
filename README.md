@@ -40,7 +40,7 @@ first.
 
 Bankai separates **operational truth**, **derived retrieval**, and **portable interchange**. The daemon is the single writer: it owns Bankai’s Mnesia tables and commits each head advance together with its immutable, content-addressed version. JSONL is no longer a live database; it is a deliberate export/import/backup/reconciliation format.
 
-The foundational decisions are [ADR-0001](docs/adrs/0001-hybrid-content-addressing.md), [ADR-0004](docs/adrs/0004-daemon-owned-transactional-store.md), [ADR-0005](docs/adrs/0005-bankai-native-workflow-parity.md), [ADR-0006](docs/adrs/0006-federation-is-explicit-replication.md), [ADR-0007](docs/adrs/0007-aarondb-4.2-platform-authority.md), and [ADR-0008](docs/adrs/0008-signed-replica-identity.md): task identity remains distinct from mobile code and rebuildable indexes; local transaction authority remains distinct from signed snapshot exchange and quorum coordination.
+The foundational decisions are [ADR-0001](docs/adrs/0001-hybrid-content-addressing.md), [ADR-0004](docs/adrs/0004-daemon-owned-transactional-store.md), [ADR-0005](docs/adrs/0005-bankai-native-workflow-parity.md), [ADR-0006](docs/adrs/0006-federation-is-explicit-replication.md), [ADR-0007](docs/adrs/0007-aarondb-4.2-platform-authority.md), [ADR-0008](docs/adrs/0008-signed-replica-identity.md), and [ADR-0009](docs/adrs/0009-capability-authenticated-service.md): task identity remains distinct from mobile code and rebuildable indexes; transaction authority remains distinct from signed snapshot exchange, quorum coordination, and capability authentication.
 
 | Concern | Implementation | Authority / lifetime |
 |---|---|---|
@@ -55,6 +55,7 @@ The foundational decisions are [ADR-0001](docs/adrs/0001-hybrid-content-addressi
 | Mobile rules + eval | `gleamunison/codebase` + `gleamunison/repl` | Allow-listed/sandboxed code mobility |
 | Graph readiness and cycle checks | Bankai’s own pure graph module | Derived from current task heads |
 | MCP server | Bankai’s thin stdio adapter | Protocol surface over daemon commands |
+| Resident service authentication | HMAC-authenticated AaronDB capabilities | Read/write/admin authorization at the wire edge; workspace secret is local authority |
 
 `aarondb` is deliberately **not** Bankai’s task database. It supplies ordered committed-change consumption, restartable projection lifecycle, Datalog-backed `history`/`analytics`, BM25 `search`, managed HNSW retrieval, signed envelopes, and—only under an explicit clustered profile—command admission, leases, fences, and quorum/read-index status. The default vector backend is a deterministic term-hash lexical embedding; it finds overlapping terminology, not genuine semantic synonyms.
 
@@ -133,7 +134,17 @@ bankai doctor                                   # Mnesia, projection, cluster, t
 bankai cluster-status                           # cluster + transport + recovery status JSON
 bankai mcp                                      # MCP stdio server; use platform_status for the same health view
 bankai setup <claude|codex|cursor|factory|mux|opencode|windsurf>
+
+# — authenticated service capabilities —
+bankai auth mint read --ttl 3600               # read-only bearer capability
+bankai auth mint write --ttl 3600              # mutation-only bearer capability
 ```
+
+### Authenticated resident service
+
+`bankai serve` is a concurrent, fail-closed UNIX-socket service. Every wire request carries an HMAC-signed, expiring bearer capability. AaronDB’s `Action`/`Resource`/`Capability` policy enforces three scopes at the protocol edge: `read` can query but cannot mutate, `write` can mutate but cannot mint tokens, and `admin` subsumes both and may mint attenuated capabilities. Domain handlers never receive credentials.
+
+The ordinary local CLI bootstraps a short-lived admin capability from `.bankai/service-auth.key`; the 32-byte secret is created with mode `0600` and is never returned. Programmatic clients call `socket.client_request_with_token(workspace, method, params, token)`. Missing, expired, tampered, or under-scoped tokens fail before dispatch. Capabilities are bearer credentials: do not log or commit them. The service remains local UNIX-domain transport; network exposure additionally requires TLS and an external identity/bootstrap policy.
 
 All command output is a JSON envelope — `{"ok": <json>}` on success, `{"error": "<msg>"}` on failure — so agents parse results uniformly. Task operations require `bankai serve`; memory, messaging, compaction, setup, and hooks remain local file operations.
 
@@ -145,15 +156,17 @@ The AaronDB 4.2 platform integration is implemented and verified for Bankai’s 
 - [x] [ADR-0004](docs/adrs/0004-daemon-owned-transactional-store.md) — daemon-owned Mnesia current heads and immutable versions
 - [x] [ADR-0007](docs/adrs/0007-aarondb-4.2-platform-authority.md) — local/cluster authority, committed events, projections, command/fence boundary
 - [x] [ADR-0008](docs/adrs/0008-signed-replica-identity.md) — signed replica envelopes, explicit trust, replay rejection, and conflict recording
+- [x] [ADR-0009](docs/adrs/0009-capability-authenticated-service.md) — signed expiring read/write/admin capabilities at the resident service edge
 - [x] AaronDB durable-log/changefeed projection runtime with checkpoints, restart/replay, vector lifecycle, and health diagnostics
 - [x] Explicit clustered command admission, `ready --claim` fencing, ReadIndex/quorum status, and fail-closed TLS-distribution configuration
 - [x] `doctor`, socket `cluster_status`, and MCP `platform_status` report local/cluster mode, projections, leases, transport, and recovery state
 - [x] Migration rehearsal: Mnesia → JSONL export → clean Mnesia import preserves immutable versions and current head
 - [x] Failure rehearsal: partition/reorder/crash/slow-follower/membership/clock schedules are evaluated by the AaronDB distributed harness; missing transport config fails closed
-- [x] Current suite: **177 passing, 0 failures** on 2026-08-12
+- [x] Current suite: **182 passing, 0 failures** on 2026-08-13
 
 ### Deliberately not shipped
 
+- **Network service exposure:** resident service authentication is local UNIX-domain only. No network listener, TLS bootstrap, token revocation service, or production identity-provider integration is claimed.
 - **Multi-node production deployment evidence:** the clustered adapter has explicit one-voter rehearsal and fail-closed transport admission, but no live multi-host TLS-distribution deployment, quorum-loss recovery drill, or performance SLO. Do not market it as production HA yet.
 - **Automatic remote-provider gates:** GitHub/CI/remote dependency facts remain outside the credential-free core.
 - **Transactional molecules/templates:** deferred; no `molecule` command or data model exists yet.

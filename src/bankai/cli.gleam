@@ -1215,6 +1215,8 @@ pub fn usage() -> String {
   <> "  update <id> --claim [a]       claim: in_progress + assignee (default agent)\n"
   <> "  update <id> --label L         add a label\n"
   <> "  update <id> --priority N      set the priority\n"
+  <> "  auth mint <read|write|admin> [--ttl seconds]\n"
+  <> "                                mint signed service capability (admin only)\n"
   <> "  remember \"insight\"            persist a content-addressed memory\n"
   <> "  memories                      list persisted memories\n"
   <> "  inspect <hash>                render the task for a content hash\n"

@@ -5,6 +5,8 @@ import bankai/cli
 import bankai/cluster_transport
 import bankai/daemon_store
 import bankai/platform_profile
+import bankai/service_auth
+import bankai/service_protocol
 import bankai/sync/jsonl
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -189,6 +191,24 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
         Ok(_) -> OkResponse(value: cli.run_in(workspace, ["init"]))
         Error(message) -> ErrorResponse(message: message)
       }
+    "auth_mint" ->
+      case request.params {
+        [role, "--ttl", ttl_text, ..] ->
+          case int.parse(ttl_text) {
+            Ok(ttl) ->
+              daemon_result(
+                service_auth.mint(workspace, role, ttl)
+                |> result.map(json.string),
+              )
+            Error(_) -> ErrorResponse(message: "auth ttl must be an integer")
+          }
+        [role, ..] ->
+          daemon_result(
+            service_auth.mint_default(workspace, role)
+            |> result.map(json.string),
+          )
+        _ -> ErrorResponse(message: "auth_mint requires <read|write|admin>")
+      }
     _ -> ErrorResponse(message: "unknown method: " <> request.method)
   }
 }
@@ -217,6 +237,15 @@ pub fn handle_line(workspace: String, line: String) -> String {
       }
     }
   }
+}
+
+pub fn handle_authenticated_line(workspace: String, line: String) -> String {
+  service_protocol.handle_line(workspace, line, fn(method, params) {
+    case handle_request(workspace, Request(method:, params:)) {
+      OkResponse(value) -> Ok(value)
+      ErrorResponse(message) -> Error(message)
+    }
+  })
 }
 
 fn parse_request(line: String) -> Result(#(String, List(String), Int), Nil) {
@@ -363,7 +392,7 @@ fn serve_loop(workspace: String, ls: Dynamic) -> Nil {
 fn handle_conn(workspace: String, sock: Dynamic) -> Nil {
   case ffi_recv_line(sock) {
     Ok(line) -> {
-      let _ = ffi_send(sock, handle_line(workspace, line) <> "\n")
+      let _ = ffi_send(sock, handle_authenticated_line(workspace, line) <> "\n")
       Nil
     }
     Error(_) -> Nil
@@ -383,6 +412,20 @@ pub fn client_request(
   method: String,
   params: List(String),
 ) -> Result(String, String) {
+  service_auth.local_admin_token(workspace)
+  |> result.try(fn(token) {
+    client_request_with_token(workspace, method, params, token)
+  })
+}
+
+/// Send an attenuated request to the resident service. The token is included in
+/// the request only; errors and responses never echo bearer credentials.
+pub fn client_request_with_token(
+  workspace: String,
+  method: String,
+  params: List(String),
+  token: String,
+) -> Result(String, String) {
   case ffi_connect(socket_path(workspace)) {
     Error(_) -> Error("no daemon")
     Ok(sock) -> {
@@ -390,13 +433,14 @@ pub fn client_request(
         json.object([
           #("method", json.string(method)),
           #("params", json.array(params, of: json.string)),
+          #("token", json.string(token)),
           #("id", json.int(1)),
         ])
         |> json.to_string()
       let _ = ffi_send(sock, req <> "\n")
-      let result = ffi_recv_line(sock)
+      let response = ffi_recv_line(sock)
       let _ = ffi_close(sock)
-      case result {
+      case response {
         Ok(line) -> extract_result(line)
         Error(_) -> Error("no response from daemon")
       }

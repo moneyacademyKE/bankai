@@ -85,6 +85,8 @@ fn daemon_request(
 ) -> Result(#(String, List(String)), String) {
   case method, params {
     "prime", ["--query", query, ..] -> Ok(#("prime_query", [query]))
+    "auth", ["mint", role, ..rest] -> Ok(#("auth_mint", [role, ..rest]))
+    "auth", _ -> Error("usage: auth mint <read|write|admin> [--ttl seconds]")
     "merge", [source_id, canonical_id, ..] ->
       Ok(#("merge", [source_id, canonical_id]))
     "merge", _ -> Error("usage: merge <duplicate-id> <canonical-id>")

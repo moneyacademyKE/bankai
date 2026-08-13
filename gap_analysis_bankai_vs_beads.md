@@ -523,3 +523,58 @@ standalone. Is it simple? One compiler flag, one 6-line FFI fix, zero new deps.
 Are the abstractions honest? The escript *is* a single bundled archive (not a
 wrapper over a source tree); the FFI strips the script path *only when it's a
 real file* (not a heuristic guess at the command surface).
+## 10. AaronDB Integration and Feature-Family Resolution (2026-08-13)
+
+The original §9 rejection of AaronDB became stale as both the product need and
+AaronDB’s package shape changed. Bankai now pins AaronDB 4.2 and uses it as a
+**derived platform**, never task authority. Mnesia owns transactional heads and
+immutable versions; JSONL remains interchange; AaronDB consumes committed data
+for Datalog, BM25, HNSW projections, signed envelopes, and explicit clustered
+command admission.
+
+| Feature family | Resolution | Boundary |
+|---|---|---|
+| Temporal analytics | `history` and `analytics` over immutable versions | derived Datalog view; Mnesia remains authority |
+| Full-text search | BM25 `search` over tasks and memories | rebuildable query index |
+| Vector retrieval | `duplicates --semantic` and `prime --query` use managed deterministic HNSW | default vectors are lexical term hashes, not real embeddings |
+| Raft/mesh | User removed the broad mesh phase; only explicit configured cluster admission and signed snapshot exchange remain | no mDNS and no production-HA claim |
+| Service + RBAC | resident UNIX-socket service authenticates signed expiring capabilities and authorizes read/write/admin scopes | local transport only; network exposure needs TLS/identity/revocation |
+
+### Vehicle decision
+
+The project first proved a CMS-stripped AaronDB core because 2.4.5’s bundled
+web dependencies conflicted with Gleam stdlib 1.x. Upstream then released a
+web-free compatible package, eliminating the fork. Bankai subsequently moved to
+AaronDB 4.2 for managed projections and platform contracts. This is preferable
+to vendoring: upstream owns the general engine; Bankai owns only adapters and
+its authority boundaries.
+
+### Embedding risk resolution
+
+AaronDB indexes vectors but does not generate embeddings. Bankai therefore puts
+embedding behind `bankai/embed`. The shipped dependency-free backend is a
+256-dimensional signed term-hash vector: deterministic and useful for lexical
+near-duplicates/relevant memory subsets, but not synonym-level semantics. A
+true embedding provider remains an explicit seam (local model or API) rather
+than a hidden network dependency or credential requirement.
+
+### Capability-authenticated service
+
+AaronDB’s auth types model authority but do not authenticate token provenance.
+Bankai signs expiring claims with a workspace-local HMAC-SHA256 key (mode 0600),
+then decodes and authorizes them through AaronDB `Capability` subsumption before
+dispatch. Read, write, and admin are distinct; parameter-sensitive mutations
+such as `ready --claim` require write authority. Domain handlers stay
+credential-free. See ADR-0009.
+
+### Rich Hickey certification
+
+- **One authority per concern:** Mnesia = task truth; AaronDB = derived logic and
+  capability policy; JSONL/signed snapshots = interchange.
+- **Data before abstraction:** methods reduce to explicit action/resource data at
+  one protocol boundary; credentials do not leak into domain handlers.
+- **Incidental complexity rejected:** no CMS fork, no hidden embedding service,
+  no mDNS mesh, and no network listener masquerading as a secure service.
+- **Claims match evidence:** the default vector backend is labeled lexical; the
+  service is labeled local; clustered rehearsal is not marketed as production
+  HA.

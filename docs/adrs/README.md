@@ -12,6 +12,7 @@ Sequential, immutable. New decisions append; superseded records are kept and cro
 | [0006](0006-federation-is-explicit-replication.md) | Federation is explicit replication, not snapshot consensus | **Accepted** | 2026-08-08 |
 | [0007](0007-aarondb-4.2-platform-authority.md) | AaronDB 4.2 platform authority and operating modes | **Accepted** | 2026-08-12 |
 | [0008](0008-signed-replica-identity.md) | Signed replica identity and causal snapshot transport | **Accepted** | 2026-08-12 |
+| [0009](0009-capability-authenticated-service.md) | Capability-authenticated resident service | **Accepted** | 2026-08-13 |
 
 ## Current implementation boundary
 
