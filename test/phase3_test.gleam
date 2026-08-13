@@ -95,7 +95,32 @@ pub fn search_finds_exact_match_test() {
   |> should.be_true
 }
 
-/// Phase 3: empty query returns no results regardless of documents.
+/// The deterministic HNSW projection must agree with the exact finite-corpus
+/// oracle for this fixed lexical fixture. This proves reproducible mechanics,
+/// not semantic understanding.
+pub fn deterministic_hnsw_agrees_with_exact_oracle_test() {
+  let docs = [
+    vector_bridge.Document("task", "bk-auth", "authentication token middleware"),
+    vector_bridge.Document("task", "bk-auth-docs", "authentication token guide"),
+    vector_bridge.Document("task", "bk-ui", "dashboard layout color palette"),
+    vector_bridge.Document("memory", "mem-auth", "token rotation notes"),
+  ]
+  let approximate = vector_bridge.search(docs, "authentication token", 0.0, 4)
+  let exact = vector_bridge.exact_search(docs, "authentication token", 0.0, 4)
+  approximate |> should.equal(exact)
+}
+
+/// HNSW construction is deterministic for equivalent Bankai document inputs.
+pub fn deterministic_hnsw_repeats_same_ranking_test() {
+  let docs = [
+    vector_bridge.Document("task", "bk-1", "compile Gleam project"),
+    vector_bridge.Document("task", "bk-2", "compile release artifact"),
+    vector_bridge.Document("task", "bk-3", "write deployment guide"),
+  ]
+  vector_bridge.search(docs, "compile", 0.0, 3)
+  |> should.equal(vector_bridge.search(docs, "compile", 0.0, 3))
+}
+
 pub fn search_empty_query_returns_empty_test() {
   let docs = [vector_bridge.Document("task", "bk-1", "anything")]
   vector_bridge.search(docs, "", 0.0, 10) |> should.equal([])

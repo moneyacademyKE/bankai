@@ -1,9 +1,8 @@
-//// The bankai CLI — single-shot invocation over the JSONL-backed store.
+//// The bankai CLI — legacy JSONL commands used only by tests and non-task files.
 ////
-//// Every command result is wrapped in a JSON envelope: {"ok": <json>} on
-//// success, {"error": "<msg>"} on failure (G9). `run_in` is pure + testable;
-//// `main()` (in the root module) wires system argv and tries the warm daemon
-//// path first, falling back to this single-shot path.
+//// Live task operations go through the daemon/Mnesia boundary from the root module.
+//// `run_in` remains a pure compatibility seam for legacy fixtures, setup, memory,
+//// messages, and compaction; it is never the live task-write authority.
 
 import bankai/aarondb_bridge
 import bankai/actors/apply
@@ -311,7 +310,7 @@ fn stale_cmd(
   rest: List(String),
 ) -> Result(json.Json, String) {
   let days = parse_days(rest)
-  let cutoff = time.now() - days * 86_400
+  let cutoff = time.now() - days * time.day_ns
   let tasks =
     load_store(tasks_path)
     |> store.current_tasks()
@@ -863,7 +862,7 @@ fn sync_cmd(
                 [host, port_str, ..] -> {
                   case int.parse(port_str) {
                     Ok(port) -> {
-                      case sync_peer.fetch(host, port) {
+                      case sync_peer.fetch(host, port, workspace) {
                         Error(msg) -> [
                           #("error", host <> ":" <> port_str, msg),
                           ..reports
@@ -942,12 +941,12 @@ fn sync_cmd(
 // Transport-only helper retained for direct callers. The main CLI routes
 // sync-pull through the daemon, which performs the transactional import.
 fn sync_pull_cmd(
-  _workspace: String,
+  workspace: String,
   rest: List(String),
 ) -> Result(json.Json, String) {
   let host = parse_host(rest)
   let port = sync_peer.parse_port(rest, sync_peer.default_port)
-  sync_peer.fetch(host, port)
+  sync_peer.fetch(host, port, workspace)
   |> result.map(fn(snapshot) {
     json.string(
       "fetched "
@@ -1216,6 +1215,8 @@ pub fn usage() -> String {
   <> "  update <id> --claim [a]       claim: in_progress + assignee (default agent)\n"
   <> "  update <id> --label L         add a label\n"
   <> "  update <id> --priority N      set the priority\n"
+  <> "  auth mint <read|write|admin> [--ttl seconds]\n"
+  <> "                                mint signed service capability (admin only)\n"
   <> "  remember \"insight\"            persist a content-addressed memory\n"
   <> "  memories                      list persisted memories\n"
   <> "  inspect <hash>                render the task for a content hash\n"

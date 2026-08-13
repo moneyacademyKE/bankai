@@ -17,6 +17,8 @@ pub fn main() {
 
 fn wipe(ws: String) {
   let _ = simplifile.create_directory_all(ws)
+  let _ = mnesia_store.init(ws)
+  let _ = mnesia_store.reset_workspace_for_test(ws)
   let _ = simplifile.write("", to: ws <> "/tasks.jsonl")
   let _ = simplifile.write("", to: ws <> "/memories.jsonl")
   Nil
@@ -35,8 +37,8 @@ pub fn pull_imports_remote_tasks_through_transactional_store_test() {
   let _ = daemon_store.create(local, "Local only", [])
   let _ = daemon_store.create(remote, "Remote only", [])
 
-  // The peer server is read-only over Mnesia. The receiving daemon performs
-  // the only write through its transactional repository.
+  let remote_key = should.be_ok(sync_peer.public_key(remote))
+  let _ = should.be_ok(sync_peer.trust_peer(local, remote_key))
   let _ = process.spawn_unlinked(fn() { sync_peer.serve(remote, 17_661) })
   process.sleep(200)
   let out = should.be_ok(daemon_store.pull_peer(local, "localhost", 17_661))

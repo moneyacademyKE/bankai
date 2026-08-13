@@ -1,8 +1,9 @@
-//// TCP replication of Bankai's authoritative immutable task history.
+//// Signed TCP replication of Bankai's authoritative immutable task history.
 ////
-//// A replica is one versioned JSON document: every immutable version plus the
-//// sender's explicit current heads. This is intentionally not a head-only
-//// transport; history remains inspectable after convergence.
+//// The transport moves a signed snapshot payload. Mnesia remains the only
+//// receiver-side task authority: envelope verification happens before the
+//// transactional import boundary, and a verified conflict is recorded rather
+//// than silently choosing a remote head.
 
 import bankai/mnesia_store
 import bankai/serde
@@ -14,14 +15,83 @@ import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
+import gleam/result
 import gleam/string
 
 pub const default_port = 7654
 
-const protocol = "bankai-replica-v1"
+const envelope_protocol = "bankai-replica-v2"
+
+const payload_protocol = "bankai-replica-payload-v1"
+
+const replica_domain = "bankai-replica-v2"
 
 pub type Snapshot {
-  Snapshot(versions: List(types.Task), heads: List(types.Task))
+  Snapshot(versions: List(types.Task), heads: List(types.Task), author: String)
+}
+
+type EnvelopeWire {
+  EnvelopeWire(
+    domain: String,
+    payload: String,
+    author: String,
+    parents: List(String),
+    logical_clock: Int,
+    key_epoch: Int,
+    signature: String,
+  )
+}
+
+@external(erlang, "bankai_replica_ffi", "public_key")
+fn ffi_public_key(workspace: String) -> Result(String, String)
+
+@external(erlang, "bankai_replica_ffi", "trust_peer")
+fn ffi_trust_peer(workspace: String, public_key: String) -> Result(Nil, String)
+
+@external(erlang, "bankai_replica_ffi", "revoke_peer")
+fn ffi_revoke_peer(workspace: String, public_key: String) -> Result(Nil, String)
+
+@external(erlang, "bankai_replica_ffi", "sign_snapshot")
+fn ffi_sign_snapshot(
+  workspace: String,
+  payload: String,
+  parents: List(String),
+  clock: Int,
+) -> Result(String, String)
+
+@external(erlang, "bankai_replica_ffi", "verify_snapshot")
+fn ffi_verify_snapshot(
+  workspace: String,
+  payload: String,
+  author: String,
+  parents: List(String),
+  clock: Int,
+  epoch: Int,
+  signature: String,
+) -> Result(String, String)
+
+@external(erlang, "bankai_replica_ffi", "mark_applied")
+fn ffi_mark_applied(workspace: String, signature: String) -> Result(Nil, String)
+
+@external(erlang, "bankai_replica_ffi", "record_conflict")
+fn ffi_record_conflict(
+  workspace: String,
+  author: String,
+  detail: String,
+) -> Result(Nil, String)
+
+@external(erlang, "bankai_replica_ffi", "reset_identity_for_test")
+fn ffi_reset_identity_for_test(workspace: String) -> Result(Nil, String)
+
+pub fn reset_identity_for_test(workspace: String) -> Result(Nil, String) {
+  ffi_reset_identity_for_test(workspace)
+}
+
+@external(erlang, "bankai_replica_ffi", "adversarial_envelope_checks_for_test")
+fn ffi_adversarial_envelope_checks_for_test() -> Result(Nil, String)
+
+pub fn adversarial_envelope_checks_for_test() -> Result(Nil, String) {
+  ffi_adversarial_envelope_checks_for_test()
 }
 
 @external(erlang, "bankai_socket_ffi", "listen_tcp")
@@ -41,6 +111,26 @@ fn ffi_send(socket: Dynamic, data: String) -> Result(Dynamic, Dynamic)
 
 @external(erlang, "bankai_socket_ffi", "close_s")
 fn ffi_close(socket: Dynamic) -> Nil
+
+pub fn public_key(workspace: String) -> Result(String, String) {
+  ffi_public_key(workspace)
+}
+
+/// Trust provisioning is explicit. Receiving an unknown signer never creates a
+/// trust entry as a side effect of replication.
+pub fn trust_peer(
+  workspace: String,
+  public_key: String,
+) -> Result(Nil, String) {
+  ffi_trust_peer(workspace, public_key)
+}
+
+pub fn revoke_peer(
+  workspace: String,
+  public_key: String,
+) -> Result(Nil, String) {
+  ffi_revoke_peer(workspace, public_key)
+}
 
 pub fn parse_port(args: List(String), default: Int) -> Int {
   case args {
@@ -65,7 +155,7 @@ pub fn serve(workspace: String, port: Int) -> Nil {
       io.println(
         "bankai sync-serve listening on port "
         <> int.to_string(port)
-        <> " (immutable-history replication)",
+        <> " (signed immutable-history replication)",
       )
       serve_loop(workspace, listener)
     }
@@ -83,27 +173,75 @@ fn serve_loop(workspace: String, listener: Dynamic) -> Nil {
 }
 
 fn send_snapshot(workspace: String, connection: Dynamic) -> Nil {
-  let snapshot = case mnesia_store.version_store(workspace) {
-    Ok(versions) ->
-      Snapshot(
-        versions: versions |> store.list() |> without_wisps(),
-        heads: case mnesia_store.current_store(workspace) {
-          Ok(heads) -> heads |> store.current_tasks() |> without_wisps()
-          Error(_) -> []
-        },
-      )
-    Error(_) -> Snapshot(versions: [], heads: [])
-  }
-  let _ = ffi_send(connection, snapshot_json(snapshot) <> "\n")
+  let payload = snapshot_payload(workspace)
+  let message =
+    payload
+    |> result.try(fn(value) {
+      ffi_sign_snapshot(workspace, value.0, [], value.1)
+    })
+    |> result.unwrap(
+      "{\"protocol\":\"bankai-replica-v2\",\"error\":\"signing failed\"}",
+    )
+  let _ = ffi_send(connection, message <> "\n")
   let _ = ffi_close(connection)
   Nil
+}
+
+fn snapshot_payload(workspace: String) -> Result(#(String, Int), String) {
+  mnesia_store.projection_snapshot_rows(workspace)
+  |> result.try(fn(pair) {
+    let #(offset, heads) = pair
+    mnesia_store.version_store(workspace)
+    |> result.map(fn(versions) {
+      #(
+        json.to_string(
+          json.object([
+            #("protocol", json.string(payload_protocol)),
+            #("source_offset", json.int(offset)),
+            #(
+              "versions",
+              json.array(
+                versions |> store.list() |> without_wisps(),
+                of: serde.task_to_json,
+              ),
+            ),
+            #(
+              "heads",
+              json.array(heads |> without_wisps(), of: serde.task_to_json),
+            ),
+          ]),
+        ),
+        offset,
+      )
+    })
+  })
 }
 
 fn without_wisps(tasks: List(types.Task)) -> List(types.Task) {
   list.filter(tasks, fn(task) { task.kind != types.Wisp })
 }
 
-pub fn fetch(host: String, port: Int) -> Result(Snapshot, String) {
+/// Test and local tooling seam: produce the exact signed envelope that
+/// `sync-serve` sends, without starting a TCP listener.
+pub fn signed_snapshot_for_test(workspace: String) -> Result(String, String) {
+  snapshot_payload(workspace)
+  |> result.try(fn(value) { ffi_sign_snapshot(workspace, value.0, [], value.1) })
+}
+
+/// Test and diagnostic seam. Production callers use `fetch`; this exposes the
+/// same verifier so trust/revocation/replay assertions do not need a socket.
+pub fn decode_signed_snapshot_for_test(
+  workspace: String,
+  line: String,
+) -> Result(Snapshot, String) {
+  decode_signed_snapshot(workspace, line)
+}
+
+pub fn fetch(
+  host: String,
+  port: Int,
+  workspace: String,
+) -> Result(Snapshot, String) {
   case ffi_connect_tcp(host, port) {
     Error(_) ->
       Error(
@@ -114,8 +252,8 @@ pub fn fetch(host: String, port: Int) -> Result(Snapshot, String) {
       )
     Ok(connection) -> {
       let response = case ffi_recv_line(connection) {
-        Ok(line) -> decode_snapshot(line)
-        Error(_) -> Error("sync peer closed without a replica snapshot")
+        Ok(line) -> decode_signed_snapshot(workspace, line)
+        Error(_) -> Error("sync peer closed without a signed replica snapshot")
       }
       let _ = ffi_close(connection)
       response
@@ -123,35 +261,104 @@ pub fn fetch(host: String, port: Int) -> Result(Snapshot, String) {
   }
 }
 
-fn snapshot_json(snapshot: Snapshot) -> String {
-  json.to_string(
-    json.object([
-      #("protocol", json.string(protocol)),
-      #("versions", json.array(snapshot.versions, of: serde.task_to_json)),
-      #("heads", json.array(snapshot.heads, of: serde.task_to_json)),
-    ]),
-  )
-}
-
-fn decode_snapshot(line: String) -> Result(Snapshot, String) {
-  case json.parse(from: string.trim(line), using: snapshot_decoder()) {
-    Ok(snapshot) -> Ok(snapshot)
+fn decode_signed_snapshot(
+  workspace: String,
+  line: String,
+) -> Result(Snapshot, String) {
+  case json.parse(from: string.trim(line), using: envelope_decoder()) {
     Error(_) ->
       Error(
-        "incompatible sync peer response: expected bankai-replica-v1 snapshot",
+        "incompatible sync peer response: expected bankai-replica-v2 envelope",
       )
+    Ok(wire) -> {
+      let EnvelopeWire(
+        domain,
+        payload,
+        author,
+        parents,
+        clock,
+        epoch,
+        signature,
+      ) = wire
+      case domain == replica_domain {
+        False -> Error("replica envelope rejected: wrong Bankai domain")
+        True ->
+          ffi_verify_snapshot(
+            workspace,
+            payload,
+            author,
+            parents,
+            clock,
+            epoch,
+            signature,
+          )
+          |> result.try(decode_payload)
+          |> result.try(fn(snapshot) {
+            ffi_mark_applied(workspace, signature)
+            |> result.map(fn(_) { Snapshot(..snapshot, author:) })
+          })
+      }
+    }
+  }
+}
+
+fn decode_payload(payload: String) -> Result(Snapshot, String) {
+  case json.parse(from: payload, using: snapshot_decoder()) {
+    Ok(snapshot) -> Ok(snapshot)
+    Error(_) -> Error("replica envelope carries an invalid Bankai snapshot")
+  }
+}
+
+fn envelope_decoder() -> decode.Decoder(EnvelopeWire) {
+  use advertised_protocol <- decode.field("protocol", decode.string)
+  use domain <- decode.field("domain", decode.string)
+  use payload <- decode.field("payload", decode.string)
+  use author <- decode.field("author", decode.string)
+  use parents <- decode.field("parents", decode.list(of: decode.string))
+  use logical_clock <- decode.field("logical_clock", decode.int)
+  use key_epoch <- decode.field("key_epoch", decode.int)
+  use signature <- decode.field("signature", decode.string)
+  case advertised_protocol == envelope_protocol {
+    True ->
+      decode.success(EnvelopeWire(
+        domain:,
+        payload:,
+        author:,
+        parents:,
+        logical_clock:,
+        key_epoch:,
+        signature:,
+      ))
+    False ->
+      decode.failure(EnvelopeWire("", "", "", [], -1, 0, ""), envelope_protocol)
   }
 }
 
 fn snapshot_decoder() -> decode.Decoder(Snapshot) {
   use advertised_protocol <- decode.field("protocol", decode.string)
+  use _source_offset <- decode.field("source_offset", decode.int)
   use versions <- decode.field(
     "versions",
     decode.list(of: serde.task_decoder()),
   )
   use heads <- decode.field("heads", decode.list(of: serde.task_decoder()))
-  case advertised_protocol == protocol {
-    True -> decode.success(Snapshot(versions:, heads:))
-    False -> decode.failure(Snapshot(versions: [], heads: []), protocol)
+  case advertised_protocol == payload_protocol {
+    True -> decode.success(Snapshot(versions:, heads:, author: ""))
+    False ->
+      decode.failure(
+        Snapshot(versions: [], heads: [], author: ""),
+        payload_protocol,
+      )
   }
+}
+
+/// Domain conflicts are never silently imported. The conflict record is a
+/// durable audit artifact outside the task-head tables, so causal evidence is
+/// preserved even when the current materialization cannot advance.
+pub fn record_conflict(
+  workspace: String,
+  author: String,
+  detail: String,
+) -> Result(Nil, String) {
+  ffi_record_conflict(workspace, author, detail)
 }

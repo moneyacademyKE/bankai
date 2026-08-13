@@ -6,6 +6,7 @@
 
 import bankai/cli
 import bankai/mcp
+import bankai/platform_profile
 import bankai/socket
 import bankai/sync_peer
 import bankai/version
@@ -22,7 +23,16 @@ pub fn main() -> Nil {
   let args = argv()
   case args {
     // Long-running servers — block, no single-shot envelope.
-    ["serve", ..] -> socket.serve(cli.default_workspace)
+    ["serve", ..] ->
+      case platform_profile.load(cli.default_workspace) {
+        Ok(profile) ->
+          case profile.mode {
+            platform_profile.Local -> socket.serve(cli.default_workspace)
+            platform_profile.Clustered ->
+              socket.serve_clustered(cli.default_workspace)
+          }
+        Error(message) -> io.println(cli.error_envelope(message))
+      }
     ["mcp", ..] -> mcp.serve(cli.default_workspace)
     ["sync-serve", ..rest] ->
       sync_peer.serve(
@@ -75,6 +85,8 @@ fn daemon_request(
 ) -> Result(#(String, List(String)), String) {
   case method, params {
     "prime", ["--query", query, ..] -> Ok(#("prime_query", [query]))
+    "auth", ["mint", role, ..rest] -> Ok(#("auth_mint", [role, ..rest]))
+    "auth", _ -> Error("usage: auth mint <read|write|admin> [--ttl seconds]")
     "merge", [source_id, canonical_id, ..] ->
       Ok(#("merge", [source_id, canonical_id]))
     "merge", _ -> Error("usage: merge <duplicate-id> <canonical-id>")
@@ -84,6 +96,8 @@ fn daemon_request(
     "dep", ["tree", task_id, ..] -> Ok(#("dep_tree", [task_id]))
     "dep", _ ->
       Error("usage: dep add|list|tree <task-id> [target-id] [--type T]")
+    "cluster-status", _ -> Ok(#("cluster_status", []))
+    "cluster_status", _ -> Ok(#("cluster_status", []))
     _, _ -> Ok(#(method, params))
   }
 }
@@ -91,6 +105,8 @@ fn daemon_request(
 fn is_task_operation(method: String, params: List(String)) -> Bool {
   case method, params {
     "doctor", _ -> True
+    "cluster-status", _ -> True
+    "cluster_status", _ -> True
     "dep", ["list", ..] -> True
     "dep", ["tree", ..] -> True
     "ready", _ -> True

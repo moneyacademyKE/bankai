@@ -1,13 +1,18 @@
 //// Daemon-owned transactional command service.
 
+import aarondb/projection_index
 import bankai/aarondb_bridge
 import bankai/actors/apply
 import bankai/builder
 import bankai/cli
+import bankai/cluster
+import bankai/cluster_transport
 import bankai/compact
 import bankai/graph
 import bankai/memory
 import bankai/mnesia_store
+import bankai/platform_profile
+import bankai/projections
 import bankai/serde
 import bankai/storage/store
 import bankai/sync/jsonl
@@ -28,6 +33,11 @@ import gleam/list
 import gleam/option
 import gleam/result
 import gleam/string
+import gleamunison/identity
+
+pub type Claimed {
+  Claimed(task: Task, admission: option.Option(cluster.Admission))
+}
 
 pub fn list_tasks(
   workspace: String,
@@ -64,6 +74,7 @@ pub fn boot(workspace: String) -> Result(Nil, String) {
       mnesia_store.import_legacy_if_needed(workspace, store.from_list(tasks))
     })
   })
+  |> result.try(fn(_) { projections.start_runtime(workspace) })
 }
 
 pub fn show_task(workspace: String, id: String) -> Result(json.Json, String) {
@@ -157,7 +168,7 @@ pub fn stale_tasks(
   workspace: String,
   rest: List(String),
 ) -> Result(json.Json, String) {
-  let cutoff = time.now() - parse_days(rest) * 86_400
+  let cutoff = time.now() - parse_days(rest) * time.day_ns
   current_tasks(workspace)
   |> result.map(fn(tasks) {
     tasks
@@ -169,7 +180,8 @@ pub fn stale_tasks(
 }
 
 pub fn history(workspace: String, id: String) -> Result(json.Json, String) {
-  mnesia_store.version_store(workspace)
+  projection_gate(workspace)
+  |> result.try(fn(_) { mnesia_store.version_store(workspace) })
   |> result.try(fn(index) { aarondb_bridge.db_from_versions(store.list(index)) })
   |> result.map(fn(db) {
     aarondb_bridge.history_timeline(db, id)
@@ -181,7 +193,7 @@ pub fn history(workspace: String, id: String) -> Result(json.Json, String) {
 }
 
 pub fn analytics(workspace: String) -> Result(json.Json, String) {
-  current_tasks(workspace)
+  projected_tasks(workspace)
   |> result.try(fn(tasks) {
     aarondb_bridge.db_from_tasks(tasks)
     |> result.map(fn(db) {
@@ -208,7 +220,7 @@ pub fn search(
   workspace: String,
   rest: List(String),
 ) -> Result(json.Json, String) {
-  current_tasks(workspace)
+  projected_tasks(workspace)
   |> result.map(fn(tasks) {
     let task_docs =
       list.map(tasks, fn(task) {
@@ -227,28 +239,35 @@ pub fn semantic_duplicates(
   workspace: String,
   rest: List(String),
 ) -> Result(json.Json, String) {
-  current_tasks(workspace)
-  |> result.map(fn(tasks) {
+  projected_snapshot(workspace)
+  |> result.try(fn(snapshot) {
+    let #(offset, tasks) = snapshot
     let docs = task_documents(tasks)
     tasks
-    |> list.flat_map(fn(task) {
-      vector_bridge.search(
+    |> list.try_map(fn(task) {
+      vector_bridge.projected_search(
+        workspace,
+        offset,
         docs,
         task.title <> " " <> task.description,
         parse_threshold(rest, 0.78),
         6,
       )
-      |> list.filter(fn(match) { match.kind == "task" && match.id != task.id })
-      |> list.map(fn(match) {
-        json.object([
-          #("source", json.string(task.id)),
-          #("candidate", json.string(match.id)),
-          #("score", json.float(match.score)),
-          #("backend", json.string(vector_bridge.backend())),
-        ])
+      |> result.map(fn(matches) {
+        matches
+        |> list.filter(fn(match) { match.kind == "task" && match.id != task.id })
+        |> list.map(fn(match) {
+          json.object([
+            #("source", json.string(task.id)),
+            #("candidate", json.string(match.id)),
+            #("score", json.float(match.score)),
+            #("backend", json.string(vector_bridge.backend())),
+          ])
+        })
       })
     })
-    |> json.array(of: fn(value) { value })
+    |> result.map(list.flatten)
+    |> result.map(fn(matches) { json.array(matches, of: fn(value) { value }) })
   })
 }
 
@@ -266,40 +285,43 @@ pub fn prime_query(
   workspace: String,
   query: String,
 ) -> Result(json.Json, String) {
-  current_tasks(workspace)
-  |> result.map(fn(tasks) {
+  projected_snapshot(workspace)
+  |> result.try(fn(snapshot) {
+    let #(offset, tasks) = snapshot
     let task_docs = task_documents(tasks)
     let memory_docs = memory_documents(workspace)
-    let matches =
-      vector_bridge.search(list.append(task_docs, memory_docs), query, 0.18, 12)
-    let context =
-      matches
-      |> list.map(fn(match) {
-        "-["
-        <> match.kind
-        <> ":"
-        <> match.id
-        <> "] "
-        <> match_text(match, task_docs, memory_docs)
-      })
-      |> string.join("\n")
-    let base = cli.prime_text(workspace)
-    case context {
-      "" ->
-        json.string(
-          base <> "\n\n## Semantic context\nNo matches for: " <> query,
-        )
-      _ ->
-        json.string(
-          base
-          <> "\n\n## Semantic context ("
-          <> vector_bridge.backend()
-          <> ")\nQuery: "
-          <> query
-          <> "\n"
-          <> context,
-        )
-    }
+    let all_docs = list.append(task_docs, memory_docs)
+    vector_bridge.projected_search(workspace, offset, all_docs, query, 0.18, 12)
+    |> result.map(fn(matches) {
+      let context =
+        matches
+        |> list.map(fn(match) {
+          "-["
+          <> match.kind
+          <> ":"
+          <> match.id
+          <> "] "
+          <> match_text(match, task_docs, memory_docs)
+        })
+        |> string.join("\n")
+      let base = cli.prime_text(workspace)
+      case context {
+        "" ->
+          json.string(
+            base <> "\n\n## Semantic context\nNo matches for: " <> query,
+          )
+        _ ->
+          json.string(
+            base
+            <> "\n\n## Semantic context ("
+            <> vector_bridge.backend()
+            <> ")\nQuery: "
+            <> query
+            <> "\n"
+            <> context,
+          )
+      }
+    })
   })
 }
 
@@ -339,6 +361,51 @@ pub fn compact(workspace: String) -> Result(json.Json, String) {
 
 fn current_tasks(workspace: String) -> Result(List(Task), String) {
   mnesia_store.current_store(workspace) |> result.map(store.current_tasks)
+}
+
+/// Derived reads use the daemon-lifetime AaronDB projection runtime. It catches
+/// up from the durable Mnesia tail before every query; only a bootstrapping or
+/// unavailable runtime falls back to a fresh authoritative rebuild.
+fn projection_gate(workspace: String) -> Result(Nil, String) {
+  case projections.ensure_runtime(workspace) {
+    Ok(_) ->
+      case projections.runtime_status(workspace) {
+        Ok(status) -> projection_status_gate(status)
+        Error(_) -> bootstrap_projection_gate(workspace)
+      }
+    Error(_) -> bootstrap_projection_gate(workspace)
+  }
+}
+
+fn projection_status_gate(
+  status: projections.RuntimeStatus,
+) -> Result(Nil, String) {
+  let projections.RuntimeStatus(healthy, _, _, _, _, _, _, _, _, _, _, _, _, _) =
+    status
+  case healthy {
+    True -> Ok(Nil)
+    False -> Error("aarondb projection is unhealthy; Mnesia fallback required")
+  }
+}
+
+fn bootstrap_projection_gate(workspace: String) -> Result(Nil, String) {
+  projections.bootstrap(workspace)
+  |> result.try(fn(view) {
+    case projections.healthy(view) {
+      True -> Ok(Nil)
+      False ->
+        Error("aarondb projection is unhealthy; Mnesia fallback required")
+    }
+  })
+}
+
+fn projected_tasks(workspace: String) -> Result(List(Task), String) {
+  projected_snapshot(workspace) |> result.map(fn(snapshot) { snapshot.1 })
+}
+
+fn projected_snapshot(workspace: String) -> Result(#(Int, List(Task)), String) {
+  projection_gate(workspace)
+  |> result.try(fn(_) { mnesia_store.projection_snapshot_rows(workspace) })
 }
 
 fn parse_days(args: List(String)) -> Int {
@@ -581,13 +648,26 @@ pub fn update(
   id: String,
   status: String,
 ) -> Result(json.Json, String) {
+  case cluster.mode(workspace) {
+    Error(error) -> Error(error)
+    Ok(cluster.Local) -> update_local(workspace, id, status)
+    Ok(cluster.Cluster(_, _)) ->
+      Error("clustered claimant transitions require --fence <token>")
+  }
+}
+
+fn update_local(
+  workspace: String,
+  id: String,
+  status: String,
+) -> Result(json.Json, String) {
   case
     serde.status_from_string(status),
     mnesia_store.get_current(workspace, id)
   {
     Ok(new_status), Ok(previous) ->
-      builder.update(previous, fn(t) {
-        Task(..t, status: new_status, updated_at: time.now())
+      builder.update(previous, fn(task) {
+        Task(..task, status: new_status, updated_at: time.now())
       })
       |> mnesia_store.replace(workspace, previous, _)
       |> result_json
@@ -675,28 +755,132 @@ pub fn claim(
   id: String,
   rest: List(String),
 ) -> Result(json.Json, String) {
+  claim_record(workspace, id, rest)
+  |> result.map(claimed_json)
+}
+
+fn claim_record(
+  workspace: String,
+  id: String,
+  rest: List(String),
+) -> Result(Claimed, String) {
   let assignee = case rest {
     [value, ..] -> value
     [] -> "agent"
   }
-  case mnesia_store.get_current(workspace, id) {
-    Ok(previous) ->
-      case previous.status {
-        Open ->
-          builder.update(previous, fn(t) {
-            Task(
-              ..t,
-              status: InProgress,
-              assignee: option.Some(assignee),
-              updated_at: time.now(),
-            )
-          })
-          |> mnesia_store.replace(workspace, previous, _)
-          |> result_json
-        _ -> Error("task is not open: " <> id)
-      }
-    Error(error) -> Error(error)
+  mnesia_store.get_current(workspace, id)
+  |> result.try(fn(previous) {
+    case previous.status {
+      Open ->
+        builder.update(previous, fn(task) {
+          Task(
+            ..task,
+            status: InProgress,
+            assignee: option.Some(assignee),
+            updated_at: time.now(),
+          )
+        })
+        |> claim_admitted(workspace, previous, assignee, _)
+      _ -> Error("task is not open: " <> id)
+    }
+  })
+}
+
+fn claimed_json(claimed: Claimed) -> json.Json {
+  let Claimed(task, admission) = claimed
+  case admission {
+    option.None -> serde.task_to_json(task)
+    option.Some(cluster.Admission(fence, commit_index, idempotent, command_id)) ->
+      json.object([
+        #("task", serde.task_to_json(task)),
+        #("clustered", json.bool(True)),
+        #("fence", json.int(fence)),
+        #("commit_index", json.int(commit_index)),
+        #("idempotent", json.bool(idempotent)),
+        #("command_id", json.string(command_id)),
+      ])
   }
+}
+
+/// A fenced follow-up mutation is required only in explicit clustered mode.
+/// Local mode retains its existing daemon-owned Mnesia CAS behavior.
+pub fn update_fenced(
+  workspace: String,
+  id: String,
+  status: String,
+  fence_text: String,
+) -> Result(json.Json, String) {
+  case int.parse(fence_text), serde.status_from_string(status) {
+    Ok(fence), Ok(next_status) ->
+      mnesia_store.get_current(workspace, id)
+      |> result.try(fn(previous) {
+        builder.update(previous, fn(task) {
+          Task(..task, status: next_status, updated_at: time.now())
+        })
+        |> fenced_replace(workspace, previous, fence, _)
+      })
+      |> result_json
+    Error(_), _ -> Error("fence must be an integer")
+    _, Error(_) -> Error("invalid status: " <> status)
+  }
+}
+
+fn claim_admitted(
+  workspace: String,
+  previous: Task,
+  assignee: String,
+  updated: Task,
+) -> Result(Claimed, String) {
+  case cluster.mode(workspace) {
+    Error(error) -> Error(error)
+    Ok(cluster.Local) ->
+      mnesia_store.replace(workspace, previous, updated)
+      |> result.map(fn(task) { Claimed(task, option.None) })
+    Ok(cluster.Cluster(_, _)) ->
+      cluster.claim(
+        workspace,
+        previous.id,
+        assignee,
+        hash_text(previous),
+        hash_text(updated),
+        time.now(),
+      )
+      |> result.try(fn(admission) {
+        let cluster.Admission(_, _, _, command_id) = admission
+        mnesia_store.replace_committed(workspace, command_id, previous, updated)
+        |> result.map(fn(task) { Claimed(task, option.Some(admission)) })
+      })
+  }
+}
+
+fn fenced_replace(
+  workspace: String,
+  previous: Task,
+  fence: Int,
+  updated: Task,
+) -> Result(Task, String) {
+  case cluster.mode(workspace) {
+    Error(error) -> Error(error)
+    Ok(cluster.Local) ->
+      Error("fenced updates require a clustered Bankai profile")
+    Ok(cluster.Cluster(_, _)) ->
+      cluster.transition(
+        workspace,
+        previous.id,
+        hash_text(previous),
+        hash_text(updated),
+        fence,
+        time.now(),
+      )
+      |> result.try(fn(admission) {
+        let cluster.Admission(_, _, _, command_id) = admission
+        mnesia_store.replace_committed(workspace, command_id, previous, updated)
+      })
+  }
+}
+
+fn hash_text(task: Task) -> String {
+  identity.hash_to_debug_string(task.content_hash)
 }
 
 /// Deterministically claim the first ready task matching the optional label.
@@ -727,8 +911,8 @@ fn claim_first_available(
   case tasks {
     [] -> Error("no ready tasks available")
     [task, ..rest] ->
-      case claim(workspace, task.id, assignee_args) {
-        Ok(value) -> Ok(value)
+      case claim_record(workspace, task.id, assignee_args) {
+        Ok(value) -> Ok(claimed_json(value))
         Error(_) -> claim_first_available(rest, workspace, assignee_args)
       }
   }
@@ -903,12 +1087,43 @@ fn dependency_tree_json(
   }
 }
 
+pub fn vector_projection_status(
+  workspace: String,
+) -> Result(json.Json, String) {
+  vector_bridge.projection_status(workspace)
+  |> result.map(vector_projection_status_json)
+}
+
+fn vector_projection_status_json(
+  status: vector_bridge.ProjectionStatus,
+) -> json.Json {
+  let vector_bridge.ProjectionStatus(offset, documents, health, generation) =
+    status
+  json.object([
+    #("last_applied_offset", json.int(offset)),
+    #("documents", json.int(documents)),
+    #("generation", json.int(generation)),
+    #("health", json.string(vector_projection_health_name(health))),
+  ])
+}
+
+fn vector_projection_health_name(health: projection_index.Health) -> String {
+  case health {
+    projection_index.Building -> "building"
+    projection_index.Rebuilding -> "rebuilding"
+    projection_index.Queryable -> "queryable"
+    projection_index.Degraded(_) -> "degraded"
+    projection_index.Failed(_) -> "failed"
+  }
+}
+
 pub fn doctor(workspace: String) -> Result(json.Json, String) {
   case
     mnesia_store.current_store(workspace),
-    mnesia_store.version_store(workspace)
+    mnesia_store.version_store(workspace),
+    platform_profile.load(workspace)
   {
-    Ok(current), Ok(versions) -> {
+    Ok(current), Ok(versions), Ok(profile) -> {
       let tasks = store.current_tasks(current)
       let cycles = graph.cycle_edges(tasks)
       let missing =
@@ -923,23 +1138,204 @@ pub fn doctor(workspace: String) -> Result(json.Json, String) {
             }
           })
         })
+      let projection = projection_diagnostics(workspace)
+      let cluster = cluster_diagnostics(workspace)
+      let transport = cluster_transport.diagnose(workspace, profile)
+      let recovery = recovery_state(profile, cluster, projection, transport)
       Ok(
         json.object([
           #(
             "healthy",
-            json.bool(list.is_empty(cycles) && list.is_empty(missing)),
+            json.bool(
+              list.is_empty(cycles)
+              && list.is_empty(missing)
+              && recovery == "healthy",
+            ),
           ),
           #("tasks", json.int(list.length(tasks))),
           #("versions", json.int(list.length(store.list(versions)))),
           #("cycles", json.int(list.length(cycles))),
           #("missing_targets", json.int(list.length(missing))),
+          #("mode", json.string(platform_profile.mode_name(profile.mode))),
+          #("projection", projection),
+          #("cluster", cluster),
+          #("transport", cluster_transport.status_json(transport)),
+          #("recovery", json.string(recovery)),
           #("repair", json.string("none; diagnostics are read-only")),
         ]),
       )
     }
-    Error(error), _ -> Error(error)
-    _, Error(error) -> Error(error)
+    Error(error), _, _ -> Error(error)
+    _, Error(error), _ -> Error(error)
+    _, _, Error(error) -> Error(error)
   }
+}
+
+pub fn cluster_status(workspace: String) -> Result(json.Json, String) {
+  platform_profile.load(workspace)
+  |> result.try(fn(profile) {
+    cluster.status(workspace)
+    |> result.map(fn(status) {
+      let cluster_json = cluster.status_json(status)
+      let transport = cluster_transport.diagnose(workspace, profile)
+      json.object([
+        #("cluster", cluster_json),
+        #("transport", cluster_transport.status_json(transport)),
+        #(
+          "recovery",
+          json.string(recovery_state(
+            profile,
+            cluster_json,
+            projection_diagnostics(workspace),
+            transport,
+          )),
+        ),
+      ])
+    })
+  })
+}
+
+fn recovery_state(
+  profile: platform_profile.Profile,
+  cluster: json.Json,
+  projection: json.Json,
+  transport: cluster_transport.TransportStatus,
+) -> String {
+  case profile.mode, transport {
+    platform_profile.Clustered, cluster_transport.RecoveryRequired(_) ->
+      "recovery-required"
+    platform_profile.Clustered, _ ->
+      case
+        string.contains(json.to_string(cluster), "\"quorum\":\"healthy\"")
+        && string.contains(json.to_string(projection), "\"healthy\":true")
+      {
+        True -> "healthy"
+        False -> "degraded"
+      }
+    platform_profile.Local, _ ->
+      case string.contains(json.to_string(projection), "\"healthy\":true") {
+        True -> "healthy"
+        False -> "degraded"
+      }
+  }
+}
+
+fn cluster_diagnostics(workspace: String) -> json.Json {
+  case cluster.status(workspace) {
+    Ok(status) -> cluster.status_json(status)
+    Error(error) ->
+      json.object([
+        #("mode", json.string("unavailable")),
+        #("error", json.string(error)),
+      ])
+  }
+}
+
+/// AaronDB state is a projection diagnostic only: task truth is Mnesia. The
+/// daemon reports retained worker state, with a fresh rebuild only if startup
+/// failed before the runtime became available.
+fn projection_diagnostics(workspace: String) -> json.Json {
+  case projections.runtime_status(workspace) {
+    Ok(status) ->
+      json.object([
+        #("changefeed", projection_runtime_json(status)),
+        #("vector_index", vector_projection_diagnostics(workspace)),
+      ])
+    Error(_) ->
+      case projections.bootstrap(workspace) {
+        Ok(view) ->
+          json.object([
+            #("healthy", json.bool(projections.healthy(view))),
+            #("high_watermark", json.int(view.source.next_offset - 1)),
+            #("mode", json.string("fresh-mnesia-rebuild")),
+          ])
+        Error(error) ->
+          json.object([
+            #("healthy", json.bool(False)),
+            #("error", json.string(error)),
+          ])
+      }
+  }
+}
+
+fn vector_projection_diagnostics(workspace: String) -> json.Json {
+  case vector_projection_status(workspace) {
+    Ok(status) -> status
+    Error(error) ->
+      json.object([
+        #("health", json.string("unbuilt")),
+        #("error", json.string(error)),
+      ])
+  }
+}
+
+fn projection_runtime_json(status: projections.RuntimeStatus) -> json.Json {
+  let projections.RuntimeStatus(
+    healthy,
+    high_watermark,
+    history_state,
+    history_offset,
+    history_lag,
+    history_failure,
+    text_state,
+    text_offset,
+    text_lag,
+    text_failure,
+    vector_state,
+    vector_offset,
+    vector_lag,
+    vector_failure,
+  ) = status
+  json.object([
+    #("healthy", json.bool(healthy)),
+    #("high_watermark", json.int(high_watermark)),
+    #("mode", json.string("daemon-runtime")),
+    #(
+      "history",
+      projection_component_json(
+        history_state,
+        history_offset,
+        history_lag,
+        history_failure,
+      ),
+    ),
+    #(
+      "text",
+      projection_component_json(text_state, text_offset, text_lag, text_failure),
+    ),
+    #(
+      "vector_membership",
+      projection_component_json(
+        vector_state,
+        vector_offset,
+        vector_lag,
+        vector_failure,
+      ),
+    ),
+  ])
+}
+
+fn projection_component_json(
+  state: String,
+  offset: Int,
+  lag: Int,
+  failure: String,
+) -> json.Json {
+  json.object([
+    #("state", json.string(state)),
+    #("last_applied_offset", json.int(offset)),
+    #("lag", json.int(lag)),
+    #(
+      "failure",
+      json.nullable(
+        case failure == "" {
+          True -> option.None
+          False -> option.Some(failure)
+        },
+        of: json.string,
+      ),
+    ),
+  ])
 }
 
 fn relation_name(relation: types.RelationType) -> String {
@@ -1055,13 +1451,17 @@ pub fn pull_peer(
   host: String,
   port: Int,
 ) -> Result(json.Json, String) {
-  sync_peer.fetch(host, port)
+  sync_peer.fetch(host, port, workspace)
   |> result.try(fn(snapshot) {
     mnesia_store.import_replica_snapshot(
       workspace,
       store.from_list(snapshot.versions),
       snapshot.heads,
     )
+    |> result.map_error(fn(error) {
+      let _ = sync_peer.record_conflict(workspace, snapshot.author, error)
+      error
+    })
   })
   |> result.map(fn(_) {
     json.string(

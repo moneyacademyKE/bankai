@@ -118,7 +118,10 @@ pub fn stale_flags_old_active_tasks_test() {
   wipe(ws)
   let _ = cli.run_in(ws, ["init"])
   let now_ts = now()
-  let old = now_ts - 10 * 86_400
+  // Keep a full day between the stale cutoff and both samples. The old test
+  // sampled wall time twice at exactly the seven-day boundary, so midnight or
+  // scheduler drift could make the expected stale task appear fresh.
+  let old = now_ts - 8 * 86_400 * 1_000_000_000
   // Seed one fresh active task and one stale active task directly.
   let fresh =
     builder.build(
@@ -154,7 +157,7 @@ pub fn stale_excludes_completed_tasks_test() {
   let ws = "/tmp/bk_qd_stale_done"
   wipe(ws)
   let _ = cli.run_in(ws, ["init"])
-  let old = now() - 30 * 86_400
+  let old = now() - 30 * 86_400 * 1_000_000_000
   let done_old =
     builder.build(
       "bk-done",
@@ -177,7 +180,7 @@ pub fn stale_uses_default_7_days_test() {
   let ws = "/tmp/bk_qd_stale_default"
   wipe(ws)
   let _ = cli.run_in(ws, ["init"])
-  let old = now() - 8 * 86_400
+  let old = now() - 8 * 86_400 * 1_000_000_000
   // 8 days -> stale under the default 7
   let srv =
     builder.build(

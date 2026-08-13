@@ -46,6 +46,18 @@ pub fn tools_list_advertises_bankai_commands_test() {
   resp |> string.contains("dep_list") |> should.be_true
   resp |> string.contains("dep_tree") |> should.be_true
   resp |> string.contains("doctor") |> should.be_true
+  resp |> string.contains("cluster_status") |> should.be_true
+  resp |> string.contains("platform_status") |> should.be_true
+}
+
+pub fn platform_status_remains_a_daemon_only_mcp_health_contract_test() {
+  let resp =
+    mcp.handle_message(
+      ws,
+      "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"platform_status\",\"arguments\":{\"args\":[]}}}",
+    )
+  resp |> string.contains("\"isError\":true") |> should.be_true
+  resp |> string.contains("daemon required") |> should.be_true
 }
 
 pub fn tools_call_reports_daemon_requirement_without_jsonl_fallback_test() {
@@ -71,6 +83,16 @@ pub fn initialized_notification_emits_no_response_test() {
       "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}",
     )
   resp |> should.equal("")
+}
+
+pub fn tools_call_rejects_unadvertised_admin_proxy_test() {
+  let resp =
+    mcp.handle_message(
+      ws,
+      "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"auth_mint\",\"arguments\":{\"args\":[\"admin\",\"--ttl\",\"2592000\"]}}}",
+    )
+  resp |> string.contains("\"isError\":true") |> should.be_true
+  resp |> string.contains("unknown MCP tool: auth_mint") |> should.be_true
 }
 
 pub fn unknown_method_is_a_jsonrpc_error_test() {

@@ -81,16 +81,44 @@ fn tools_list_result() -> json.Json {
 
 fn tools_call(workspace: String, line: String) -> json.Json {
   let #(name, args) = parse_call(line)
-  let #(method, params) = daemon_request(name, args)
-  let envelope = case socket.client_request(workspace, method, params) {
-    Ok(value) -> value
-    Error(_) -> daemon_required_envelope(name)
+  let envelope = case is_advertised_tool(name) {
+    False -> "{\"error\":\"unknown MCP tool: " <> name <> "\"}"
+    True -> {
+      let #(method, params) = daemon_request(name, args)
+      case socket.client_request(workspace, method, params) {
+        Ok(value) -> value
+        Error(_) -> daemon_required_envelope(name)
+      }
+    }
   }
   let is_error = string.starts_with(envelope, "{\"error\"")
   json.object([
     #("content", json.array([text_content(envelope)], of: fn(j) { j })),
     #("isError", json.bool(is_error)),
   ])
+}
+
+fn is_advertised_tool(name: String) -> Bool {
+  case name {
+    "ready"
+    | "list"
+    | "show"
+    | "create"
+    | "update"
+    | "dep_list"
+    | "dep_tree"
+    | "doctor"
+    | "cluster_status"
+    | "platform_status"
+    | "merge"
+    | "remember"
+    | "memories"
+    | "inspect"
+    | "compact"
+    | "gate_satisfy"
+    | "wisp_create" -> True
+    _ -> False
+  }
 }
 
 fn daemon_request(name: String, args: List(String)) -> #(String, List(String)) {
@@ -101,6 +129,8 @@ fn daemon_request(name: String, args: List(String)) -> #(String, List(String)) {
     "dep_list" -> #("dep_list", args)
     "dep_tree" -> #("dep_tree", args)
     "doctor" -> #("doctor", args)
+    "cluster_status" -> #("cluster_status", args)
+    "platform_status" -> #("cluster_status", args)
     other -> #(other, args)
   }
 }
@@ -136,6 +166,8 @@ fn is_task_operation(name: String) -> Bool {
     | "dep_list"
     | "dep_tree"
     | "doctor"
+    | "cluster_status"
+    | "platform_status"
     | "merge"
     | "inspect"
     | "gate_satisfy"
@@ -171,6 +203,14 @@ fn tools() -> List(json.Json) {
       "Return a cycle-safe dependency tree for a task. args: [\"bk-task\"].",
     ),
     tool("doctor", "Run read-only task-store integrity diagnostics. args: []."),
+    tool(
+      "cluster_status",
+      "Report local/cluster mode, transport admission, leader, quorum, ReadIndex, leases, projections, and recovery state. args: [].",
+    ),
+    tool(
+      "platform_status",
+      "Alias for cluster_status with transport and recovery diagnostics. args: [].",
+    ),
     tool(
       "merge",
       "Consolidate a reviewed duplicate into a canonical task. args: [\"duplicate-id\", \"canonical-id\"].",

@@ -40,23 +40,28 @@ first.
 
 Bankai separates **operational truth**, **derived retrieval**, and **portable interchange**. The daemon is the single writer: it owns Bankai’s Mnesia tables and commits each head advance together with its immutable, content-addressed version. JSONL is no longer a live database; it is a deliberate export/import/backup/reconciliation format.
 
-The foundational decisions are [ADR-0001](docs/adrs/0001-hybrid-content-addressing.md), [ADR-0004](docs/adrs/0004-daemon-owned-transactional-store.md), [ADR-0005](docs/adrs/0005-bankai-native-workflow-parity.md), and [ADR-0006](docs/adrs/0006-federation-is-explicit-replication.md): keep stable task identity distinct from mobile code and rebuildable indexes, pursue workflow capability without importing Beads’s storage model, and distinguish snapshot reconciliation from federation.
+The foundational decisions are [ADR-0001](docs/adrs/0001-hybrid-content-addressing.md), [ADR-0004](docs/adrs/0004-daemon-owned-transactional-store.md), [ADR-0005](docs/adrs/0005-bankai-native-workflow-parity.md), [ADR-0006](docs/adrs/0006-federation-is-explicit-replication.md), [ADR-0007](docs/adrs/0007-aarondb-4.2-platform-authority.md), [ADR-0008](docs/adrs/0008-signed-replica-identity.md), and [ADR-0009](docs/adrs/0009-capability-authenticated-service.md): task identity remains distinct from mobile code and rebuildable indexes; transaction authority remains distinct from signed snapshot exchange, quorum coordination, and capability authentication.
 
 | Concern | Implementation | Authority / lifetime |
 |---|---|---|
 | Current task heads | Bankai-owned Mnesia `bankai_current_v2` | Durable source of truth, keyed by `{workspace, task_id}` |
 | Immutable task history | Bankai-owned Mnesia `bankai_versions_v2` | Durable content-addressed versions, keyed by `{workspace, content_hash}` |
-| Migration checkpoint | Bankai-owned Mnesia `bankai_meta_v2` | One-time legacy JSONL bootstrap state |
-| Mutations and fresh `list` / `ready` reads | UNIX-socket daemon → `daemon_store` → `mnesia_store` | Transactional daemon path |
-| Full-text, temporal, and vector retrieval | aarondb Datalog, BM25, HNSW, and vector helpers | Rebuildable in-memory projections; never authoritative |
-| Portable exchange | deterministic `.bankai/tasks.jsonl` | Explicit export, import, backup, and peer reconciliation |
+| Committed-change cursors | Bankai-owned Mnesia `bankai_meta_v2` | Snapshot offset, changefeed events, and projection checkpoints |
+| Local mutations and fresh reads | UNIX-socket daemon → `daemon_store` → Mnesia | One local transactional writer; no quorum claim |
+| Clustered mutations | AaronDB command/consensus/lease admission → idempotent Mnesia materialization | Explicit profile only; committed command ID plus fencing token |
+| Full-text, temporal, and vector retrieval | AaronDB durable-log/changefeed + Datalog/BM25/HNSW projections | Rebuildable daemon-local projections; never authoritative |
+| Cluster transport admission | AaronDB identity policy + `.bankai/cluster-transport.json` | Explicit TLS-distribution configuration; missing/mismatched config fails closed |
+| Portable exchange | Signed TCP replica envelope or deliberate JSONL import/export | Snapshot reconciliation; not a consensus path |
 | Mobile rules + eval | `gleamunison/codebase` + `gleamunison/repl` | Allow-listed/sandboxed code mobility |
-| Graph readiness and cycle checks | bankai’s own pure graph module | Derived from current task heads |
-| MCP server | bankai’s thin stdio adapter | Protocol surface over Bankai commands |
+| Graph readiness and cycle checks | Bankai’s own pure graph module | Derived from current task heads |
+| MCP server | Bankai’s thin stdio adapter | Protocol surface over daemon commands |
+| Resident service authentication | HMAC-authenticated AaronDB capabilities | Read/write/admin authorization at the wire edge; workspace secret is local authority |
 
-`aarondb` is deliberately **not** Bankai’s task database. It supplies derived views: Datalog-backed `history`/`analytics`, BM25 `search`, and HNSW retrieval for `duplicates --semantic` and `prime --query`. The default vector backend is a deterministic term-hash lexical embedding; it finds overlapping terminology, not genuine semantic synonyms.
+`aarondb` is deliberately **not** Bankai’s task database. It supplies ordered committed-change consumption, restartable projection lifecycle, Datalog-backed `history`/`analytics`, BM25 `search`, managed HNSW retrieval, signed envelopes, and—only under an explicit clustered profile—command admission, leases, fences, and quorum/read-index status. The default vector backend is a deterministic term-hash lexical embedding; it finds overlapping terminology, not genuine semantic synonyms.
 
-The legacy in-process actors remain useful for supervision and sequencing, but Mnesia transactions—not actor memory—are the correctness boundary. Native CLI and MCP task operations route through the daemon and do not fall back to JSONL when it is unavailable. Mnesia runtime files (`Mnesia.*/`) are ignored by Git; recover a workspace by starting the daemon to bootstrap/import its JSONL snapshot, or import a known-good `bankai backup` snapshot.
+The legacy in-process actors remain useful for supervision and sequencing, but Mnesia transactions—not actor memory—are the local correctness boundary. Native CLI and MCP task operations route through the daemon and do not fall back to JSONL when it is unavailable. Mnesia runtime files (`Mnesia.*/`) are ignored by Git; recover local task truth by starting the daemon to bootstrap/import its JSONL snapshot, or import a known-good `bankai backup` snapshot. Projection loss is repaired from Mnesia snapshot plus ordered tail.
+
+Clustered serving additionally requires `.bankai/bankai-platform.json` plus a matching `.bankai/cluster-transport.json`; the transport config names the cluster/node identity, bounded RPC limits, reconnect budget, and TLS-distribution admission facts. A missing, malformed, or mismatched transport config produces `recovery-required` status and prevents clustered serving. Use `bankai doctor` or MCP `platform_status` to inspect mode, transport, quorum, lease, projection, and recovery state without scraping logs.
 
 ## Product surface
 
@@ -124,34 +129,49 @@ bankai sync-pull --host H [--port N]            # pull + reconcile a peer snapsh
 # — infrastructure —
 bankai inspect <hash>                           # render an immutable task version by hash
 bankai hooks install                            # install a pre-commit hook (runs bankai gc)
-bankai serve                                    # daemon: Mnesia authority + transactional task commands
-bankai mcp                                      # MCP stdio server; task tools require the daemon
+bankai serve                                    # local or explicitly configured clustered daemon
+bankai doctor                                   # Mnesia, projection, cluster, transport, recovery diagnostics
+bankai cluster-status                           # cluster + transport + recovery status JSON
+bankai mcp                                      # MCP stdio server; use platform_status for the same health view
 bankai setup <claude|codex|cursor|factory|mux|opencode|windsurf>
+
+# — authenticated service capabilities —
+bankai auth mint read --ttl 3600               # read-only bearer capability
+bankai auth mint write --ttl 3600              # mutation-only bearer capability
 ```
+
+### Authenticated resident service
+
+`bankai serve` is a concurrent, fail-closed UNIX-socket service. Every wire request carries an HMAC-signed, expiring bearer capability. AaronDB’s `Action`/`Resource`/`Capability` policy enforces three scopes at the protocol edge: `read` can query but cannot mutate, `write` can mutate but cannot mint tokens, and `admin` subsumes both and may mint attenuated capabilities. Domain handlers never receive credentials.
+
+The ordinary local CLI bootstraps a short-lived admin capability from `.bankai/service-auth.key`; the 32-byte secret is created with mode `0600` and is never returned. Programmatic clients call `socket.client_request_with_token(workspace, method, params, token)`. Missing, expired, tampered, or under-scoped tokens fail before dispatch. Capabilities are bearer credentials: do not log or commit them. They scope protocol clients that do not already have the workspace owner’s filesystem or code-execution authority; they are **not** a same-OS-user sandbox, because that user can read the workspace key and control the local CLI. The service remains local UNIX-domain transport; network exposure additionally requires TLS and an external identity/bootstrap policy.
 
 All command output is a JSON envelope — `{"ok": <json>}` on success, `{"error": "<msg>"}` on failure — so agents parse results uniformly. Task operations require `bankai serve`; memory, messaging, compaction, setup, and hooks remain local file operations.
 
 ## Status
 
-The local transactional release is implemented and verified. Task kinds, explicit parent links, typed dependency semantics, deferral, gate state, local-only wisps, duplicate consolidation, diagnostics, MCP routing, and Mnesia-backed task reads are present.
+The AaronDB 4.2 platform integration is implemented and verified for Bankai’s defined local and clustered contracts. Local mode has durable Mnesia authority, ordered committed changes, restartable retrieval projections, and JSONL interchange. Clustered mode has explicit command/lease/fence admission and idempotent Mnesia materialization; it refuses to start without a matching authenticated transport profile.
 
-- [x] [ADR-0001](docs/adrs/0001-hybrid-content-addressing.md) — Accepted; storage amendment points to ADR-0004
-- [x] [ADR-0002](docs/adrs/0002-canonical-serialization-versioning.md) — Accepted
-- [x] [ADR-0003](docs/adrs/0003-mobile-rule-sandbox.md) — Accepted and implemented
-- [x] Content-addressed immutable task versions and canonical encoding
-- [x] Daemon-owned Mnesia task heads/history; transactional task commands and MCP task routing
-- [x] JSONL export, import, backup, and snapshot reconciliation
-- [x] aarondb derived retrieval: Datalog history/analytics, BM25 search, lexical HNSW retrieval
-- [x] Task kinds, explicit parent links, typed dependencies, deferral, gates, local-only wisps, duplicate merge, and `doctor`
-- [x] CI format/build/test coverage; current suite: **149 passing, 0 failures**
+- [x] [ADR-0001](docs/adrs/0001-hybrid-content-addressing.md) — accepted; stable task identity and canonical encoding
+- [x] [ADR-0004](docs/adrs/0004-daemon-owned-transactional-store.md) — daemon-owned Mnesia current heads and immutable versions
+- [x] [ADR-0007](docs/adrs/0007-aarondb-4.2-platform-authority.md) — local/cluster authority, committed events, projections, command/fence boundary
+- [x] [ADR-0008](docs/adrs/0008-signed-replica-identity.md) — signed replica envelopes, explicit trust, replay rejection, and conflict recording
+- [x] [ADR-0009](docs/adrs/0009-capability-authenticated-service.md) — signed expiring read/write/admin capabilities at the resident service edge
+- [x] AaronDB durable-log/changefeed projection runtime with checkpoints, restart/replay, vector lifecycle, and health diagnostics
+- [x] Explicit clustered command admission, `ready --claim` fencing, ReadIndex/quorum status, and fail-closed TLS-distribution configuration
+- [x] `doctor`, socket `cluster_status`, and MCP `platform_status` report local/cluster mode, projections, leases, transport, and recovery state
+- [x] Migration rehearsal: Mnesia → JSONL export → clean Mnesia import preserves immutable versions and current head
+- [x] Failure rehearsal: partition/reorder/crash/slow-follower/membership/clock schedules are evaluated by the AaronDB distributed harness; missing transport config fails closed
+- [x] Current suite: **182 passing, 0 failures** on 2026-08-13
 
 ### Deliberately not shipped
 
-- Cross-machine consensus, signed federation envelopes, remote dependency/gate facts, and Raft: designed in [ADR-0006](docs/adrs/0006-federation-is-explicit-replication.md), not implemented.
-- Transactional molecules/templates: deferred; no `molecule` command or data model exists yet.
-- Real embedding providers: the default vector backend is lexical term hashing, not synonym-aware embeddings.
-- A scalable persistent vector-index lifecycle: the per-command HNSW projection is best-effort and unsuitable for large boards; see the [benchmark](docs/projection-benchmark-2026-08-08.md).
-- External PR/CI gate adapters and vendor-coupled GitHub/GitLab synchronization.
+- **Network service exposure:** resident service authentication is local UNIX-domain only. No network listener, TLS bootstrap, token revocation service, or production identity-provider integration is claimed.
+- **Multi-node production deployment evidence:** the clustered adapter has explicit one-voter rehearsal and fail-closed transport admission, but no live multi-host TLS-distribution deployment, quorum-loss recovery drill, or performance SLO. Do not market it as production HA yet.
+- **Automatic remote-provider gates:** GitHub/CI/remote dependency facts remain outside the credential-free core.
+- **Transactional molecules/templates:** deferred; no `molecule` command or data model exists yet.
+- **Real embedding providers:** the default vector backend is lexical term hashing, not synonym-aware embeddings.
+- **Disk-persistent vector index:** the managed HNSW projection is daemon-local and rebuildable from Mnesia; it is not a durable authority or a cross-restart index cache.
 
 ## Historical Beads roadmap
 

@@ -2,7 +2,11 @@
 //// write authority; JSONL is no longer a fallback for mutations.
 
 import bankai/cli
+import bankai/cluster_transport
 import bankai/daemon_store
+import bankai/platform_profile
+import bankai/service_auth
+import bankai/service_protocol
 import bankai/sync/jsonl
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -10,6 +14,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/json
+import gleam/result
 import gleam/string
 
 pub type Request {
@@ -49,6 +54,10 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
       }
     "update" ->
       case request.params {
+        [id, "--fence", fence, status, ..] ->
+          daemon_result(daemon_store.update_fenced(workspace, id, status, fence))
+        [id, status, "--fence", fence, ..] ->
+          daemon_result(daemon_store.update_fenced(workspace, id, status, fence))
         [id, "--defer-until", until, ..] ->
           daemon_result(daemon_store.defer_until(workspace, id, until))
         [id, "--satisfy-gate", ..] ->
@@ -100,6 +109,7 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
         _ -> ErrorResponse(message: "dep_tree requires <task-id>")
       }
     "doctor" -> daemon_result(daemon_store.doctor(workspace))
+    "cluster_status" -> daemon_result(daemon_store.cluster_status(workspace))
     "backup" -> daemon_result(daemon_store.backup_jsonl(workspace))
     "export" -> daemon_result(daemon_store.export_jsonl(workspace))
     "import" ->
@@ -181,6 +191,27 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
         Ok(_) -> OkResponse(value: cli.run_in(workspace, ["init"]))
         Error(message) -> ErrorResponse(message: message)
       }
+    "auth_mint" ->
+      case request.params {
+        [role, "--ttl", ttl_text] ->
+          case int.parse(ttl_text) {
+            Ok(ttl) ->
+              daemon_result(
+                service_auth.mint(workspace, role, ttl)
+                |> result.map(json.string),
+              )
+            Error(_) -> ErrorResponse(message: "auth ttl must be an integer")
+          }
+        [role] ->
+          daemon_result(
+            service_auth.mint_default(workspace, role)
+            |> result.map(json.string),
+          )
+        _ ->
+          ErrorResponse(
+            message: "auth_mint requires <read|write|admin> [--ttl seconds]",
+          )
+      }
     _ -> ErrorResponse(message: "unknown method: " <> request.method)
   }
 }
@@ -209,6 +240,15 @@ pub fn handle_line(workspace: String, line: String) -> String {
       }
     }
   }
+}
+
+pub fn handle_authenticated_line(workspace: String, line: String) -> String {
+  service_protocol.handle_line(workspace, line, fn(method, params) {
+    case handle_request(workspace, Request(method:, params:)) {
+      OkResponse(value) -> Ok(value)
+      ErrorResponse(message) -> Error(message)
+    }
+  })
 }
 
 fn parse_request(line: String) -> Result(#(String, List(String), Int), Nil) {
@@ -287,22 +327,52 @@ fn ffi_controlling_process(
 // Daemon: `bankai serve` — blocks in an accept loop.
 // ---------------------------------------------------------------------------
 
-/// Start the daemon: listen on <workspace>/bankai.sock and serve forever.
+/// Start an explicit local-mode daemon. A clustered profile is refused here so
+/// callers cannot accidentally create a second independent writer.
 pub fn serve(workspace: String) -> Nil {
+  platform_profile.load(workspace)
+  |> result.try(platform_profile.require_local_daemon)
+  |> serve_with_profile(workspace, "local")
+}
+
+/// Start an explicit clustered daemon. The platform profile and TLS-distribution
+/// admission config must agree before command admission can materialize Mnesia
+/// state. A bad config fails closed rather than emitting local-only cluster lies.
+pub fn serve_clustered(workspace: String) -> Nil {
+  platform_profile.load(workspace)
+  |> result.try(platform_profile.require_clustered_daemon)
+  |> result.try(fn(_) {
+    platform_profile.load(workspace)
+    |> result.try(fn(profile) {
+      cluster_transport.require_ready(workspace, profile)
+    })
+  })
+  |> serve_with_profile(workspace, "clustered")
+}
+
+fn serve_with_profile(
+  profile: Result(Nil, String),
+  workspace: String,
+  mode: String,
+) -> Nil {
   let _ = jsonl.ensure_dir(workspace)
-  case daemon_store.boot(workspace) {
-    Error(message) ->
+  case profile, daemon_store.boot(workspace) {
+    Error(message), _ ->
+      io.println_error("bankai: platform profile failed: " <> message)
+    _, Error(message) ->
       io.println_error("bankai: Mnesia boot failed: " <> message)
-    Ok(_) -> {
-      let path = socket_path(workspace)
-      let _ = ffi_delete_path(path)
-      case ffi_listen(path) {
-        Error(_) -> io.println_error("bankai: failed to listen on " <> path)
-        Ok(ls) -> {
-          io.println("bankai daemon listening on " <> path)
-          serve_loop(workspace, ls)
-        }
-      }
+    Ok(_), Ok(_) -> listen(workspace, mode)
+  }
+}
+
+fn listen(workspace: String, mode: String) -> Nil {
+  let path = socket_path(workspace)
+  let _ = ffi_delete_path(path)
+  case ffi_listen(path) {
+    Error(_) -> io.println_error("bankai: failed to listen on " <> path)
+    Ok(ls) -> {
+      io.println("bankai " <> mode <> " daemon listening on " <> path)
+      serve_loop(workspace, ls)
     }
   }
 }
@@ -325,7 +395,7 @@ fn serve_loop(workspace: String, ls: Dynamic) -> Nil {
 fn handle_conn(workspace: String, sock: Dynamic) -> Nil {
   case ffi_recv_line(sock) {
     Ok(line) -> {
-      let _ = ffi_send(sock, handle_line(workspace, line) <> "\n")
+      let _ = ffi_send(sock, handle_authenticated_line(workspace, line) <> "\n")
       Nil
     }
     Error(_) -> Nil
@@ -345,6 +415,20 @@ pub fn client_request(
   method: String,
   params: List(String),
 ) -> Result(String, String) {
+  service_auth.local_admin_token(workspace)
+  |> result.try(fn(token) {
+    client_request_with_token(workspace, method, params, token)
+  })
+}
+
+/// Send an attenuated request to the resident service. The token is included in
+/// the request only; errors and responses never echo bearer credentials.
+pub fn client_request_with_token(
+  workspace: String,
+  method: String,
+  params: List(String),
+  token: String,
+) -> Result(String, String) {
   case ffi_connect(socket_path(workspace)) {
     Error(_) -> Error("no daemon")
     Ok(sock) -> {
@@ -352,13 +436,14 @@ pub fn client_request(
         json.object([
           #("method", json.string(method)),
           #("params", json.array(params, of: json.string)),
+          #("token", json.string(token)),
           #("id", json.int(1)),
         ])
         |> json.to_string()
       let _ = ffi_send(sock, req <> "\n")
-      let result = ffi_recv_line(sock)
+      let response = ffi_recv_line(sock)
       let _ = ffi_close(sock)
-      case result {
+      case response {
         Ok(line) -> extract_result(line)
         Error(_) -> Error("no response from daemon")
       }
