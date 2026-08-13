@@ -193,7 +193,7 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
       }
     "auth_mint" ->
       case request.params {
-        [role, "--ttl", ttl_text, ..] ->
+        [role, "--ttl", ttl_text] ->
           case int.parse(ttl_text) {
             Ok(ttl) ->
               daemon_result(
@@ -202,12 +202,15 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
               )
             Error(_) -> ErrorResponse(message: "auth ttl must be an integer")
           }
-        [role, ..] ->
+        [role] ->
           daemon_result(
             service_auth.mint_default(workspace, role)
             |> result.map(json.string),
           )
-        _ -> ErrorResponse(message: "auth_mint requires <read|write|admin>")
+        _ ->
+          ErrorResponse(
+            message: "auth_mint requires <read|write|admin> [--ttl seconds]",
+          )
       }
     _ -> ErrorResponse(message: "unknown method: " <> request.method)
   }

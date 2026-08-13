@@ -2,9 +2,11 @@ import bankai/daemon_store
 import bankai/service_auth
 import bankai/socket
 import gleam/erlang/process
+import gleam/list
 import gleam/string
 import gleeunit
 import gleeunit/should
+import simplifile
 
 pub fn main() {
   gleeunit.main()
@@ -47,6 +49,96 @@ pub fn tampered_capability_is_rejected_test() {
   |> should.be_error
   |> string.contains("signature")
   |> should.be_true
+}
+
+pub fn policy_is_explicit_and_parameter_sensitive_test() {
+  reset()
+  let read = should.be_ok(service_auth.mint(workspace, "read", 3600))
+  let write = should.be_ok(service_auth.mint(workspace, "write", 3600))
+
+  service_auth.authorize_request(workspace, read, "ready", []) |> should.be_ok
+  service_auth.authorize_request(workspace, read, "ready", ["--claim", "agent"])
+  |> should.be_error
+  service_auth.authorize_request(workspace, write, "ready", ["--claim", "agent"])
+  |> should.be_ok
+  service_auth.authorize_request(workspace, read, "future_mutation", [])
+  |> should.be_error
+  |> string.contains("unknown service method")
+  |> should.be_true
+}
+
+pub fn existing_permissive_secret_fails_closed_test() {
+  let private_workspace = "/tmp/bankai_service_auth_permissions_test"
+  let key = private_workspace <> "/service-auth.key"
+  service_auth.reset_for_test(private_workspace)
+  let _ = simplifile.create_directory_all(private_workspace)
+  let _ = simplifile.write(string.repeat("x", times: 32), to: key)
+  let _ = simplifile.set_permissions_octal(for_file_at: key, to: 0o644)
+
+  service_auth.mint(private_workspace, "read", 60)
+  |> should.be_error
+  |> string.contains("permissions must be 0600")
+  |> should.be_true
+}
+
+pub fn new_secret_is_private_test() {
+  let private_workspace = "/tmp/bankai_service_auth_new_secret_test"
+  let key = private_workspace <> "/service-auth.key"
+  service_auth.reset_for_test(private_workspace)
+  service_auth.mint(private_workspace, "read", 60) |> should.be_ok
+
+  let info = should.be_ok(simplifile.file_info(key))
+  simplifile.file_info_permissions_octal(info) |> should.equal(0o600)
+}
+
+pub fn concurrent_first_use_shares_one_private_secret_test() {
+  let private_workspace = "/tmp/bankai_service_auth_race_test"
+  let key = private_workspace <> "/service-auth.key"
+  service_auth.reset_for_test(private_workspace)
+  let replies = process.new_subject()
+  let requests = [1, 2, 3, 4, 5, 6, 7, 8]
+  let _ =
+    requests
+    |> list.map(fn(_) {
+      process.spawn_unlinked(fn() {
+        process.send(replies, service_auth.mint(private_workspace, "read", 60))
+      })
+    })
+
+  requests
+  |> list.each(fn(_) {
+    process.receive_forever(from: replies)
+    |> should.be_ok
+  })
+  let info = should.be_ok(simplifile.file_info(key))
+  simplifile.file_info_permissions_octal(info) |> should.equal(0o600)
+  info.size |> should.equal(32)
+}
+
+pub fn malformed_mint_arguments_are_rejected_test() {
+  reset()
+  case
+    socket.handle_request(
+      workspace,
+      socket.Request("auth_mint", ["read", "--ttl"]),
+    )
+  {
+    socket.ErrorResponse(message) ->
+      message
+      |> string.contains("requires <read|write|admin> [--ttl seconds]")
+      |> should.be_true
+    socket.OkResponse(_) -> False |> should.be_true
+  }
+
+  case
+    socket.handle_request(
+      workspace,
+      socket.Request("auth_mint", ["read", "--unexpected"]),
+    )
+  {
+    socket.ErrorResponse(_) -> True |> should.be_true
+    socket.OkResponse(_) -> False |> should.be_true
+  }
 }
 
 pub fn authenticated_wire_fails_closed_and_enforces_scope_test() {

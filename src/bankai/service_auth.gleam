@@ -69,17 +69,17 @@ pub fn local_admin_token(workspace: String) -> Result(String, String) {
   mint(workspace, "admin", 300)
 }
 
-/// Authenticate and authorize one protocol method. Unknown methods default to
-/// read authority, then fail as unknown during dispatch; this avoids turning
-/// method classification into an authorization bypass.
+/// Authenticate and authorize one protocol method. Every dispatched method has
+/// an explicit policy; unknown methods fail closed before dispatch.
 pub fn authorize_request(
   workspace: String,
   signed_token: String,
   method: String,
   params: List(String),
 ) -> Result(Nil, String) {
+  use required <- result.try(required_capability(method, params))
   use token <- result.try(verify(workspace, signed_token))
-  auth.authorize(token, [required_capability(method, params)])
+  auth.authorize(token, [required])
   |> result.map_error(fn(_) { "capability denied for method: " <> method })
 }
 
@@ -100,6 +100,10 @@ fn verify(
   workspace: String,
   signed_token: String,
 ) -> Result(auth.Token, String) {
+  use _ <- result.try(case string.starts_with(signed_token, "SFMyNTY.") {
+    True -> Ok(Nil)
+    False -> Error("capability token algorithm must be HS256")
+  })
   use secret <- result.try(secret(workspace))
   use payload_bits <- result.try(
     crypto.verify_signed_message(signed_token, secret)
@@ -123,10 +127,10 @@ fn verify(
 fn required_capability(
   method: String,
   params: List(String),
-) -> auth.Capability {
+) -> Result(auth.Capability, String) {
   let action = case method, params {
-    "auth_mint", _ -> auth.Admin
-    "ready", ["--claim", ..] -> auth.Write
+    "auth_mint", _ -> Ok(auth.Admin)
+    "ready", ["--claim", ..] -> Ok(auth.Write)
     "create", _
     | "update", _
     | "merge", _
@@ -138,15 +142,34 @@ fn required_capability(
     | "sync_pull", _
     | "remember", _
     | "compact", _
-    | "rule_register", _
-    | "rule_approve", _
-    | "rule_revoke", _
-    | "rule_eval", _
     | "init", _
-    -> auth.Write
-    _, _ -> auth.Read
+    -> Ok(auth.Write)
+    "ready", _
+    | "list", _
+    | "dep_list", _
+    | "dep_tree", _
+    | "doctor", _
+    | "cluster_status", _
+    | "memories", _
+    | "show", _
+    | "count", _
+    | "blocked", _
+    | "cycles", _
+    | "duplicates", _
+    | "stale", _
+    | "history", _
+    | "analytics", _
+    | "search", _
+    | "prime_query", _
+    | "epic", _
+    | "inspect", _
+    -> Ok(auth.Read)
+    _, _ -> Error("unknown service method: " <> method)
   }
-  auth.Capability(action, auth.Database(resource))
+  action
+  |> result.map(fn(required_action) {
+    auth.Capability(required_action, auth.Database(resource))
+  })
 }
 
 fn token_payload(access: Access, id: String, expires_at: Int) -> String {

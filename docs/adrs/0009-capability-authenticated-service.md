@@ -26,6 +26,7 @@ Authenticate once at the JSON-line protocol edge and pass only method/parameter 
 - Authorization is one composable policy boundary rather than checks scattered through handlers.
 - AaronDB supplies authority vocabulary and subsumption, while Bankai owns authentication and secret lifecycle.
 - Bearer tokens must not be logged or committed; compromise lasts until expiry or workspace-secret rotation.
+- Capabilities constrain protocol clients that do not already possess the workspace owner's filesystem/code-execution authority. They are not a sandbox between arbitrary processes running as the same OS user, because that user can read the workspace key and control the local client.
 - The service remains UNIX-domain local transport. Network exposure still requires TLS, peer identity, bootstrap policy, and revocation infrastructure; this ADR does not claim those.
 - Mnesia remains task authority. Authentication does not create a second data store or alter transaction semantics.
 

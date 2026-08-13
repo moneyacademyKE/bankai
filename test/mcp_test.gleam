@@ -85,6 +85,16 @@ pub fn initialized_notification_emits_no_response_test() {
   resp |> should.equal("")
 }
 
+pub fn tools_call_rejects_unadvertised_admin_proxy_test() {
+  let resp =
+    mcp.handle_message(
+      ws,
+      "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"auth_mint\",\"arguments\":{\"args\":[\"admin\",\"--ttl\",\"2592000\"]}}}",
+    )
+  resp |> string.contains("\"isError\":true") |> should.be_true
+  resp |> string.contains("unknown MCP tool: auth_mint") |> should.be_true
+}
+
 pub fn unknown_method_is_a_jsonrpc_error_test() {
   let resp =
     mcp.handle_message(
