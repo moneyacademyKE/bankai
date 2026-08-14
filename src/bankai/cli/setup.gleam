@@ -43,23 +43,41 @@ pub fn inject_instructions(existing: String, instructions: String) -> String {
   }
 }
 
+/// Repo root that owns agent directive files: the parent of the `.bankai`
+/// workspace. A workspace that is not a `.bankai` path is itself the root
+/// (direct workspace runs, tests).
+pub fn repo_root(workspace: String) -> String {
+  case workspace {
+    ".bankai" -> "."
+    _ ->
+      case string.split_once(workspace, "/.bankai") {
+        Ok(#(root, "")) -> root
+        _ -> workspace
+      }
+  }
+}
+
+fn directive_path(workspace: String, filename: String) -> String {
+  case repo_root(workspace) {
+    "" -> filename
+    "." -> filename
+    root -> root <> "/" <> filename
+  }
+}
+
 pub fn setup_cmd(
   workspace: String,
   agent: String,
 ) -> Result(json.Json, String) {
   let filename = agent_filename(agent)
-  let path = case workspace {
-    "" -> filename
-    "." -> filename
-    _ -> workspace <> "/" <> filename
-  }
+  let path = directive_path(workspace, filename)
   let existing = case simplifile.read(from: path) {
     Ok(content) -> content
     Error(_) -> ""
   }
   let new_content = inject_instructions(existing, agent_instructions())
   let _ = simplifile.write(new_content, to: path)
-  Ok(json.string("wrote " <> filename <> " (bankai agent instructions)"))
+  Ok(json.string("wrote " <> path <> " (bankai agent instructions)"))
 }
 
 pub fn setup_check_cmd(workspace: String) -> Result(json.Json, String) {
@@ -69,7 +87,7 @@ pub fn setup_check_cmd(workspace: String) -> Result(json.Json, String) {
   let statuses =
     agents
     |> list.map(fn(a) {
-      let file = workspace <> "/" <> agent_filename(a)
+      let file = directive_path(workspace, agent_filename(a))
       let exists = case simplifile.is_file(file) {
         Ok(b) -> b
         Error(_) -> False
@@ -100,7 +118,7 @@ pub fn setup_list_cmd() -> Result(json.Json, String) {
 }
 
 pub fn hooks_install_cmd(workspace: String) -> Result(json.Json, String) {
-  let hooks_dir = workspace <> "/.git/hooks"
+  let hooks_dir = repo_root(workspace) <> "/.git/hooks"
   let hook_path = hooks_dir <> "/pre-commit"
   let hook_content =
     "#!/bin/sh\n# bankai auto-compact hook\nif command -v bankai >/dev/null 2>&1; then\n  bankai compact >/dev/null 2>&1 || true\nfi\n"
