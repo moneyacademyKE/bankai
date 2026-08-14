@@ -18,7 +18,11 @@ pub fn resolve_prefers_ollama_when_probe_ok_test() {
     "nomic-embed-text",
     Ok(768),
   )
-  |> should.equal(embed.Ollama("http://localhost:11434", "nomic-embed-text", 768))
+  |> should.equal(embed.Ollama(
+    "http://localhost:11434",
+    "nomic-embed-text",
+    768,
+  ))
 }
 
 pub fn resolve_degrades_to_term_hash_when_probe_fails_test() {
