@@ -9,6 +9,7 @@ import bankai/mnesia_store
 import bankai/serde
 import bankai/storage/store
 import bankai/sync/jsonl
+import bankai/sync/merge
 import bankai/sync_peer
 import bankai/time
 import bankai/types.{Blocked, Closed, Completed, InProgress, Open}
@@ -104,15 +105,78 @@ pub fn backup_prune_cmd(
   })
 }
 
+pub type ConflictDetail {
+  ConflictDetail(task: String, local: String, remote: String)
+}
+
+/// Parse the structured merge-conflict detail format
+/// `task=<id> local=<hash> remote=<hash>`. Legacy free-text details return
+/// Error and render raw — one payload shape, not a junk drawer.
+pub fn parse_conflict_detail(detail: String) -> Result(ConflictDetail, Nil) {
+  case string.split(detail, " ") {
+    ["task=" <> task, "local=" <> local, "remote=" <> remote] ->
+      case task == "" || local == "" || remote == "" {
+        True -> Error(Nil)
+        False -> Ok(ConflictDetail(task, local, remote))
+      }
+    _ -> Error(Nil)
+  }
+}
+
+/// Task ids that already have a pending conflict record.
+pub fn pending_conflict_tasks(workspace: String) -> List(String) {
+  case sync_peer.list_conflicts(workspace) {
+    Ok(records) ->
+      records
+      |> list.filter_map(fn(r) {
+        parse_conflict_detail(r.detail) |> result.map(fn(d) { d.task })
+      })
+    Error(_) -> []
+  }
+}
+
+/// Record new merge conflicts durably, skipping ids already pending.
+/// Returns the ids recorded (fresh divergences only).
+pub fn record_merge_conflicts(
+  workspace: String,
+  conflicts: List(merge.Conflict),
+) -> List(String) {
+  let pending = pending_conflict_tasks(workspace)
+  conflicts
+  |> list.filter(fn(c) { !list.contains(pending, c.id) })
+  |> list.map(fn(c) {
+    let detail =
+      "task="
+      <> c.id
+      <> " local="
+      <> c.local_hash
+      <> " remote="
+      <> c.remote_hash
+    let _ = sync_peer.record_conflict(workspace, "sync", detail)
+    c.id
+  })
+}
+
 pub fn sync_conflicts_cmd(workspace: String) -> Result(json.Json, String) {
   sync_peer.list_conflicts(workspace)
   |> result.map(fn(conflicts) {
     json.array(conflicts, fn(c) {
+      let parsed =
+        parse_conflict_detail(c.detail)
+        |> result.map(fn(d) {
+          [
+            #("task", json.string(d.task)),
+            #("local", json.string(d.local)),
+            #("remote", json.string(d.remote)),
+          ]
+        })
+        |> result.unwrap([])
       json.object([
         #("id", json.string(c.id)),
         #("timestamp", json.int(c.timestamp)),
         #("author", json.string(c.author)),
         #("detail", json.string(c.detail)),
+        ..parsed
       ])
     })
   })
