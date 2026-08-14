@@ -583,6 +583,8 @@ fn sync_cmd(
             Ok(remote_tasks) -> {
               let result = merge.merge(local, remote_tasks)
               let _ = jsonl.flush(result.tasks, to: tasks_path)
+              let recorded =
+                maintenance.record_merge_conflicts(workspace, result.conflicts)
               let nc = list.length(result.conflicts)
               let base =
                 "merged "
@@ -591,7 +593,21 @@ fn sync_cmd(
               Ok(
                 json.string(case nc {
                   0 -> base
-                  _ -> base <> " (" <> int.to_string(nc) <> " conflict(s))"
+                  _ ->
+                    case recorded {
+                      [] ->
+                        base
+                        <> " ("
+                        <> int.to_string(nc)
+                        <> " conflict(s) already recorded — run 'sync conflicts')"
+                      _ ->
+                        base
+                        <> " ("
+                        <> int.to_string(nc)
+                        <> " conflict(s): "
+                        <> string.join(recorded, ", ")
+                        <> " — run 'sync conflicts')"
+                    }
                 }),
               )
             }
