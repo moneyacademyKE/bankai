@@ -1,0 +1,28 @@
+name: publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          gleam-version: "1.17.0"
+          otp-version: "27"
+
+      - name: Download dependencies
+        run: gleam deps download
+
+      - name: Run verification tests
+        run: gleam test
+
+      - name: Publish to Hex.pm
+        env:
+          HEXPM_API_KEY: ${{ secrets.HEXPM_API_KEY }}
+        run: echo "I am not using semantic versioning" | gleam publish --yes
