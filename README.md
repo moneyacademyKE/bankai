@@ -47,7 +47,9 @@ The foundational decisions are [ADR-0001](docs/adrs/0001-hybrid-content-addressi
 | Current task heads | Bankai-owned Mnesia `bankai_current_v2` | Durable source of truth, keyed by `{workspace, task_id}` |
 | Immutable task history | Bankai-owned Mnesia `bankai_versions_v2` | Durable content-addressed versions, keyed by `{workspace, content_hash}` |
 | Committed-change cursors | Bankai-owned Mnesia `bankai_meta_v2` | Snapshot offset, changefeed events, and projection checkpoints |
-| Local mutations and fresh reads | UNIX-socket daemon → `daemon_store` → Mnesia | One local transactional writer; no quorum claim |
+| Workflow molecules & DAGs | Bankai-owned Mnesia `bankai_templates_v1` | Content-addressed workflow templates; atomic instantiation via `(template_hash, idempotency_key)` |
+| Gate & wisp lifecycles | Bankai-owned Mnesia `bankai_gates_v1`, `bankai_wisps_v1` | Deterministic gate waiters/facts; ephemeral wisp TTL expiry and archive-first disposal |
+| Local mutations and fresh reads | UNIX-socket daemon → `daemon_store` → Mnesia | One local transactional writer; no redundant in-process actor state locks |
 | Clustered mutations | AaronDB command/consensus/lease admission → idempotent Mnesia materialization | Explicit profile only; committed command ID plus fencing token |
 | Full-text, temporal, and vector retrieval | AaronDB durable-log/changefeed + Datalog/BM25/HNSW projections | Rebuildable daemon-local projections; never authoritative |
 | Cluster transport admission | AaronDB identity policy + `.bankai/cluster-transport.json` | Explicit TLS-distribution configuration; missing/mismatched config fails closed |
@@ -76,8 +78,10 @@ bankai create "title" [--label L]..              # create a task
                    [--due <unix-seconds>]         # timer gate only
                    [--satisfied]                  # create an already-open gate
 bankai show <id>                                 # task, children, unresolved blockers, deferred state
-bankai list [--label L]                          # all current heads
-bankai ready [--label L]                         # active, unblocked, non-deferred, open-gate tasks
+bankai list [--label L] [--status S] [--kind K]  # filtered head view with stable sorting
+            [--priority N] [--assignee A] [--compact]
+bankai ready [--label L] [--compact]             # active, unblocked, non-deferred, open-gate tasks
+bankai ready --explain                           # data-driven readiness rationale (blockers, gates, deferrals)
 bankai ready --claim [assignee] [--label L]      # atomically select + claim ready work
 bankai count [--label L]                         # number of current heads
 bankai blocked [--label L]                       # tasks in the Blocked status
@@ -122,6 +126,20 @@ bankai wisp archive [wisp-id]                    # deterministic disposal/promot
 bankai batch --idempotency-key <key> <mutation>...
                                                    # all-or-nothing mutations; release|reopen|undefer|label_remove|status|priority
 
+# — declarative workflows (molecules) —
+bankai molecule register <path>                  # register immutable workflow DAG template
+bankai molecule list                             # list registered template hashes
+bankai molecule show <hash>                      # inspect template nodes, variables, and edges
+bankai molecule instantiate <hash> [--idempotency-key K] [--binding var=val]
+                                                   # atomically instantiate workflow DAG in Mnesia
+
+# — mobile rules (gleamunison) —
+bankai rule register <path>                      # register content-addressed pure Gleamunison rule
+bankai rule list                                 # list registered rule hashes
+bankai rule show <hash>                          # display rule source and AST
+bankai rule approve <hash>                       # explicitly approve rule for local execution
+bankai rule eval <hash> <task-id>                # evaluate rule in bounded, isolated worker process
+bankai rule audit <hash>                         # inspect execution and denial audit logs
 # — derived retrieval —
 bankai history <id>                              # derive immutable version timeline
 bankai analytics                                 # derive status/cycle-time metrics
@@ -185,7 +203,11 @@ All command output is a JSON envelope — `{"ok": <json>}` on success, `{"error"
 The AaronDB 4.2 platform integration is implemented and verified for Bankai’s defined local and clustered contracts. Local mode has durable Mnesia authority, ordered committed changes, restartable retrieval projections, and JSONL interchange. Clustered mode has explicit command/lease/fence admission and idempotent Mnesia materialization; it refuses to start without a matching authenticated transport profile.
 
 - [x] [ADR-0001](docs/adrs/0001-hybrid-content-addressing.md) — accepted; stable task identity and canonical encoding
+- [x] [ADR-0002](docs/adrs/0002-deterministic-binary-task-encoding.md) — deterministic binary task encoding with version byte
+- [x] [ADR-0003](docs/adrs/0003-mobile-rule-sandbox.md) — sandboxed Gleamunison mobile rules and bounded execution
 - [x] [ADR-0004](docs/adrs/0004-daemon-owned-transactional-store.md) — daemon-owned Mnesia current heads and immutable versions
+- [x] [ADR-0005](docs/adrs/0005-bankai-native-workflow-parity.md) — Bankai-native workflow parity, typed relations, and graph readiness
+- [x] [ADR-0006](docs/adrs/0006-federation-is-explicit-replication.md) — explicit federation, snapshot exchange, and conflict tracking
 - [x] [ADR-0007](docs/adrs/0007-aarondb-4.2-platform-authority.md) — local/cluster authority, committed events, projections, command/fence boundary
 - [x] [ADR-0008](docs/adrs/0008-signed-replica-identity.md) — signed replica envelopes, explicit trust, replay rejection, and conflict recording
 - [x] [ADR-0009](docs/adrs/0009-capability-authenticated-service.md) — signed expiring read/write/admin capabilities at the resident service edge
@@ -207,9 +229,9 @@ The AaronDB 4.2 platform integration is implemented and verified for Bankai’s 
 - **Real embedding providers:** the default vector backend is lexical term hashing, not synonym-aware embeddings.
 - **Disk-persistent vector index:** the managed HNSW projection is daemon-local and rebuildable from Mnesia; it is not a durable authority or a cross-restart index cache.
 
-## Historical Beads roadmap
+## Beads Parity Status
 
-The original G1–G12 roadmap and later A–G sweep are historical delivery records, not a claim of full current Beads parity. Bankai now has a stronger local transactional boundary and retrieval features Beads lacks, but it intentionally does not offer Dolt-style branching, SQL queries, or distributed consensus. See [the capability matrix](gap_analysis_bankai_vs_beads.md) and ADRs 0005–0006 for the current boundary.
+Bankai has completed full useful-parity against Beads for agent workflow operations, as documented in the Verified Parity Matrix in [`gap_analysis_bankai_vs_beads.md`](gap_analysis_bankai_vs_beads.md) and ADRs 0001–0012. Bankai delivers durable local transactional authority, declarative workflow molecules, signed CI adapter facts, and safe backup/divergence recovery, while intentionally avoiding Dolt SQL runtime complexity.
 
 ## License
 
