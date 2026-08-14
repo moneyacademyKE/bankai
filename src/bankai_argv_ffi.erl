@@ -1,8 +1,11 @@
 -module(bankai_argv_ffi).
--export([get_args/0]).
+-export([get_args/0, to_utf8/1]).
 
 %% init:get_plain_arguments/0 returns charlists; Gleam strings are UTF-8
-%% binaries, so convert each argument before handing them over.
+%% binaries, so convert each argument before handing them over. Codepoints
+%% above 255 (em-dash, accents, CJK) are NOT bytes — list_to_binary crashes
+%% with badarg on them — so unicode:characters_to_binary/1 encodes the
+%% codepoint list as UTF-8, exactly Gleam's string representation. (bk-cb86)
 %%
 %% When bankai runs as an escript, init:get_plain_arguments/0 leads with the
 %% escript's own executable path; strip it so dispatch sees only the real CLI
@@ -19,4 +22,7 @@ get_args() ->
             end;
         _ -> Plain
     end,
-    [erlang:list_to_binary(A) || A <- Args].
+    [to_utf8(A) || A <- Args].
+
+to_utf8(Chars) ->
+    unicode:characters_to_binary(Chars).
