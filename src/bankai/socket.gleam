@@ -599,7 +599,23 @@ fn serve_with_profile(
       io.println_error("bankai: platform profile failed: " <> message)
     _, Error(message) ->
       io.println_error("bankai: Mnesia boot failed: " <> message)
-    Ok(_), Ok(_) -> listen(workspace, mode)
+    Ok(_), Ok(_) -> {
+      warm_vector_projection(workspace)
+      listen(workspace, mode)
+    }
+  }
+}
+
+fn warm_vector_projection(workspace: String) -> Nil {
+  case daemon_store.warm_vector_projection(workspace) {
+    Ok(documents) ->
+      io.println(
+        "bankai vector projection warmed ("
+        <> int.to_string(documents)
+        <> " documents, queryable)",
+      )
+    Error(message) ->
+      io.println_error("bankai: vector projection warm skipped: " <> message)
   }
 }
 

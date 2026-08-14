@@ -336,6 +336,18 @@ pub fn prime_query(
   })
 }
 
+/// Warm the managed vector projection at daemon boot: the acceptor process
+/// becomes the ETS owner, so the HNSW graph persists across connection
+/// handlers instead of being rebuilt (and destroyed) per request.
+pub fn warm_vector_projection(workspace: String) -> Result(Int, String) {
+  projected_snapshot(workspace)
+  |> result.try(fn(snapshot) {
+    let #(offset, tasks) = snapshot
+    let docs = list.append(task_documents(tasks), memory_documents(workspace))
+    vector_bridge.warm_projection(workspace, offset, docs)
+  })
+}
+
 pub fn epic(workspace: String, id: String) -> Result(json.Json, String) {
   mnesia_store.current_store(workspace)
   |> result.try(fn(index) {
