@@ -171,3 +171,78 @@ fn result_map_title(r: Result(Task, String)) -> Result(String, Nil) {
     Error(_) -> Error(Nil)
   }
 }
+
+// --- sync resolve <id> --keep local|remote ---
+
+fn head_title(ws: String) -> String {
+  let assert Ok(tasks) = jsonl.load(from: ws <> "/tasks.jsonl")
+  let assert Ok(head) =
+    tasks
+    |> store.from_list
+    |> store.current_tasks
+    |> list.find(fn(t) { t.id == "bk-0001" })
+  head.title
+}
+
+fn first_conflict_id(ws: String) -> String {
+  let assert Ok(records) = sync_peer.list_conflicts(ws)
+  let assert Ok(first) = list.first(records)
+  first.id
+}
+
+pub fn resolve_keep_remote_promotes_remote_version_test() {
+  let ws = "/tmp/bankai_conflict_ux_resolve_remote_ws"
+  let remote = "/tmp/bankai_conflict_ux_resolve_remote.jsonl"
+  let _ = setup_conflict(ws, remote)
+  let id = first_conflict_id(ws)
+
+  let out = cli.run_in(ws, ["sync", "resolve", id, "--keep", "remote"])
+  out |> string.contains("\"kept\":\"remote\"") |> should.be_true
+  head_title(ws) |> should.equal("Divergent title")
+
+  let conflicts = should.be_ok(sync_peer.list_conflicts(ws))
+  should.equal(list.length(conflicts), 0)
+}
+
+pub fn resolve_keep_local_keeps_local_version_test() {
+  let ws = "/tmp/bankai_conflict_ux_resolve_local_ws"
+  let remote = "/tmp/bankai_conflict_ux_resolve_local.jsonl"
+  let _ = setup_conflict(ws, remote)
+  let id = first_conflict_id(ws)
+
+  let out = cli.run_in(ws, ["sync", "resolve", id, "--keep", "local"])
+  out |> string.contains("\"kept\":\"local\"") |> should.be_true
+  head_title(ws) |> should.equal("Original title")
+}
+
+pub fn resolve_unknown_conflict_id_errors_test() {
+  let ws = "/tmp/bankai_conflict_ux_resolve_unknown_ws"
+  wipe(ws)
+  let out = cli.run_in(ws, ["sync", "resolve", "999", "--keep", "local"])
+  out |> string.contains("unknown conflict") |> should.be_true
+}
+
+pub fn resolve_requires_keep_side_test() {
+  let ws = "/tmp/bankai_conflict_ux_resolve_nokeep_ws"
+  wipe(ws)
+  let out = cli.run_in(ws, ["sync", "resolve", "1"])
+  out |> string.contains("usage: sync resolve") |> should.be_true
+}
+
+pub fn resolve_rejects_invalid_side_test() {
+  let ws = "/tmp/bankai_conflict_ux_resolve_badside_ws"
+  wipe(ws)
+  let out = cli.run_in(ws, ["sync", "resolve", "1", "--keep", "both"])
+  out |> string.contains("usage: sync resolve") |> should.be_true
+}
+
+pub fn resolve_legacy_detail_errors_cleanly_test() {
+  let ws = "/tmp/bankai_conflict_ux_resolve_legacy_ws"
+  wipe(ws)
+  let _ =
+    sync_peer.record_conflict(ws, "upstream-rig", "snapshot gap at clock 42")
+  let id = first_conflict_id(ws)
+
+  let out = cli.run_in(ws, ["sync", "resolve", id, "--keep", "local"])
+  out |> string.contains("non-merge detail") |> should.be_true
+}
