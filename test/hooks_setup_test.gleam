@@ -66,6 +66,14 @@ pub fn setup_opencode_writes_opencode_md_test() {
   out |> string.contains(".opencode.md") |> should.be_true
 }
 
+pub fn setup_opencrabs_writes_opencrabs_md_test() {
+  let ws = "/tmp/bk_setup_opencrabs"
+  wipe(ws)
+  let _ = simplifile.create_directory_all(ws)
+  let out = cli.run_in(ws, ["setup", "opencrabs"])
+  out |> string.contains(".opencrabs.md") |> should.be_true
+}
+
 pub fn setup_windsurf_writes_windsurf_md_test() {
   let ws = "/tmp/bk_setup_windsurf"
   wipe(ws)
@@ -106,7 +114,9 @@ pub fn setup_list_and_check_report_matrix_test() {
   let list_out = cli.run_in(ws, ["setup", "list"])
   list_out |> string.contains("claude") |> should.be_true
   list_out |> string.contains("cursor") |> should.be_true
+  list_out |> string.contains("opencrabs") |> should.be_true
 
   let check_out = cli.run_in(ws, ["setup", "check"])
   check_out |> string.contains("managed_markers") |> should.be_true
+  check_out |> string.contains(".opencrabs.md") |> should.be_true
 }
