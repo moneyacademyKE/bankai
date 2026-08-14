@@ -114,8 +114,8 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
       parser.envelope(maintenance.gc_cmd(workspace, tasks_path))
     ["sync", "conflicts", ..] ->
       parser.envelope(maintenance.sync_conflicts_cmd(workspace))
-    ["sync", "resolve", id, ..] ->
-      parser.envelope(maintenance.sync_resolve_cmd(workspace, id))
+    ["sync", "resolve", id, ..rest] ->
+      parser.envelope(maintenance.sync_resolve_cmd(workspace, id, rest))
     ["sync", "clear", ..] ->
       parser.envelope(maintenance.sync_clear_cmd(workspace))
     ["sync", ..rest] -> parser.envelope(sync_cmd(workspace, tasks_path, rest))
@@ -581,6 +581,8 @@ fn sync_cmd(
             Ok(remote_tasks) -> {
               let result = merge.merge(local, remote_tasks)
               let _ = jsonl.flush(result.tasks, to: tasks_path)
+              let recorded =
+                maintenance.record_merge_conflicts(workspace, result.conflicts)
               let nc = list.length(result.conflicts)
               let base =
                 "merged "
@@ -589,7 +591,21 @@ fn sync_cmd(
               Ok(
                 json.string(case nc {
                   0 -> base
-                  _ -> base <> " (" <> int.to_string(nc) <> " conflict(s))"
+                  _ ->
+                    case recorded {
+                      [] ->
+                        base
+                        <> " ("
+                        <> int.to_string(nc)
+                        <> " conflict(s) already recorded — run 'sync conflicts')"
+                      _ ->
+                        base
+                        <> " ("
+                        <> int.to_string(nc)
+                        <> " conflict(s): "
+                        <> string.join(recorded, ", ")
+                        <> " — run 'sync conflicts')"
+                    }
                 }),
               )
             }
@@ -744,6 +760,10 @@ pub fn usage() -> String {
   <> "                                write agent-instruction file\n"
   <> "  sync [--from <path>]          import a portable JSONL snapshot\n"
   <> "  sync --peers <file>           replicate immutable history from peers\n"
+  <> "  sync conflicts                list recorded merge conflicts\n"
+  <> "  sync resolve <id> --keep local|remote\n"
+  <> "                                resolve a merge conflict by picking a side\n"
+  <> "  sync clear                    drop all pending conflict records\n"
   <> "  sync-serve [--port N]         serve immutable history + current heads\n"
   <> "  sync-pull --host H [--port N] replicate immutable history from a peer\n"
   <> "  init                          initialize .bankai/\n"

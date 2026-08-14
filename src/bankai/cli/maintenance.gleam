@@ -2,6 +2,7 @@
 
 import bankai/aarondb_bridge
 import bankai/backup
+import bankai/builder
 import bankai/cli/parser
 import bankai/compact
 import bankai/memory
@@ -9,6 +10,7 @@ import bankai/mnesia_store
 import bankai/serde
 import bankai/storage/store
 import bankai/sync/jsonl
+import bankai/sync/merge
 import bankai/sync_peer
 import bankai/time
 import bankai/types.{Blocked, Closed, Completed, InProgress, Open}
@@ -104,15 +106,78 @@ pub fn backup_prune_cmd(
   })
 }
 
+pub type ConflictDetail {
+  ConflictDetail(task: String, local: String, remote: String)
+}
+
+/// Parse the structured merge-conflict detail format
+/// `task=<id> local=<hash> remote=<hash>`. Legacy free-text details return
+/// Error and render raw — one payload shape, not a junk drawer.
+pub fn parse_conflict_detail(detail: String) -> Result(ConflictDetail, Nil) {
+  case string.split(detail, " ") {
+    ["task=" <> task, "local=" <> local, "remote=" <> remote] ->
+      case task == "" || local == "" || remote == "" {
+        True -> Error(Nil)
+        False -> Ok(ConflictDetail(task, local, remote))
+      }
+    _ -> Error(Nil)
+  }
+}
+
+/// Task ids that already have a pending conflict record.
+pub fn pending_conflict_tasks(workspace: String) -> List(String) {
+  case sync_peer.list_conflicts(workspace) {
+    Ok(records) ->
+      records
+      |> list.filter_map(fn(r) {
+        parse_conflict_detail(r.detail) |> result.map(fn(d) { d.task })
+      })
+    Error(_) -> []
+  }
+}
+
+/// Record new merge conflicts durably, skipping ids already pending.
+/// Returns the ids recorded (fresh divergences only).
+pub fn record_merge_conflicts(
+  workspace: String,
+  conflicts: List(merge.Conflict),
+) -> List(String) {
+  let pending = pending_conflict_tasks(workspace)
+  conflicts
+  |> list.filter(fn(c) { !list.contains(pending, c.id) })
+  |> list.map(fn(c) {
+    let detail =
+      "task="
+      <> c.id
+      <> " local="
+      <> c.local_hash
+      <> " remote="
+      <> c.remote_hash
+    let _ = sync_peer.record_conflict(workspace, "sync", detail)
+    c.id
+  })
+}
+
 pub fn sync_conflicts_cmd(workspace: String) -> Result(json.Json, String) {
   sync_peer.list_conflicts(workspace)
   |> result.map(fn(conflicts) {
     json.array(conflicts, fn(c) {
+      let parsed =
+        parse_conflict_detail(c.detail)
+        |> result.map(fn(d) {
+          [
+            #("task", json.string(d.task)),
+            #("local", json.string(d.local)),
+            #("remote", json.string(d.remote)),
+          ]
+        })
+        |> result.unwrap([])
       json.object([
         #("id", json.string(c.id)),
         #("timestamp", json.int(c.timestamp)),
         #("author", json.string(c.author)),
         #("detail", json.string(c.detail)),
+        ..parsed
       ])
     })
   })
@@ -121,9 +186,73 @@ pub fn sync_conflicts_cmd(workspace: String) -> Result(json.Json, String) {
 pub fn sync_resolve_cmd(
   workspace: String,
   conflict_id: String,
+  rest: List(String),
 ) -> Result(json.Json, String) {
-  sync_peer.resolve_conflict(workspace, conflict_id)
-  |> result.map(fn(_) { json.string("resolved conflict " <> conflict_id) })
+  use keep <- result.try(parse_keep(rest))
+  use record <- result.try(find_conflict(workspace, conflict_id))
+  use detail <- result.try(
+    parse_conflict_detail(record.detail)
+    |> result.replace_error(
+      "conflict " <> conflict_id <> " has a non-merge detail; resolve manually",
+    ),
+  )
+  let chosen_hex = case keep {
+    "local" -> detail.local
+    _ -> detail.remote
+  }
+  let tasks_path = workspace <> "/tasks.jsonl"
+  use chosen <- result.try(find_version_by_hex(tasks_path, chosen_hex))
+  // Promotion is an ordinary content-addressed update: stamp the chosen
+  // version as touched now so it wins the head-by-recency view. Both
+  // divergent versions remain in history — the choice is auditable.
+  let promoted =
+    builder.update(chosen, fn(t) { types.Task(..t, updated_at: time.now()) })
+  let existing = load_all_versions(tasks_path)
+  let _ = jsonl.flush(list.append(existing, [promoted]), to: tasks_path)
+  use _ <- result.try(sync_peer.resolve_conflict(workspace, conflict_id))
+  Ok(
+    json.object([
+      #("resolved", json.string(conflict_id)),
+      #("task", json.string(detail.task)),
+      #("kept", json.string(keep)),
+      #("new_head", json.string(store.hash_key(promoted.content_hash))),
+    ]),
+  )
+}
+
+fn parse_keep(rest: List(String)) -> Result(String, String) {
+  case rest {
+    ["--keep", side, ..] if side == "local" || side == "remote" -> Ok(side)
+    _ -> Error("usage: sync resolve <id> --keep local|remote")
+  }
+}
+
+fn find_conflict(
+  workspace: String,
+  conflict_id: String,
+) -> Result(sync_peer.ConflictRecord, String) {
+  sync_peer.list_conflicts(workspace)
+  |> result.try(fn(records) {
+    records
+    |> list.find(fn(r) { r.id == conflict_id })
+    |> result.replace_error("unknown conflict: " <> conflict_id)
+  })
+}
+
+fn find_version_by_hex(
+  tasks_path: String,
+  hex: String,
+) -> Result(types.Task, String) {
+  load_all_versions(tasks_path)
+  |> list.find(fn(t) { store.hash_key(t.content_hash) == hex })
+  |> result.replace_error("chosen version not found in history")
+}
+
+fn load_all_versions(tasks_path: String) -> List(types.Task) {
+  case jsonl.load(from: tasks_path) {
+    Ok(tasks) -> tasks
+    Error(_) -> []
+  }
 }
 
 pub fn sync_clear_cmd(workspace: String) -> Result(json.Json, String) {
