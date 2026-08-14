@@ -4,7 +4,7 @@
 
 ## Why Bankai: The Modern Beads Replacement for AI Agents
 
-**Bankai** is a high-performance, content-addressed workflow graph and issue tracking platform designed specifically for autonomous AI agents (Claude Code, Cursor, Windsurf, OpenCode, Codex, Factory, Mux) and multi-agent systems. Built with **Gleam on the Erlang BEAM VM**, it provides single-writer ACID transactional guarantees, cryptographic tamper detection, sub-5ms resident daemon latency, and seamless agent memory integration.
+**Bankai** is a high-performance, content-addressed workflow graph and issue tracking platform designed specifically for autonomous AI agents (Claude Code, Cursor, Windsurf, OpenCode, OpenCrabs, Codex, Factory, Mux) and multi-agent systems. Built with **Gleam on the Erlang BEAM VM**, it provides single-writer ACID transactional guarantees, cryptographic tamper detection, sub-5ms resident daemon latency, and seamless agent memory integration.
 
 ### Bankai vs Beads: Architectural & Capability Matrix
 
@@ -194,8 +194,8 @@ bankai cluster-status                           # cluster + transport + recovery
 bankai mcp                                      # MCP stdio server; use platform_status for the same health view
 bankai setup check                              # check agent configuration matrix status
 bankai setup list                               # list supported agent integrations
-bankai setup <claude|codex|cursor|factory|mux|opencode|windsurf>
-                                                # non-destructive instruction injection with markers
+bankai setup <claude|codex|cursor|factory|mux|opencode|opencrabs|windsurf>
+                                                 # non-destructive instruction injection with markers
 
 # — authenticated service capabilities —
 bankai auth mint read --ttl 3600               # read-only bearer capability

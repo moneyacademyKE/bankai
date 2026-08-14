@@ -17,6 +17,7 @@ pub fn agent_filename(agent: String) -> String {
     "factory" -> ".factory.md"
     "mux" -> ".mux.md"
     "opencode" -> ".opencode.md"
+    "opencrabs" -> ".opencrabs.md"
     "windsurf" -> ".windsurf.md"
     other -> other <> ".md"
   }
@@ -64,7 +65,8 @@ pub fn setup_cmd(
 
 pub fn setup_check_cmd(workspace: String) -> Result(json.Json, String) {
   let agents = [
-    "claude", "codex", "cursor", "factory", "mux", "opencode", "windsurf",
+    "claude", "codex", "cursor", "factory", "mux", "opencode", "opencrabs",
+    "windsurf",
   ]
   let statuses =
     agents
@@ -94,7 +96,8 @@ pub fn setup_check_cmd(workspace: String) -> Result(json.Json, String) {
 
 pub fn setup_list_cmd() -> Result(json.Json, String) {
   let agents = [
-    "claude", "codex", "cursor", "factory", "mux", "opencode", "windsurf",
+    "claude", "codex", "cursor", "factory", "mux", "opencode", "opencrabs",
+    "windsurf",
   ]
   Ok(json.array(agents, fn(a) { json.string(a) }))
 }
