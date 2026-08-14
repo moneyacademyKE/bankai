@@ -1,5 +1,5 @@
 -module(bankai_vector_projection_ffi).
--export([search/6, exact_search/6, status/1, reset_workspace/1]).
+-export([search/6, exact_search/6, status/1, reset_workspace/1, warm/3]).
 
 %% A daemon-local, non-authoritative HNSW projection. A cache row is backed by
 %% AaronDB's projection_index lifecycle record: a replacement corpus first enters
@@ -25,7 +25,8 @@ status(Workspace) ->
     case ets:lookup(?CACHE, Workspace) of
         [{Workspace, Offset, _Signature, _Index, _Meta, Count, Lifecycle}] ->
             {index, _Schema, Generation, Health, _Applied, _Values} = Lifecycle,
-            {ok, {Offset, Count, health_name(Health), Generation}};
+            {ok, {Offset, Count, health_name(Health), Generation,
+                  bankai@embed:active_backend()}};
         [] -> {error, <<"vector projection has not been built">>}
     end.
 
@@ -33,6 +34,20 @@ reset_workspace(Workspace) ->
     ensure_table(),
     ets:delete(?CACHE, Workspace),
     {ok, nil}.
+
+%% Build the managed projection at daemon boot so the cache table is owned by
+%% the long-lived acceptor process. An ETS table dies with its owner; created
+%% lazily inside a per-connection handler it is destroyed when the handler
+%% exits, silently discarding the HNSW graph between requests.
+warm(Workspace, Offset, Documents) ->
+    try
+        {_Index, _Meta} = ensure_projection(Workspace, Offset, Documents),
+        {ok, length(Documents)}
+    catch
+        Class:Reason ->
+            {error, iolist_to_binary(io_lib:format(
+                "vector projection warm failure (~p): ~p", [Class, Reason]))}
+    end.
 
 query(_Workspace, _Offset, _Documents, Query, _Threshold, Limit, _Search)
   when Limit =< 0 ->
@@ -115,10 +130,9 @@ membership_frame(Documents) ->
 %% Offset only tells us whether Mnesia changed. This deterministic corpus frame
 %% also catches memory-document changes, which live outside task change events.
 corpus_signature(Documents) ->
-    iolist_to_binary([
-        [Kind, <<":" >>, Id, <<":" >>, Text, <<"\n">>]
-        || {Kind, Id, Text} <- Documents
-    ]).
+    Entries = [[Kind, <<":">>, Id, <<":">>, Text, <<"\n">>]
+               || {Kind, Id, Text} <- Documents],
+    iolist_to_binary([bankai@embed:active_backend(), <<"\n">>, Entries]).
 
 build(Documents) ->
     Config = aarondb@vec_index:deterministic_config(
