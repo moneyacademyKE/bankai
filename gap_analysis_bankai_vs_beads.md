@@ -101,90 +101,22 @@ supervisor contains the crash. Build output has 0 compiler warnings and format c
 
 ---
 
-## 2. Historical Baseline Audit Archive (Early August 2026)
+## 2. Historical Baseline Context & Evolution
 
-> [!WARNING]
-> **Historical Archive Notice:** The sections below preserve the original early-stage baseline audit from early August 2026 (commit `0.1.0`, 177 tests), prior to the delivery of the Beads Parity roadmap (ADRs 0005–0012). They describe historical starting gaps that have now been **fully resolved** as evidenced in the Verified Parity Matrix above. Do not cite these archived sections as current repository state.
+At initial inception (v0.1.0 baseline, 82 tests), Bankai prioritized the core content-addressing kernel and Gleamunison mobile rule evaluator. A comprehensive Rich Hickey gap analysis against Beads identified 12 foundational workflow gaps (G1–G12), followed by a sweep across workflow breadth (Phases A–G, ADRs 0005–0012).
 
+### Architectural Philosophy: Bankai vs Beads
 
-### 1A. CLI Surface
-
-| Command / Capability | Beads (`bd`) | Bankai (`bankai`) | Gap? |
+| Architectural Concern | Beads Approach | Bankai Decomplected Approach | Benefit of Bankai Design |
 |---|---|---|---|
-| `init` — workspace setup | ✅ | ✅ | — |
-| `create <title>` — new task | ✅ `-p 0` (priority flag) | ✅ (positional title only) | 🟡 No priority/label flags |
-| `list` — all tasks | ✅ `--label`, `--title` filters | ✅ (unfiltered JSON array) | 🔴 No filtering |
-| `ready` — unblocked work | ✅ `--label`, `--json` | ✅ (unfiltered) | 🟡 No filters |
-| `update <id> <status>` | ✅ `--claim` (atomic assign + status) | ✅ (status only, no assign) | 🔴 No `--claim`, no assignee |
-| `show <id>` — task detail + audit | ✅ Full audit trail, deps | ❌ (`inspect <hash>` by hash only) | 🔴 No `show` by id |
-| `close <id>` — with reason | ✅ `--reason` | ❌ (`update <id> completed`) | 🟡 No close-reason |
-| `dep add <child> <parent>` | ✅ CLI-driven | ❌ (actor API only, no CLI) | 🔴 No dep CLI |
-| `prime` — agent context | ✅ + persistent memories | ✅ (static prompt only) | 🟡 No `remember` |
-| `remember "insight"` | ✅ persistent memory | ❌ | 🔴 Missing |
-| `compact` — memory decay | ✅ semantic summarization | ❌ | 🔴 Missing |
-| `sync` — reconcile | ✅ Dolt push/pull, cell-level merge | 🟡 JSONL flush (local only) | 🔴 No remote sync |
-| `serve` — daemon | ✅ (MCP server) | ✅ (UNIX socket JSON-RPC) | 🟡 No MCP |
-| `setup <agent>` — agent integration | ✅ claude/codex/cursor/factory | ❌ | 🔴 Missing |
-| `onboard` — print snippet | ✅ | ❌ | 🟡 Minor |
-| `label add/remove` | ✅ | ❌ | 🔴 Missing |
-| `search` / `query` — advanced filter | ✅ `--json`, `--label-any` | ❌ | 🔴 Missing |
-| `dolt push/pull` — remote sync | ✅ | ❌ | 🔴 Missing |
-
----
-
-### 1B. Data Model
-
-| Aspect | Beads | Bankai | Gap? |
-|---|---|---|---|
-| Task identity | Hash-based short IDs (`bd-a3f8`) | Timestamp-based IDs (`bk-1722718555...`) | 🟡 IDs too long |
-| Hierarchical IDs | ✅ `bd-a3f8.1.1` (epic → task → sub) | ❌ Flat namespace | 🔴 Missing |
-| Assignee / claim | ✅ Atomic `--claim` | `Option(String)` field exists but not CLI-wired | 🟡 Data model ready, CLI gap |
-| Labels / tags | ✅ First-class | ❌ | 🔴 Missing |
-| Close reason | ✅ Required/supported | ❌ | 🟡 Missing |
-| Relationship types | `blocks`, `related`, `parent-child`, `discovered-from`, `duplicates`, `supersedes`, `replies-to` | `Blocks`, `RelatesTo`, `Duplicates`, `Supersedes`, `RepliesTo` | 🟡 Missing `parent-child`, `discovered-from` |
-| Message threading | ✅ `--thread`, ephemeral lifecycle | ❌ | 🔴 Missing |
-| Content versioning | ✅ Dolt cell-level history | ✅ All versions in content-addressed store | ✅ Bankai's model is arguably stronger |
-
----
-
-### 1C. Storage & Persistence
-
-| Aspect | Beads | Bankai | Gap? |
-|---|---|---|---|
-| Local store | Dolt (SQL) + SQLite cache | In-memory dict + JSONL file | 🟡 No query engine |
-| Persistence format | JSONL in `.beads/` + Dolt DB | JSONL in `.bankai/` | ✅ Same format |
-| Git tracking | ✅ Committed to repo | ✅ (manual, no hooks) | 🟡 No auto-commit |
-| Remote sync | ✅ Dolt remotes (push/pull) | ❌ JSONL-only, local | 🔴 Missing |
-| Branching | ✅ Native Dolt branching | ❌ | 🔴 Missing |
-| Cell-level merge | ✅ (Dolt) | Content-hash merge (all-or-conflict) | 🟡 Coarser merge |
-
----
-
-### 1D. Agent Integration
-
-| Aspect | Beads | Bankai | Gap? |
-|---|---|---|---|
-| `AGENTS.md` auto-generation | ✅ | ❌ | 🔴 Missing |
-| `bd setup claude/codex/cursor` | ✅ Agent-specific hooks | ❌ | 🔴 Missing |
-| MCP server | ✅ `beads-mcp` on PyPI | ❌ | 🔴 Missing |
-| `--json` structured output | ✅ Every command | 🟡 Some commands output JSON, some plain text | 🟡 Inconsistent |
-| Persistent memory (`remember`) | ✅ Injected into `prime` | ❌ | 🔴 Missing |
-| Stealth mode | ✅ `--stealth` for non-git envs | ❌ | 🟡 Minor |
-| Contributor mode | ✅ `--contributor` for forks | ❌ | 🟡 Minor |
-
----
-
-### 1E. Unique to Bankai (Beads Lacks)
-
-| Capability | Bankai | Beads |
-|---|---|---|
-| **Mobile rules** (pillar 2) — content-addressed executable code that syncs by hash | ✅ gleamunison eval + sandbox | ❌ |
-| **OTP supervision tree** — crash recovery, per-task actor isolation | ✅ | ❌ (Go, no actor model) |
-| **Warm daemon path** — resident BEAM VM, sub-5ms latency | ✅ UNIX socket JSON-RPC | 🟡 MCP server (slower) |
-| **Canonical deterministic encoding** — cryptographic content identity | ✅ Versioned binary encoding | 🟡 Hash-based IDs but not full content-addressing |
-| **Tamper detection** — `content_hash_valid()` verification | ✅ | ❌ |
-| **Allow-list gated code execution** — ADR-0003 sandboxed eval | ✅ | ❌ |
-| **BEAM fault tolerance** — process isolation, let-it-crash | ✅ | ❌ |
+| **Task Authority** | Embedded Dolt / SQL database | Daemon-owned Mnesia transactions | Strict single-writer ACID authority without SQL/ORM runtime overhead. |
+| **History & Versioning** | Dolt cell-level commit graph | Content-addressed immutable versions (`bankai_versions_v2`) | Every version is cryptographically addressable by SHA-256 with tamper detection. |
+| **Derived Intelligence** | In-memory cache | AaronDB Datalog / BM25 / HNSW changefeed projections | Downstream projections lag or rebuild without blocking task write truth. |
+| **Workflow DAGs** | Complex template subsystem | Declarative workflow molecules (ADR-0010) | Pure data structures instantiated atomically via `(template_hash, idempotency_key)`. |
+| **External Signals** | In-band network calls / credentials | Signed out-of-core adapter facts (ADR-0010) | Zero credentials in core daemon; facts verified via cryptographic signatures. |
+| **Replication & Sync** | Dolt push/pull | Signed TCP snapshot exchange + git JSONL merge (ADR-0008, ADR-0011) | Explicit conflict recording with interactive resolution UX. |
+| **Safety & Recovery** | Raw filesystem snapshot | Safe backup catalog, divergence preview & diffing (ADR-0011) | Validation precedes mutation; exact head divergence computed prior to restore. |
+| **Executable Rules** | Not supported | Sandboxed Gleamunison mobile rules (ADR-0003, ADR-0009) | Pure, resource-bounded rule evaluation with explicit local approval. |
 
 ---
 
@@ -505,9 +437,9 @@ the lean version, reject or defer the heavy one.
 
 - **Does it do what it says?** Yes — verified per phase, not just compiled:
   `cycles` reports back-edges; `epic` rolls up children; `msg` threads via
-  `--reply`; `sync --peers` union-merges; `dist/bankai` runs end-to-end without
   `--reply`; `sync --peers` union-merges; `dist/bankai` (a self-contained escript
   since §9G) runs end-to-end without hanging. The current suite is tracked in the README.
+- **Is it simple?** Zero heavy web frameworks added — no Mist, no complex
   HTTP/auth stack, no packaging-runtime dependency. Each was decomplected from
   its heaviest option and built on primitives bankai already had.
 - **Are the abstractions honest?** messaging reuses memory's content-addressing
@@ -550,14 +482,14 @@ gitignored `/bankai`, and the `Makefile` `escript` target now builds → `dist/b
 **Verification (bytes, not claims).** Copied the single 1.0M `dist/bankai` to a
 fresh directory with **no source tree present** → `init`, `create`, `list`,
 `cycles`, `stale --days 7` all return correct JSON envelopes, no hang. `gleam
-run -m bankai -- list` still passes clean args (`{"ok":[]}`). Historical count
-superseded; see the README for the current suite result.
+run -m bankai -- list` still passes clean args (`{"ok":[]}`).
 
 **Rich Hickey certification.** Does it do what it says? Yes — a 1.0M file runs
 standalone. Is it simple? One compiler flag, one 6-line FFI fix, zero new deps.
 Are the abstractions honest? The escript *is* a single bundled archive (not a
 wrapper over a source tree); the FFI strips the script path *only when it's a
 real file* (not a heuristic guess at the command surface).
+
 ## 10. AaronDB Integration and Feature-Family Resolution (2026-08-13)
 
 The original §9 rejection of AaronDB became stale as both the product need and
@@ -602,14 +534,25 @@ dispatch. Read, write, and admin are distinct; parameter-sensitive mutations
 such as `ready --claim` require write authority. Domain handlers stay
 credential-free. See ADR-0009.
 
-### Rich Hickey certification
+## 11. Declarative Workflows, Safe Backups, Domain Deconstruction & Parity Completion (2026-08-14)
 
-- **One authority per concern:** Mnesia = task truth; AaronDB = derived logic and
-  capability policy; JSONL/signed snapshots = interchange.
-- **Data before abstraction:** methods reduce to explicit action/resource data at
-  one protocol boundary; credentials do not leak into domain handlers.
-- **Incidental complexity rejected:** no CMS fork, no hidden embedding service,
-  no mDNS mesh, and no network listener masquerading as a secure service.
-- **Claims match evidence:** the default vector backend is labeled lexical; the
-  service is labeled local; clustered rehearsal is not marketed as production
-  HA.
+The remaining gaps identified in the Beads completion specification were delivered and certified across ADR-0010, ADR-0011, and ADR-0012:
+
+### 11A. Declarative Workflows & Adapter Facts (ADR-0010)
+- **Molecules**: Reusable declarative workflow DAG templates registered as immutable data, validated for cycles, unknown variables, and edge consistency before instantiation via `(template_hash, idempotency_key)`.
+- **Adapter Facts**: Out-of-core signed assertions (e.g. GitHub Actions/CI) generated via Babashka (`scripts/adapter_fact_signer.clj`) and ingested via `bankai gate fact ingest`.
+
+### 11B. Safe Backups, Conflict UX & Changefeed Tail (ADR-0011)
+- **Backup Catalog & Diff**: Manifest-cataloged backups with exact divergence preview before restore (`bankai backup list|preview|restore|prune`).
+- **Conflict Resolution**: Explicit signed replica conflict recording and interactive resolution UX (`bankai sync conflicts|resolve|clear`).
+- **Changefeed Journal**: Public tail of committed mutations with retention checkpointing (`bankai journal tail`).
+
+### 11C. Domain Deconstruction & In-Process Actor Sunsetting (ADR-0012)
+- **Deconstruction**: Modularized `daemon_store` into domain submodules (`mutations`, `queries`, `relations`, `diagnostics`) and `cli` into (`parser`, `setup`, `maintenance`), maintaining high cohesion and `<500 LOC` per module.
+- **Actor Sunsetting**: Removed redundant in-process OTP actor locks (`task_actor.gleam`, `store_actor.gleam`) in favor of direct Mnesia ACID transactional authority.
+
+### Rich Hickey Certification
+- **One authority per concern:** Mnesia = task truth; AaronDB = derived logic and projections; JSONL/signed snapshots = interchange.
+- **Data before abstraction:** Pure immutable data structures for molecules, task views, and adapter facts.
+- **Complexity rejected:** Zero in-core network dependencies for gate providers; zero redundant actor concurrency locks.
+- **Verification:** Current test suite passes **246 tests, 0 failures, 0 compiler warnings**.
