@@ -19,5 +19,5 @@ pub fn em_dash_encodes_as_utf8_test() {
 
 pub fn accents_and_cjk_encode_test() {
   to_utf8([99, 97, 102, 233]) |> should.equal(<<"café":utf8>>)
-  to_utf8([20320, 22909]) |> should.equal(<<"你好":utf8>>)
+  to_utf8([20_320, 22_909]) |> should.equal(<<"你好":utf8>>)
 }
