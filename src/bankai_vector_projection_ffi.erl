@@ -130,11 +130,9 @@ membership_frame(Documents) ->
 %% Offset only tells us whether Mnesia changed. This deterministic corpus frame
 %% also catches memory-document changes, which live outside task change events.
 corpus_signature(Documents) ->
-    iolist_to_binary([
-        bankai@embed:active_backend(), <<"\n">>,
-        [Kind, <<":" >>, Id, <<":" >>, Text, <<"\n">>]
-        || {Kind, Id, Text} <- Documents
-    ]).
+    Entries = [[Kind, <<":">>, Id, <<":">>, Text, <<"\n">>]
+               || {Kind, Id, Text} <- Documents],
+    iolist_to_binary([bankai@embed:active_backend(), <<"\n">>, Entries]).
 
 build(Documents) ->
     Config = aarondb@vec_index:deterministic_config(
