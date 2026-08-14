@@ -307,6 +307,26 @@ pub fn claim_sets_in_progress_and_assignee_test() {
   |> should.equal(option.Some("alice"))
 }
 
+/// G8b (bk-616f): --claim followed by a flag must not eat the flag as assignee.
+pub fn claim_does_not_eat_following_flag_test() {
+  wipe(ws_claim)
+  let _ = cli.run_in(ws_claim, ["init"])
+  let t =
+    should.be_ok(
+      task_from_output(cli.run_in(ws_claim, ["create", "Flag proof"])),
+    )
+  let claimed =
+    should.be_ok(
+      task_from_output(
+        cli.run_in(ws_claim, ["update", t.id, "--claim", "--repo", "."]),
+      ),
+    )
+  claimed.status
+  |> should.equal(types.InProgress)
+  claimed.assignee
+  |> should.equal(option.Some("agent"))
+}
+
 /// G8: --claim with no assignee defaults to "agent".
 pub fn claim_defaults_assignee_to_agent_test() {
   wipe(ws_claim)
