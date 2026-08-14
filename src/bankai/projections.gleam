@@ -150,8 +150,10 @@ pub fn empty(workspace: String) -> View {
 }
 
 /// Rebuild an AaronDB durable-log image from Bankai's Mnesia snapshot plus
-/// ordered tail. The source offsets must exactly match the Mnesia snapshot
-/// watermark; otherwise the projection refuses to appear fresh.
+/// ordered tail. Checkpoints that trail the journal (a crash between commit
+/// and checkpoint) degrade to a full replay: projections are derived and
+/// replay is idempotent, and the replay re-stamps checkpoints at the true
+/// watermark.
 pub fn bootstrap(workspace: String) -> Result(View, String) {
   mnesia_store.projection_snapshot(workspace)
   |> result.try(fn(snapshot) {
@@ -174,9 +176,8 @@ pub fn bootstrap(workspace: String) -> Result(View, String) {
           False ->
             case high_watermark(source) == offset {
               False ->
-                Error(
-                  "projection source has a non-gapped Mnesia tail violation",
-                )
+                catch_up_all(view)
+                |> result.try(fn(ready) { checkpoint_all(ready, workspace) })
               True ->
                 durable_log.snapshot(source, offset, snapshot)
                 |> result.map_error(durable_error)
