@@ -9,7 +9,7 @@ build:
 	gleam build
 
 test:
-	gleam test
+	BANKAI_EMBED_BACKEND=term-hash gleam test
 
 deps:
 	gleam deps
