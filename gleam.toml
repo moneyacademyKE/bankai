@@ -2,10 +2,9 @@ name = "bankai"
 version = "0.2.0"
 description = "Content-addressed task-memory graph for distributed AI agent swarms (Gleam OTP + gleamunison)"
 licences = ["Apache-2.0"]
+repository = { type = "github", user = "moneyacademyKE", repo = "bankai" }
 target = "erlang"
 
-# bankai's genuine content-addressing layer. Not on Hex, so resolved as a git
-# dependency pinned to a public moneyacademyKE/gleamunison commit (CI-fetchable).
 [dependencies]
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 gleam_erlang = ">= 1.3.0 and < 2.0.0"
@@ -13,10 +12,8 @@ gleam_otp = ">= 1.2.0 and < 2.0.0"
 gleam_json = ">= 3.1.0 and < 4.0.0"
 simplifile = ">= 2.4.0 and < 3.0.0"
 gleam_crypto = ">= 1.5.1 and < 2.0.0"
-# aarondb is a derived Datalog/search/vector projection. Pin the proven 4.2.0
-# release rather than permitting an unreviewed future major version.
 aarondb = "4.2.0"
-gleamunison = { git = "https://github.com/moneyacademyKE/gleamunison.git", ref = "11b4d5814f37390a73b41b51663c1e05196ba13d" }
+gleamunison = ">= 3.11.0 and < 4.0.0"
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
