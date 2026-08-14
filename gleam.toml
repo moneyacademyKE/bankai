@@ -1,5 +1,5 @@
 name = "bankai"
-version = "0.2.0"
+version = "0.3.0"
 description = "Content-addressed task-memory graph for distributed AI agent swarms (Gleam OTP + gleamunison)"
 licences = ["Apache-2.0"]
 repository = { type = "github", user = "moneyacademyKE", repo = "bankai" }
