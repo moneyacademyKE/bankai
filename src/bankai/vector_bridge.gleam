@@ -51,10 +51,29 @@ fn ffi_projected_exact_search(
 @external(erlang, "bankai_vector_projection_ffi", "status")
 fn ffi_projection_status(
   workspace: String,
-) -> Result(#(Int, Int, String, Int), String)
+) -> Result(#(Int, Int, String, Int, String), String)
 
 @external(erlang, "bankai_vector_projection_ffi", "reset_workspace")
 fn ffi_reset_projection(workspace: String) -> Result(Nil, String)
+
+@external(erlang, "bankai_vector_projection_ffi", "warm")
+fn ffi_warm_projection(
+  workspace: String,
+  offset: Int,
+  documents: List(#(String, String, String)),
+) -> Result(Int, String)
+
+/// Build the managed HNSW projection now so the cache table is owned by the
+/// calling (long-lived daemon) process. An ETS table dies with its owner;
+/// created lazily inside a per-connection handler, the projection would be
+/// discarded after every request.
+pub fn warm_projection(
+  workspace: String,
+  offset: Int,
+  docs: List(Document),
+) -> Result(Int, String) {
+  ffi_warm_projection(workspace, offset, document_rows(docs))
+}
 
 pub type ProjectionStatus {
   ProjectionStatus(
@@ -62,6 +81,7 @@ pub type ProjectionStatus {
     document_count: Int,
     health: projection_index.Health,
     generation: Int,
+    backend: String,
   )
 }
 
@@ -118,10 +138,10 @@ pub fn projection_status(
 ) -> Result(ProjectionStatus, String) {
   ffi_projection_status(workspace)
   |> result.try(fn(raw) {
-    let #(offset, document_count, health_name, generation) = raw
+    let #(offset, document_count, health_name, generation, backend) = raw
     projection_health(health_name)
     |> result.map(fn(health) {
-      ProjectionStatus(offset, document_count, health, generation)
+      ProjectionStatus(offset, document_count, health, generation, backend)
     })
   })
 }
@@ -263,5 +283,5 @@ fn compare_matches(a: Match, b: Match) -> order.Order {
 }
 
 pub fn backend() -> String {
-  embed.backend
+  embed.active_backend()
 }

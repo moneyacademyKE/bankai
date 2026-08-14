@@ -247,12 +247,13 @@ fn projection_component_json(
 fn vector_projection_status_json(
   status: vector_bridge.ProjectionStatus,
 ) -> json.Json {
-  let vector_bridge.ProjectionStatus(offset, documents, health, generation) =
+  let vector_bridge.ProjectionStatus(offset, documents, health, generation, backend) =
     status
   json.object([
     #("last_applied_offset", json.int(offset)),
     #("documents", json.int(documents)),
     #("generation", json.int(generation)),
+    #("backend", json.string(backend)),
     #("health", json.string(vector_projection_health_name(health))),
   ])
 }

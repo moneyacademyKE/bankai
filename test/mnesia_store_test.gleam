@@ -501,6 +501,7 @@ pub fn managed_vector_projection_reuses_generation_and_matches_exact_oracle_test
     documents,
     health,
     _initial_generation,
+    _backend,
   ) = status
   offset |> should.equal(1)
   documents |> should.equal(2)
@@ -531,10 +532,10 @@ pub fn managed_vector_projection_reuses_generation_and_matches_exact_oracle_test
   approximate |> should.equal(exact)
 
   let after_exact = should.be_ok(vector_bridge.projection_status(ws))
-  let vector_bridge.ProjectionStatus(_, _, _, exact_generation) = after_exact
+  let vector_bridge.ProjectionStatus(_, _, _, exact_generation, _) = after_exact
 
   let repeat = should.be_ok(vector_bridge.projection_status(ws))
-  let vector_bridge.ProjectionStatus(_, _, _, repeated_generation) = repeat
+  let vector_bridge.ProjectionStatus(_, _, _, repeated_generation, _) = repeat
   repeated_generation |> should.equal(exact_generation)
 
   let _ = should.be_ok(daemon_store.create(ws, "Authentication rollout", []))
@@ -546,6 +547,7 @@ pub fn managed_vector_projection_reuses_generation_and_matches_exact_oracle_test
     advanced_docs,
     _,
     advanced_generation,
+    _backend,
   ) = advanced
   advanced_offset |> should.equal(2)
   advanced_docs |> should.equal(3)
