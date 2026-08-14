@@ -1,6 +1,7 @@
 -module(bankai_replica_ffi).
 -export([public_key/1, trust_peer/2, revoke_peer/2, sign_snapshot/4,
          verify_snapshot/7, mark_applied/2, record_conflict/3,
+         list_conflicts/1, resolve_conflict/2, clear_conflicts/1,
          reset_identity_for_test/1, adversarial_envelope_checks_for_test/0]).
 
 %% Bankai owns rig identity and trust material. AaronDB owns the canonical signed
@@ -78,6 +79,33 @@ record_conflict(Workspace, Author64, Detail) ->
     Entry = {erlang:system_time(nanosecond), Author64, Detail},
     Existing = read_terms(Path),
     atomic_write(Path, term_to_binary([Entry | Existing])).
+
+list_conflicts(Workspace) ->
+    Path = conflict_path(Workspace),
+    Entries = read_terms(Path),
+    JsonItems = [
+        iolist_to_binary([
+            <<"{\"id\":">>, json_string(integer_to_binary(Ts)),
+            <<",\"timestamp\":">>, integer_to_binary(Ts),
+            <<",\"author\":">>, json_string(Author64),
+            <<",\"detail\":">>, json_string(Detail),
+            <<"}">>
+        ])
+     || {Ts, Author64, Detail} <- Entries
+    ],
+    {ok, iolist_to_binary([<<"[">>, join_raw_json(JsonItems), <<"]">>])}.
+
+resolve_conflict(Workspace, ConflictId) ->
+    Path = conflict_path(Workspace),
+    Entries = read_terms(Path),
+    Filtered = lists:filter(fun({Ts, _Author, _Detail}) ->
+        integer_to_binary(Ts) =/= ConflictId
+    end, Entries),
+    atomic_write(Path, term_to_binary(Filtered)).
+
+clear_conflicts(Workspace) ->
+    Path = conflict_path(Workspace),
+    atomic_write(Path, term_to_binary([])).
 
 reset_identity_for_test(Workspace) ->
     _ = file:delete(seed_path(Workspace)),
@@ -219,6 +247,11 @@ json_array(Values) -> [<<"[">>, join_json(Values), <<"]">>].
 join_json([]) -> [];
 join_json([Value]) -> json_string(Value);
 join_json([Value | Rest]) -> [json_string(Value), <<",">>, join_json(Rest)].
+
+join_raw_json([]) -> [];
+join_raw_json([Value]) -> Value;
+join_raw_json([Value | Rest]) -> [Value, <<",">>, join_raw_json(Rest)].
+
 json_string(Value) -> [<<"\"">>, escape_json(Value), <<"\"">>].
 escape_json(Value) ->
     EscapedBackslash = binary:replace(Value, <<"\\">>, <<"\\\\">>, [global]),

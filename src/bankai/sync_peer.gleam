@@ -80,6 +80,18 @@ fn ffi_record_conflict(
   detail: String,
 ) -> Result(Nil, String)
 
+@external(erlang, "bankai_replica_ffi", "list_conflicts")
+fn ffi_list_conflicts(workspace: String) -> Result(String, String)
+
+@external(erlang, "bankai_replica_ffi", "resolve_conflict")
+fn ffi_resolve_conflict(
+  workspace: String,
+  conflict_id: String,
+) -> Result(Nil, String)
+
+@external(erlang, "bankai_replica_ffi", "clear_conflicts")
+fn ffi_clear_conflicts(workspace: String) -> Result(Nil, String)
+
 @external(erlang, "bankai_replica_ffi", "reset_identity_for_test")
 fn ffi_reset_identity_for_test(workspace: String) -> Result(Nil, String)
 
@@ -361,4 +373,35 @@ pub fn record_conflict(
   detail: String,
 ) -> Result(Nil, String) {
   ffi_record_conflict(workspace, author, detail)
+}
+
+pub type ConflictRecord {
+  ConflictRecord(id: String, timestamp: Int, author: String, detail: String)
+}
+
+fn conflict_record_decoder() -> decode.Decoder(ConflictRecord) {
+  use id <- decode.field("id", decode.string)
+  use timestamp <- decode.field("timestamp", decode.int)
+  use author <- decode.field("author", decode.string)
+  use detail <- decode.field("detail", decode.string)
+  decode.success(ConflictRecord(id:, timestamp:, author:, detail:))
+}
+
+pub fn list_conflicts(
+  workspace: String,
+) -> Result(List(ConflictRecord), String) {
+  use raw <- result.try(ffi_list_conflicts(workspace))
+  json.parse(from: raw, using: decode.list(of: conflict_record_decoder()))
+  |> result.map_error(fn(_) { "failed to decode conflict records" })
+}
+
+pub fn resolve_conflict(
+  workspace: String,
+  conflict_id: String,
+) -> Result(Nil, String) {
+  ffi_resolve_conflict(workspace, conflict_id)
+}
+
+pub fn clear_conflicts(workspace: String) -> Result(Nil, String) {
+  ffi_clear_conflicts(workspace)
 }

@@ -92,6 +92,38 @@ pub fn run_isolated_survives_crash_test() {
   should.be_true(string.contains(msg, "crashed"))
 }
 
+@external(erlang, "bankai_rule_worker_ffi", "exhaust_reductions")
+fn exhaust_reductions() -> Nil
+
+pub fn run_isolated_exhausts_reduction_budget_test() {
+  let busy = fn() {
+    exhaust_reductions()
+    Ok("unreachable")
+  }
+  let message =
+    registry.run_bounded(busy, 500, 262_144, 1000)
+    |> should.be_error
+  message |> string.contains("reduction budget") |> should.be_true
+}
+
+pub fn run_isolated_enforces_heap_limit_test() {
+  let memory_hungry = fn() {
+    let _ = make_large_list(200_000, [])
+    Ok("unreachable")
+  }
+  let message =
+    registry.run_bounded(memory_hungry, 500, 4000, 10_000_000)
+    |> should.be_error
+  message |> string.contains("heap limit") |> should.be_true
+}
+
+fn make_large_list(remaining: Int, values: List(Int)) -> List(Int) {
+  case remaining <= 0 {
+    True -> values
+    False -> make_large_list(remaining - 1, [remaining, ..values])
+  }
+}
+
 /// BUG-06 security regression: sync propagates RULES (data), never TRUST. A rule
 /// approved on a remote rig must NOT become locally executable after merge —
 /// each rig approves locally (ADR-0003 trust layer).

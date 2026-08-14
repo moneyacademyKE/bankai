@@ -102,11 +102,17 @@ fn is_advertised_tool(name: String) -> Bool {
   case name {
     "ready"
     | "list"
+    | "count"
+    | "blocked"
     | "show"
     | "create"
     | "update"
+    | "batch"
     | "dep_list"
     | "dep_tree"
+    | "dep_traverse"
+    | "dep_graph"
+    | "dep_check"
     | "doctor"
     | "cluster_status"
     | "platform_status"
@@ -116,18 +122,77 @@ fn is_advertised_tool(name: String) -> Bool {
     | "inspect"
     | "compact"
     | "gate_satisfy"
-    | "wisp_create" -> True
+    | "gate_list"
+    | "gate_show"
+    | "gate_check"
+    | "gate_resolve"
+    | "gate_fact_ingest"
+    | "wisp_create"
+    | "wisp_list"
+    | "wisp_promote"
+    | "wisp_digest"
+    | "wisp_burn"
+    | "wisp_gc"
+    | "wisp_archive"
+    | "backup_list"
+    | "backup_preview"
+    | "backup_restore"
+    | "backup_prune"
+    | "sync_conflicts"
+    | "sync_conflict_resolve"
+    | "sync_conflict_clear"
+    | "journal_tail"
+    | "molecule_register"
+    | "molecule_list"
+    | "molecule_show"
+    | "molecule_instantiate"
+    | "molecule_compose"
+    | "molecule_instance"
+    | "molecule_provenance"
+    | "molecule_progress"
+    | "molecule_current"
+    | "molecule_distill" -> True
     _ -> False
   }
 }
 
 fn daemon_request(name: String, args: List(String)) -> #(String, List(String)) {
   case name {
-    "gate_satisfy" -> #("update", [id_from_args(args), "--satisfy-gate"])
+    "gate_satisfy" -> #("gate_resolve", [id_from_args(args)])
     "wisp_create" -> #("create", args_with_kind(args))
+    "gate_list" -> #("gate_list", args)
+    "gate_show" -> #("gate_show", args)
+    "gate_check" -> #("gate_check", args)
+    "gate_resolve" -> #("gate_resolve", args)
+    "gate_fact_ingest" -> #("gate_fact_ingest", args)
+    "wisp_list" -> #("wisp_list", args)
+    "wisp_promote" -> #("wisp_promote", args)
+    "wisp_digest" -> #("wisp_digest", args)
+    "wisp_burn" -> #("wisp_burn", args)
+    "wisp_gc" -> #("wisp_gc", args)
+    "wisp_archive" -> #("wisp_archive", args)
+    "backup_list" -> #("backup_list", args)
+    "backup_preview" -> #("backup_preview", args)
+    "backup_restore" -> #("backup_restore", args)
+    "backup_prune" -> #("backup_prune", args)
+    "sync_conflicts" -> #("sync_conflicts", args)
+    "sync_conflict_resolve" -> #("sync_conflict_resolve", args)
+    "sync_conflict_clear" -> #("sync_conflict_clear", args)
+    "journal_tail" -> #("journal_tail", args)
+    "rule_register" -> #("rule_register", args)
+    "rule_list" -> #("rule_list", args)
+    "rule_show" -> #("rule_show", args)
+    "rule_approve" -> #("rule_approve", args)
+    "rule_revoke" -> #("rule_revoke", args)
+    "rule_eval" -> #("rule_eval", args)
+    "rule_audit" -> #("rule_audit", args)
     "dep_add" -> #("dep_add", args)
+    "dep_remove" -> #("dep_remove", args)
     "dep_list" -> #("dep_list", args)
     "dep_tree" -> #("dep_tree", args)
+    "dep_traverse" -> #("dep_traverse", args)
+    "dep_graph" -> #("dep_graph", args)
+    "dep_check" -> #("dep_check", args)
     "doctor" -> #("doctor", args)
     "cluster_status" -> #("cluster_status", args)
     "platform_status" -> #("cluster_status", args)
@@ -162,19 +227,60 @@ fn is_task_operation(name: String) -> Bool {
     | "show"
     | "create"
     | "update"
+    | "batch"
     | "dep_add"
+    | "dep_remove"
     | "dep_list"
     | "dep_tree"
+    | "dep_traverse"
+    | "dep_graph"
+    | "dep_check"
     | "doctor"
     | "cluster_status"
     | "platform_status"
     | "merge"
     | "inspect"
     | "gate_satisfy"
+    | "gate_list"
+    | "gate_show"
+    | "gate_check"
+    | "gate_resolve"
+    | "gate_fact_ingest"
     | "wisp_create"
+    | "wisp_list"
+    | "wisp_promote"
+    | "wisp_digest"
+    | "wisp_burn"
+    | "wisp_gc"
+    | "wisp_archive"
+    | "backup_list"
+    | "backup_preview"
+    | "backup_restore"
+    | "backup_prune"
+    | "sync_conflicts"
+    | "sync_conflict_resolve"
+    | "sync_conflict_clear"
+    | "journal_tail"
     | "remember"
     | "memories"
-    | "compact" -> True
+    | "compact"
+    | "rule_register"
+    | "rule_list"
+    | "rule_show"
+    | "rule_approve"
+    | "rule_revoke"
+    | "rule_eval"
+    | "rule_audit"
+    | "molecule_register"
+    | "molecule_list"
+    | "molecule_show"
+    | "molecule_instantiate"
+    | "molecule_compose"
+    | "molecule_instance"
+    | "molecule_provenance"
+    | "molecule_progress"
+    | "molecule_current"
+    | "molecule_distill" -> True
     _ -> False
   }
 }
@@ -185,23 +291,42 @@ fn tools() -> List(json.Json) {
   [
     tool(
       "ready",
-      "List unblocked tasks, or atomically claim one. args: [\"--label\", \"L\"] | [\"--claim\", \"assignee\", \"--label\", \"L\"].",
+      "Query readiness or explanations with shared filters/sort/page options. Add --explain for data-shaped reasons or --claim to atomically claim.",
     ),
-    tool("list", "List all current tasks. Optional: args [\"--label\", \"L\"]."),
+    tool(
+      "list",
+      "Query current tasks with status/kind/priority/assignee/label/date/sort/page filters; --compact selects a brief projection.",
+    ),
+    tool("count", "Count tasks matching the same structured query options."),
+    tool("blocked", "Query blocked tasks with the same structured options."),
     tool("show", "Show a task by id. args: [\"bk-xxxx\"]."),
     tool("create", "Create a task. args: [\"title\", \"--label\", \"L\"...]."),
     tool(
       "update",
-      "Update a task. args: [\"bk-xxxx\", \"completed\"] | [\"bk-xxxx\", \"--claim\"] | [\"bk-xxxx\", \"--label\", \"L\"].",
+      "Update lifecycle: status, claim, release, reopen, defer/undefer, add/remove label, priority.",
+    ),
+    tool(
+      "batch",
+      "Atomically apply one mutation per task. args: [\"--idempotency-key\", \"key\", \"release:bk-a\", \"priority:bk-b:5\"].",
     ),
     tool(
       "dep_list",
       "List typed dependency edges for a task. args: [\"bk-task\"].",
     ),
     tool(
+      "dep_remove",
+      "Remove one typed edge idempotently. args: [\"bk-task\", \"bk-target\", \"--type\", \"blocks\"].",
+    ),
+    tool(
       "dep_tree",
       "Return a cycle-safe dependency tree for a task. args: [\"bk-task\"].",
     ),
+    tool(
+      "dep_traverse",
+      "Traverse typed edges. args: [\"bk-task\", \"--direction\", \"incoming|outgoing|both\", \"--type\", \"blocks\", \"--depth\", \"2\"].",
+    ),
+    tool("dep_graph", "Export stable JSON nodes and typed edges."),
+    tool("dep_check", "Check missing targets, cycles, and duplicate edges."),
     tool("doctor", "Run read-only task-store integrity diagnostics. args: []."),
     tool(
       "cluster_status",
@@ -219,8 +344,101 @@ fn tools() -> List(json.Json) {
     tool("memories", "List persisted memories."),
     tool("inspect", "Inspect a task by content hash. args: [\"<hex>\"]."),
     tool("compact", "Retire closed tasks into the archive."),
-    tool("gate_satisfy", "Satisfy a manual gate. args: [\"gate-id\"]."),
-    tool("wisp_create", "Create a local-only wisp. args: [\"title\"]."),
+    tool("backup_list", "List all task backups in workspace. args: []."),
+    tool(
+      "backup_preview",
+      "Preview divergence between backup and current store. args: [\"path\"].",
+    ),
+    tool(
+      "backup_restore",
+      "Restore a validated backup into Mnesia. args: [\"path\"].",
+    ),
+    tool("backup_prune", "Prune old backups. args: [\"--keep\", \"5\"]."),
+    tool(
+      "sync_conflicts",
+      "List recorded replication and federation conflicts. args: [].",
+    ),
+    tool(
+      "sync_conflict_resolve",
+      "Resolve and clear a recorded conflict. args: [\"conflict-id\"].",
+    ),
+    tool(
+      "sync_conflict_clear",
+      "Clear all recorded replication conflicts. args: [].",
+    ),
+    tool(
+      "journal_tail",
+      "Tail committed changefeed journal events. args: [\"--after\", \"0\"].",
+    ),
+    tool("gate_satisfy", "Resolve a manual gate. args: [\"gate-id\"]."),
+    tool(
+      "gate_list",
+      "List gates deterministically; optional --state all|open|pending.",
+    ),
+    tool(
+      "gate_show",
+      "Show gate evaluation, waiters, local escalation data, and audit.",
+    ),
+    tool(
+      "gate_check",
+      "Evaluate gate state and waiter readiness without mutation.",
+    ),
+    tool(
+      "gate_resolve",
+      "Resolve with optional --dry-run, --actor, and --reason.",
+    ),
+    tool(
+      "gate_fact_ingest",
+      "Verify and atomically persist signed external fact data.",
+    ),
+    tool(
+      "wisp_create",
+      "Create local-only wisp; optional --ttl seconds or --expires-at.",
+    ),
+    tool(
+      "wisp_list",
+      "List wisps deterministically; optional --state all|active|expired.",
+    ),
+    tool("wisp_promote", "Archive source and promote a wisp to a normal task."),
+    tool("wisp_digest", "Derive a non-destructive wisp digest/squash view."),
+    tool("wisp_burn", "Archive canonical current head before removing a wisp."),
+    tool("wisp_gc", "Deterministically burn expired wisps; supports --dry-run."),
+    tool("wisp_archive", "List ordered wisp archive evidence."),
+    tool(
+      "molecule_register",
+      "Register immutable declarative template JSON. args: [\"<json>\"].",
+    ),
+    tool("molecule_list", "List registered molecule templates."),
+    tool("molecule_show", "Show a template. args: [\"<hash>\"]."),
+    tool(
+      "molecule_instantiate",
+      "Atomically instantiate. args: [\"<hash>\",\"--idempotency-key\",\"key\",\"name=value\"...].",
+    ),
+    tool(
+      "molecule_compose",
+      "Compose two templates. args: [\"name\",\"left-hash\",\"right-hash\"].",
+    ),
+    tool("molecule_instance", "Show instance provenance and tasks."),
+    tool("molecule_provenance", "Show task-to-template provenance."),
+    tool("molecule_progress", "Derive instance progress."),
+    tool("molecule_current", "List current ready instance steps."),
+    tool("molecule_distill", "Derive a non-destructive instance digest."),
+    tool(
+      "rule_register",
+      "Register an unapproved local rule artifact. args: [\"name\", \"source\"].",
+    ),
+    tool("rule_list", "List local rule artifacts and approval state."),
+    tool("rule_show", "Show a local rule artifact. args: [\"hash\"]."),
+    tool("rule_approve", "Approve a local rule hash. args: [\"hash\"]."),
+    tool("rule_revoke", "Revoke local rule approval. args: [\"hash\"]."),
+    tool(
+      "rule_eval",
+      "Evaluate an approved rule against an immutable task view. args: [\"hash\", \"--caller\", \"name\", \"--task\", \"task-id\"].",
+    ),
+    tool(
+      "rule_audit",
+      "List durable local rule audit records. Optional args: [\"hash\"].",
+    ),
   ]
 }
 

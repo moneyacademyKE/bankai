@@ -1,7 +1,9 @@
 import bankai/daemon_store
 import bankai/service_auth
 import bankai/socket
+import bankai/time
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/string
 import gleeunit
@@ -57,6 +59,19 @@ pub fn policy_is_explicit_and_parameter_sensitive_test() {
   let write = should.be_ok(service_auth.mint(workspace, "write", 3600))
 
   service_auth.authorize_request(workspace, read, "ready", []) |> should.be_ok
+  service_auth.authorize_request(workspace, read, "gate_check", ["gate-id"])
+  |> should.be_ok
+  service_auth.authorize_request(workspace, read, "wisp_list", [
+    "--state",
+    "all",
+  ])
+  |> should.be_ok
+  service_auth.authorize_request(workspace, read, "gate_resolve", ["gate-id"])
+  |> should.be_error
+  service_auth.authorize_request(workspace, write, "gate_resolve", ["gate-id"])
+  |> should.be_ok
+  service_auth.authorize_request(workspace, read, "wisp_gc", ["--dry-run"])
+  |> should.be_error
   service_auth.authorize_request(workspace, read, "ready", ["--claim", "agent"])
   |> should.be_error
   service_auth.authorize_request(workspace, write, "ready", ["--claim", "agent"])
@@ -171,7 +186,8 @@ pub fn authenticated_wire_fails_closed_and_enforces_scope_test() {
 }
 
 pub fn resident_service_accepts_attenuated_client_tokens_test() {
-  let service_workspace = "/tmp/bankai_authenticated_service_test"
+  let service_workspace =
+    "/tmp/bankai_authenticated_service_test_" <> int.to_string(time.now())
   service_auth.reset_for_test(service_workspace)
   let read = should.be_ok(service_auth.mint(service_workspace, "read", 3600))
   let write = should.be_ok(service_auth.mint(service_workspace, "write", 3600))

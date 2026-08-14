@@ -17,17 +17,29 @@
 
 import gleam/bit_array
 import gleam/dict.{type Dict}
-import gleam/erlang/process
-import gleam/int
 import gleam/list
+import gleam/result
 import gleam/set.{type Set}
+import gleam/string
 import gleamunison/identity
 import gleamunison/repl
 
-/// Default wall-clock budget for a single rule eval (ms). Generous for the
-/// tiny predicate rules pillar 2 is built for; bounded so a pathological rule
-/// can't hang the daemon. See ADR-0003.
+/// Default wall-clock budget for a single rule eval (ms).
 pub const default_eval_timeout_ms = 1000
+
+/// Hard worker heap cap in BEAM words (~2 MiB on a 64-bit VM).
+pub const default_eval_max_heap_words = 262_144
+
+/// Maximum reductions consumed by one rule evaluation.
+pub const default_eval_reduction_limit = 250_000
+
+@external(erlang, "bankai_rule_worker_ffi", "run_bounded")
+fn ffi_run_bounded(
+  work: fn() -> Result(String, String),
+  timeout_ms: Int,
+  max_heap_words: Int,
+  reduction_limit: Int,
+) -> Result(Result(String, String), String)
 
 pub type Rule {
   Rule(name: String, source: String, hash: identity.Hash)
@@ -44,6 +56,11 @@ pub fn new() -> Registry {
 /// Content address of a rule source = SHA-256 of the source bytes.
 pub fn source_hash(source: String) -> identity.Hash {
   identity.hash_bytes(bit_array.from_string(source))
+}
+
+pub fn source_hash_text(source: String) -> String {
+  source_hash(source)
+  |> identity.hash_to_debug_string()
 }
 
 fn key(h: identity.Hash) -> String {
@@ -69,47 +86,29 @@ pub fn lookup(reg: Registry, hash: identity.Hash) -> Result(Rule, Nil) {
   dict.get(reg.rules, key(hash))
 }
 
-type IsolatedOutcome {
-  Replied(result: Result(String, String))
-  Crashed
-}
-
-/// Run `work` in an ISOLATED, UNLINKED process bounded by a wall-clock timeout,
-/// with MONITOR-based instant crash detection.
-///
-/// - Isolation: `spawn_unlinked` (NOT linked `spawn`) so a crash/exit in `work`
-///   is contained — it cannot take down the caller (the daemon handler).
-/// - Crash detection: the worker is `monitor`-ed. If it exits before replying,
-///   the DOWN message wins the selector IMMEDIATELY (no waiting out the budget),
-///   yielding a distinct "crashed" error — better than timeout-only detection.
-/// - Bounded: `selector_receive(within)` returns Error(Nil) on timeout expiry
-///   (a looping rule that neither replies nor crashes).
-/// - Cleanup: on timeout the monitor is dropped and the runaway process killed.
-///
-/// See ADR-0003 (isolation + resource layers).
+/// Execute pure work in an unlinked worker bounded independently by wall-clock,
+/// heap words, and BEAM reductions. The Erlang boundary owns process monitoring
+/// so a heap kill cannot be mistaken for a normal evaluator result.
 pub fn run_isolated(
   work: fn() -> Result(String, String),
   timeout_ms: Int,
 ) -> Result(String, String) {
-  let reply = process.new_subject()
-  let pid = process.spawn_unlinked(fn() { process.send(reply, work()) })
-  let monitor = process.monitor(pid)
-  let selector =
-    process.new_selector()
-    |> process.select_map(for: reply, mapping: fn(result) { Replied(result) })
-    |> process.select_specific_monitor(monitor, fn(_) { Crashed })
-  case process.selector_receive(from: selector, within: timeout_ms) {
-    Ok(Replied(result)) -> {
-      process.demonitor_process(monitor:)
-      result
-    }
-    Ok(Crashed) -> Error("rule eval crashed (isolated process exited)")
-    Error(Nil) -> {
-      process.demonitor_process(monitor:)
-      process.kill(pid)
-      Error("rule eval timed out after " <> int.to_string(timeout_ms) <> "ms")
-    }
-  }
+  run_bounded(
+    work,
+    timeout_ms,
+    default_eval_max_heap_words,
+    default_eval_reduction_limit,
+  )
+}
+
+pub fn run_bounded(
+  work: fn() -> Result(String, String),
+  timeout_ms: Int,
+  max_heap_words: Int,
+  reduction_limit: Int,
+) -> Result(String, String) {
+  ffi_run_bounded(work, timeout_ms, max_heap_words, reduction_limit)
+  |> result.flatten
 }
 
 /// Execute an approved rule, isolated + timeout-bounded at the default budget.
@@ -163,4 +162,26 @@ pub fn merge(a: Registry, b: Registry) -> Registry {
 
 pub fn count(reg: Registry) -> Int {
   dict.size(reg.rules)
+}
+
+/// Evaluate a source artifact as a pure unary lambda over an immutable JSON
+/// text view. The quoted argument prevents task-view data escaping into syntax;
+/// this worker has no task, file, network, or process authority.
+pub fn eval_source_with_input(
+  source: String,
+  input_json: String,
+  timeout_ms: Int,
+) -> Result(String, String) {
+  let expression = "(" <> source <> " " <> quote_text(input_json) <> ")"
+  run_isolated(fn() { repl.eval_string(expression) }, timeout_ms)
+}
+
+fn quote_text(text: String) -> String {
+  let escaped =
+    text
+    |> string.replace(each: "\\", with: "\\\\")
+    |> string.replace(each: "\"", with: "\\\"")
+    |> string.replace(each: "\n", with: "\\n")
+    |> string.replace(each: "\r", with: "\\r")
+  "\"" <> escaped <> "\""
 }

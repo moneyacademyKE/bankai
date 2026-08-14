@@ -52,14 +52,14 @@ The foundational decisions are [ADR-0001](docs/adrs/0001-hybrid-content-addressi
 | Full-text, temporal, and vector retrieval | AaronDB durable-log/changefeed + Datalog/BM25/HNSW projections | Rebuildable daemon-local projections; never authoritative |
 | Cluster transport admission | AaronDB identity policy + `.bankai/cluster-transport.json` | Explicit TLS-distribution configuration; missing/mismatched config fails closed |
 | Portable exchange | Signed TCP replica envelope or deliberate JSONL import/export | Snapshot reconciliation; not a consensus path |
-| Mobile rules + eval | `gleamunison/codebase` + `gleamunison/repl` | Allow-listed/sandboxed code mobility |
+| Mobile rules + eval | Durable Gleamunison artifacts + local approval/audit + bounded worker | Content-addressed source; immutable task input; wall-clock, heap, and reduction limits; never task authority |
 | Graph readiness and cycle checks | Bankai’s own pure graph module | Derived from current task heads |
 | MCP server | Bankai’s thin stdio adapter | Protocol surface over daemon commands |
 | Resident service authentication | HMAC-authenticated AaronDB capabilities | Read/write/admin authorization at the wire edge; workspace secret is local authority |
 
 `aarondb` is deliberately **not** Bankai’s task database. It supplies ordered committed-change consumption, restartable projection lifecycle, Datalog-backed `history`/`analytics`, BM25 `search`, managed HNSW retrieval, signed envelopes, and—only under an explicit clustered profile—command admission, leases, fences, and quorum/read-index status. The default vector backend is a deterministic term-hash lexical embedding; it finds overlapping terminology, not genuine semantic synonyms.
 
-The legacy in-process actors remain useful for supervision and sequencing, but Mnesia transactions—not actor memory—are the local correctness boundary. Native CLI and MCP task operations route through the daemon and do not fall back to JSONL when it is unavailable. Mnesia runtime files (`Mnesia.*/`) are ignored by Git; recover local task truth by starting the daemon to bootstrap/import its JSONL snapshot, or import a known-good `bankai backup` snapshot. Projection loss is repaired from Mnesia snapshot plus ordered tail.
+The legacy in-process actor layer has been sunsetted (ADR-0012); direct Mnesia transactions paired with pure mutation modules (`task_mutation.gleam`, `relations.gleam`) provide the local correctness boundary with zero redundant actor-state locks. Native CLI and MCP task operations route through the daemon and do not fall back to JSONL when it is unavailable. Mnesia runtime files (`Mnesia.*/`) are ignored by Git; recover local task truth by starting the daemon to bootstrap/import its JSONL snapshot, or import a known-good `bankai backup` snapshot. Projection loss is repaired from Mnesia snapshot plus ordered tail.
 
 Clustered serving additionally requires `.bankai/bankai-platform.json` plus a matching `.bankai/cluster-transport.json`; the transport config names the cluster/node identity, bounded RPC limits, reconnect budget, and TLS-distribution admission facts. A missing, malformed, or mismatched transport config produces `recovery-required` status and prevents clustered serving. Use `bankai doctor` or MCP `platform_status` to inspect mode, transport, quorum, lease, projection, and recovery state without scraping logs.
 
@@ -89,19 +89,38 @@ bankai stale [--days N]                          # active heads not updated in N
 bankai doctor                                    # read-only task-store diagnostics
 
 # — dependencies and consolidation —
-bankai dep add <id> <target> [--type T]          # typed relation; blocking types are cycle-checked
-bankai dep list <id>                             # typed outgoing relations
-bankai dep tree <id>                             # cycle-safe dependency tree
+bankai dep add <id> <target> [--type T]          # add typed relation; blocking types are cycle-checked
+bankai dep remove <id> <target> [--type T]       # remove one typed relation idempotently
+bankai dep list <id> [--direction D] [--type T]  # outgoing by default; filtered traversal when options are supplied
+bankai dep tree <id> [--depth N]                 # cycle-safe outgoing traversal
+bankai dep graph [--type T]                      # stable JSON node/edge export
+bankai dep check                                 # missing targets, blocking cycles, duplicate edges
 bankai merge <duplicate-id> <canonical-id>       # transactional, idempotent duplicate consolidation
 
 # — mutations —
 bankai update <id> <status>                      # open|in_progress|blocked|completed|closed
 bankai update <id> --claim [assignee]            # claim one named open task
+bankai update <id> --release                     # unclaim in-progress work and return it to open
+bankai update <id> --reopen                      # reopen completed or closed work
 bankai update <id> --label L                     # add a label
+bankai update <id> --remove-label L              # remove a label idempotently
 bankai update <id> --priority N                  # set priority
 bankai update <id> --defer-until <unix-seconds>  # hide from ready until due
+bankai update <id> --undefer                     # clear task deferral idempotently
 bankai update <id> --close <reason>              # close with durable reason
-bankai update <gate-id> --satisfy-gate           # open a manual gate
+bankai update <gate-id> --satisfy-gate           # compatibility alias for local resolution
+bankai gate list [--state all|open|pending]      # deterministic gate lifecycle view
+bankai gate show|check <gate-id>                 # evaluation, waiters, audit/local escalation data
+bankai gate resolve <gate-id> [--dry-run] [--actor A] [--reason R]
+bankai gate fact ingest <gate-id> --issuer <key> --wire <json>
+                                                   # verify trust/revocation/signature before atomic persistence
+bankai wisp create <title> [--ttl S|--expires-at N]
+bankai wisp list [--state all|active|expired]
+bankai wisp promote|digest|squash|burn <wisp-id>
+bankai wisp gc [--dry-run]                       # stable-ID expiry scan; archive-first disposal
+bankai wisp archive [wisp-id]                    # deterministic disposal/promote audit
+bankai batch --idempotency-key <key> <mutation>...
+                                                   # all-or-nothing mutations; release|reopen|undefer|label_remove|status|priority
 
 # — derived retrieval —
 bankai history <id>                              # derive immutable version timeline
@@ -118,22 +137,35 @@ bankai memories
 bankai compact                                   # retire closed tasks → archive.jsonl
 bankai gc                                        # alias of compact
 
-# — Mnesia ↔ JSONL interchange —
+# — Mnesia ↔ JSONL interchange & backup lifecycle —
 bankai export                                   # write non-wisp immutable versions to .bankai/tasks.jsonl
 bankai backup                                   # write a timestamped JSONL snapshot from Mnesia
+bankai backup list                              # catalog all available workspace backups
+bankai backup preview <path>                    # preview divergence against current state before restoring
+bankai backup restore <path>                    # transactionally restore a validated snapshot into Mnesia
+bankai backup prune [--keep N]                  # safely prune older snapshots keeping N most recent
 bankai import <path>                            # transactionally import a portable JSONL snapshot
 bankai sync --from <path>                       # reconcile an external snapshot through Mnesia
+bankai sync conflicts                           # list recorded replication/federation conflicts
+bankai sync resolve <conflict-id>               # resolve and clear a specific conflict record
+bankai sync clear                               # clear all recorded conflicts
 bankai sync-serve [--port N]                    # serve a current non-wisp peer snapshot over TCP
 bankai sync-pull --host H [--port N]            # pull + reconcile a peer snapshot
 
-# — infrastructure —
+# — committed changefeed journal —
+bankai journal tail [--after <offset>]          # tail ordered committed-change events
+
+# — infrastructure & setup —
 bankai inspect <hash>                           # render an immutable task version by hash
 bankai hooks install                            # install a pre-commit hook (runs bankai gc)
 bankai serve                                    # local or explicitly configured clustered daemon
 bankai doctor                                   # Mnesia, projection, cluster, transport, recovery diagnostics
 bankai cluster-status                           # cluster + transport + recovery status JSON
 bankai mcp                                      # MCP stdio server; use platform_status for the same health view
+bankai setup check                              # check agent configuration matrix status
+bankai setup list                               # list supported agent integrations
 bankai setup <claude|codex|cursor|factory|mux|opencode|windsurf>
+                                                # non-destructive instruction injection with markers
 
 # — authenticated service capabilities —
 bankai auth mint read --ttl 3600               # read-only bearer capability
@@ -157,19 +189,21 @@ The AaronDB 4.2 platform integration is implemented and verified for Bankai’s 
 - [x] [ADR-0007](docs/adrs/0007-aarondb-4.2-platform-authority.md) — local/cluster authority, committed events, projections, command/fence boundary
 - [x] [ADR-0008](docs/adrs/0008-signed-replica-identity.md) — signed replica envelopes, explicit trust, replay rejection, and conflict recording
 - [x] [ADR-0009](docs/adrs/0009-capability-authenticated-service.md) — signed expiring read/write/admin capabilities at the resident service edge
+- [x] [ADR-0010](docs/adrs/0010-declarative-workflows-and-adapter-facts.md) — declarative workflow molecules and out-of-core adapter facts
+- [x] [ADR-0011](docs/adrs/0011-conflict-resolution-and-changefeed-journal.md) — safe backups, divergence preview, conflict UX, and changefeed journal
+- [x] [ADR-0012](docs/adrs/0012-deconstruction-and-domain-focused-architecture.md) — deconstruction of daemon_store/cli and actor sunsetting
 - [x] AaronDB durable-log/changefeed projection runtime with checkpoints, restart/replay, vector lifecycle, and health diagnostics
 - [x] Explicit clustered command admission, `ready --claim` fencing, ReadIndex/quorum status, and fail-closed TLS-distribution configuration
 - [x] `doctor`, socket `cluster_status`, and MCP `platform_status` report local/cluster mode, projections, leases, transport, and recovery state
 - [x] Migration rehearsal: Mnesia → JSONL export → clean Mnesia import preserves immutable versions and current head
 - [x] Failure rehearsal: partition/reorder/crash/slow-follower/membership/clock schedules are evaluated by the AaronDB distributed harness; missing transport config fails closed
-- [x] Current suite: **182 passing, 0 failures** on 2026-08-13
+- [x] Current suite: **246 passing, 0 failures** on 2026-08-14
 
 ### Deliberately not shipped
 
 - **Network service exposure:** resident service authentication is local UNIX-domain only. No network listener, TLS bootstrap, token revocation service, or production identity-provider integration is claimed.
 - **Multi-node production deployment evidence:** the clustered adapter has explicit one-voter rehearsal and fail-closed transport admission, but no live multi-host TLS-distribution deployment, quorum-loss recovery drill, or performance SLO. Do not market it as production HA yet.
-- **Automatic remote-provider gates:** GitHub/CI/remote dependency facts remain outside the credential-free core.
-- **Transactional molecules/templates:** deferred; no `molecule` command or data model exists yet.
+- **Automatic remote-provider network gates:** GitHub/CI/remote dependency facts remain outside the credential-free core; external facts are ingested via explicit signed fact envelopes (`bankai gate fact ingest`).
 - **Real embedding providers:** the default vector backend is lexical term hashing, not synonym-aware embeddings.
 - **Disk-persistent vector index:** the managed HNSW projection is daemon-local and rebuildable from Mnesia; it is not a durable authority or a cross-restart index cache.
 

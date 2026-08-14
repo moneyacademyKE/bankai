@@ -1,73 +1,42 @@
-//// Daemon-owned transactional command service.
+//// Daemon-owned transactional command service facade.
+////
+//// High-cohesion entry point aggregating mutations, queries, relations, diagnostics,
+//// and subsystem services.
 
-import aarondb/projection_index
-import bankai/aarondb_bridge
-import bankai/actors/apply
-import bankai/builder
-import bankai/cli
-import bankai/cluster
-import bankai/cluster_transport
+import bankai/backup
 import bankai/compact
-import bankai/graph
+import bankai/daemon_store/diagnostics
+import bankai/daemon_store/mutations
+import bankai/daemon_store/queries
+import bankai/daemon_store/relations
+import bankai/gate_wisp/store as gate_wisp_store
+import bankai/gates/service as gate_service
 import bankai/memory
 import bankai/mnesia_store
-import bankai/platform_profile
+import bankai/molecules/service as molecule_service
 import bankai/projections
-import bankai/serde
+import bankai/rules/service as rule_service
 import bankai/storage/store
 import bankai/sync/jsonl
 import bankai/sync_peer
+import bankai/task_lifecycle
 import bankai/time
-import bankai/types.{
-  type Task, type TaskKind, Blocked, Blocks, CausedBy, Closed, Completed,
-  ConditionalBlocks, DefaultTask, DiscoveredFrom, Duplicates, Gate, InProgress,
-  Open, ParentChild, RelatesTo, Relationship, RepliesTo, Supersedes, Task,
-  Tracks, Validates, WaitsFor,
-}
-import bankai/vector_bridge
-import gleam/dict.{type Dict}
-import gleam/float
+import bankai/types.{Wisp}
+import bankai/wisps/service as wisp_service
 import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option
 import gleam/result
-import gleam/string
-import gleamunison/identity
 
-pub type Claimed {
-  Claimed(task: Task, admission: option.Option(cluster.Admission))
-}
+pub type Claimed =
+  mutations.Claimed
 
-pub fn list_tasks(
-  workspace: String,
-  rest: List(String),
-) -> Result(json.Json, String) {
-  mnesia_store.current_store(workspace)
-  |> result.map(fn(index) {
-    index
-    |> store.current_tasks()
-    |> filter_by_label(parse_label_filter(rest))
-    |> json.array(of: serde.task_to_json)
-  })
-}
-
-pub fn ready_tasks(
-  workspace: String,
-  rest: List(String),
-) -> Result(json.Json, String) {
-  mnesia_store.current_store(workspace)
-  |> result.map(fn(index) {
-    index
-    |> store.current_tasks()
-    |> graph.ready_tasks_at(time.now())
-    |> filter_by_label(parse_label_filter(rest))
-    |> json.array(of: serde.task_to_json)
-  })
-}
+// --- Lifecycle & Initialization ---
 
 pub fn boot(workspace: String) -> Result(Nil, String) {
   mnesia_store.init(workspace)
+  |> result.try(fn(_) { gate_wisp_store.init(workspace) })
   |> result.try(fn(_) {
     jsonl.load(from: workspace <> "/tasks.jsonl")
     |> result.try(fn(tasks) {
@@ -77,570 +46,37 @@ pub fn boot(workspace: String) -> Result(Nil, String) {
   |> result.try(fn(_) { projections.start_runtime(workspace) })
 }
 
-pub fn show_task(workspace: String, id: String) -> Result(json.Json, String) {
-  current_tasks(workspace)
-  |> result.try(fn(tasks) {
-    mnesia_store.get_current(workspace, id)
-    |> result.map(fn(task) {
-      let blockers =
-        task.relationships
-        |> list.filter(fn(relation) {
-          graph.is_blocking_relation(relation.relation)
-          && !list.any(tasks, fn(candidate) {
-            candidate.id == relation.target_id && candidate.status == Completed
-          })
-        })
-      let children =
-        list.filter(tasks, fn(candidate) {
-          candidate.parent_id == option.Some(id)
-        })
-      json.object([
-        #("task", serde.task_to_json(task)),
-        #("children", json.array(children, of: serde.task_to_json)),
-        #(
-          "blocking",
-          json.array(blockers, of: fn(relation) {
-            json.object([#("target_id", json.string(relation.target_id))])
-          }),
-        ),
-        #("deferred", json.bool(graph.is_deferred(task, time.now()))),
-      ])
-    })
-  })
+pub fn init_workspace(workspace: String) -> Result(json.Json, String) {
+  boot(workspace)
+  |> result.map(fn(_) { json.string("initialized bankai workspace") })
 }
 
-pub fn count_tasks(
+pub fn status(workspace: String) -> Result(json.Json, String) {
+  diagnostics.doctor(workspace)
+}
+
+pub fn doctor(workspace: String) -> Result(json.Json, String) {
+  diagnostics.doctor(workspace)
+}
+
+pub fn cluster_status(workspace: String) -> Result(json.Json, String) {
+  diagnostics.cluster_status(workspace)
+}
+
+pub fn vector_projection_status(
   workspace: String,
-  rest: List(String),
 ) -> Result(json.Json, String) {
-  current_tasks(workspace)
-  |> result.map(fn(tasks) {
-    tasks
-    |> filter_by_label(parse_label_filter(rest))
-    |> list.length
-    |> json.int
-    |> fn(count) { json.object([#("count", count)]) }
-  })
+  diagnostics.vector_projection_status(workspace)
 }
 
-pub fn blocked_tasks(
-  workspace: String,
-  rest: List(String),
-) -> Result(json.Json, String) {
-  current_tasks(workspace)
-  |> result.map(fn(tasks) {
-    tasks
-    |> list.filter(fn(task) { task.status == Blocked })
-    |> filter_by_label(parse_label_filter(rest))
-    |> json.array(of: serde.task_to_json)
-  })
-}
-
-pub fn cycle_edges(workspace: String) -> Result(json.Json, String) {
-  current_tasks(workspace)
-  |> result.map(fn(tasks) {
-    tasks
-    |> graph.cycle_edges()
-    |> json.array(of: fn(edge) {
-      let #(from, to) = edge
-      json.object([#("from", json.string(from)), #("to", json.string(to))])
-    })
-  })
-}
-
-pub fn duplicate_pairs(workspace: String) -> Result(json.Json, String) {
-  current_tasks(workspace)
-  |> result.map(fn(tasks) {
-    tasks
-    |> list.flat_map(fn(task) {
-      task.relationships
-      |> list.filter(fn(relation) { relation.relation == Duplicates })
-      |> list.map(fn(relation) { #(task.id, relation.target_id) })
-    })
-    |> json.array(of: fn(pair) {
-      let #(a, b) = pair
-      json.object([#("a", json.string(a)), #("b", json.string(b))])
-    })
-  })
-}
-
-pub fn stale_tasks(
-  workspace: String,
-  rest: List(String),
-) -> Result(json.Json, String) {
-  let cutoff = time.now() - parse_days(rest) * time.day_ns
-  current_tasks(workspace)
-  |> result.map(fn(tasks) {
-    tasks
-    |> list.filter(fn(task) {
-      graph.is_active(task.status) && task.updated_at < cutoff
-    })
-    |> json.array(of: serde.task_to_json)
-  })
-}
-
-pub fn history(workspace: String, id: String) -> Result(json.Json, String) {
-  projection_gate(workspace)
-  |> result.try(fn(_) { mnesia_store.version_store(workspace) })
-  |> result.try(fn(index) { aarondb_bridge.db_from_versions(store.list(index)) })
-  |> result.map(fn(db) {
-    aarondb_bridge.history_timeline(db, id)
-    |> json.array(of: fn(point) {
-      let #(at, status) = point
-      json.object([#("at", json.int(at)), #("status", json.string(status))])
-    })
-  })
-}
-
-pub fn analytics(workspace: String) -> Result(json.Json, String) {
-  projected_tasks(workspace)
-  |> result.try(fn(tasks) {
-    aarondb_bridge.db_from_tasks(tasks)
-    |> result.map(fn(db) {
-      let cycles = aarondb_bridge.cycle_times(db)
-      let completed = list.length(cycles)
-      let average = case completed {
-        0 -> 0
-        n -> int.sum(cycles) / n
-      }
-      json.object([
-        #("total", json.int(list.length(tasks))),
-        #("completed", json.int(completed)),
-        #("avg_cycle_time_nanoseconds", json.int(average)),
-        #(
-          "by_status",
-          status_counts_to_json(aarondb_bridge.count_by_status(db)),
-        ),
-      ])
-    })
-  })
-}
-
-pub fn search(
-  workspace: String,
-  rest: List(String),
-) -> Result(json.Json, String) {
-  projected_tasks(workspace)
-  |> result.map(fn(tasks) {
-    let task_docs =
-      list.map(tasks, fn(task) {
-        #("task", task.id, task.title <> " " <> task.description)
-      })
-    let memory_docs = memory_docs(workspace)
-    aarondb_bridge.search(
-      list.append(task_docs, memory_docs),
-      string.join(rest, " "),
-    )
-    |> json.array(of: search_result_json)
-  })
-}
-
-pub fn semantic_duplicates(
-  workspace: String,
-  rest: List(String),
-) -> Result(json.Json, String) {
-  projected_snapshot(workspace)
-  |> result.try(fn(snapshot) {
-    let #(offset, tasks) = snapshot
-    let docs = task_documents(tasks)
-    tasks
-    |> list.try_map(fn(task) {
-      vector_bridge.projected_search(
-        workspace,
-        offset,
-        docs,
-        task.title <> " " <> task.description,
-        parse_threshold(rest, 0.78),
-        6,
-      )
-      |> result.map(fn(matches) {
-        matches
-        |> list.filter(fn(match) { match.kind == "task" && match.id != task.id })
-        |> list.map(fn(match) {
-          json.object([
-            #("source", json.string(task.id)),
-            #("candidate", json.string(match.id)),
-            #("score", json.float(match.score)),
-            #("backend", json.string(vector_bridge.backend())),
-          ])
-        })
-      })
-    })
-    |> result.map(list.flatten)
-    |> result.map(fn(matches) { json.array(matches, of: fn(value) { value }) })
-  })
-}
-
-pub fn inspect(workspace: String, hash: String) -> Result(json.Json, String) {
-  mnesia_store.version_store(workspace)
-  |> result.try(fn(index) {
-    case store.get_by_hex(index, hash) {
-      Ok(task) -> Ok(serde.task_to_json(task))
-      Error(Nil) -> Error("no task for hash: " <> hash)
-    }
-  })
-}
-
-pub fn prime_query(
-  workspace: String,
-  query: String,
-) -> Result(json.Json, String) {
-  projected_snapshot(workspace)
-  |> result.try(fn(snapshot) {
-    let #(offset, tasks) = snapshot
-    let task_docs = task_documents(tasks)
-    let memory_docs = memory_documents(workspace)
-    let all_docs = list.append(task_docs, memory_docs)
-    vector_bridge.projected_search(workspace, offset, all_docs, query, 0.18, 12)
-    |> result.map(fn(matches) {
-      let context =
-        matches
-        |> list.map(fn(match) {
-          "-["
-          <> match.kind
-          <> ":"
-          <> match.id
-          <> "] "
-          <> match_text(match, task_docs, memory_docs)
-        })
-        |> string.join("\n")
-      let base = cli.prime_text(workspace)
-      case context {
-        "" ->
-          json.string(
-            base <> "\n\n## Semantic context\nNo matches for: " <> query,
-          )
-        _ ->
-          json.string(
-            base
-            <> "\n\n## Semantic context ("
-            <> vector_bridge.backend()
-            <> ")\nQuery: "
-            <> query
-            <> "\n"
-            <> context,
-          )
-      }
-    })
-  })
-}
-
-pub fn epic(workspace: String, id: String) -> Result(json.Json, String) {
-  mnesia_store.current_store(workspace)
-  |> result.try(fn(index) {
-    case store.find_by_id(index, id) {
-      Error(Nil) -> Error("no such task: " <> id)
-      Ok(_) -> Ok(epic_json(store.current_tasks(index), id))
-    }
-  })
-}
-
-pub fn remember(workspace: String, text: String) -> Result(json.Json, String) {
-  memory.remember(workspace, text) |> result.map(memory.memory_to_json)
-}
-
-pub fn memories(workspace: String) -> Result(json.Json, String) {
-  memory.all(workspace)
-  |> result.map(fn(memories) { json.array(memories, of: memory.memory_to_json) })
-}
-
-/// Compact operates over the explicit JSONL interchange projection. Export
-/// first so compact consumes the same complete history direct CLI users see;
-/// import the survivors back through Mnesia to keep daemon reads authoritative.
-pub fn compact(workspace: String) -> Result(json.Json, String) {
-  export_jsonl(workspace)
-  |> result.try(fn(_) {
-    let message = compact.run(workspace, workspace <> "/tasks.jsonl")
-    jsonl.load(from: workspace <> "/tasks.jsonl")
-    |> result.try(fn(tasks) {
-      mnesia_store.replace_current_snapshot(workspace, store.from_list(tasks))
-    })
-    |> result.map(fn(_) { json.string(message) })
-  })
-}
-
-fn current_tasks(workspace: String) -> Result(List(Task), String) {
-  mnesia_store.current_store(workspace) |> result.map(store.current_tasks)
-}
-
-/// Derived reads use the daemon-lifetime AaronDB projection runtime. It catches
-/// up from the durable Mnesia tail before every query; only a bootstrapping or
-/// unavailable runtime falls back to a fresh authoritative rebuild.
-fn projection_gate(workspace: String) -> Result(Nil, String) {
-  case projections.ensure_runtime(workspace) {
-    Ok(_) ->
-      case projections.runtime_status(workspace) {
-        Ok(status) -> projection_status_gate(status)
-        Error(_) -> bootstrap_projection_gate(workspace)
-      }
-    Error(_) -> bootstrap_projection_gate(workspace)
-  }
-}
-
-fn projection_status_gate(
-  status: projections.RuntimeStatus,
-) -> Result(Nil, String) {
-  let projections.RuntimeStatus(healthy, _, _, _, _, _, _, _, _, _, _, _, _, _) =
-    status
-  case healthy {
-    True -> Ok(Nil)
-    False -> Error("aarondb projection is unhealthy; Mnesia fallback required")
-  }
-}
-
-fn bootstrap_projection_gate(workspace: String) -> Result(Nil, String) {
-  projections.bootstrap(workspace)
-  |> result.try(fn(view) {
-    case projections.healthy(view) {
-      True -> Ok(Nil)
-      False ->
-        Error("aarondb projection is unhealthy; Mnesia fallback required")
-    }
-  })
-}
-
-fn projected_tasks(workspace: String) -> Result(List(Task), String) {
-  projected_snapshot(workspace) |> result.map(fn(snapshot) { snapshot.1 })
-}
-
-fn projected_snapshot(workspace: String) -> Result(#(Int, List(Task)), String) {
-  projection_gate(workspace)
-  |> result.try(fn(_) { mnesia_store.projection_snapshot_rows(workspace) })
-}
-
-fn parse_days(args: List(String)) -> Int {
-  case args {
-    ["--days", value, ..] ->
-      case int.parse(value) {
-        Ok(days) -> days
-        Error(_) -> 7
-      }
-    [_, ..rest] -> parse_days(rest)
-    [] -> 7
-  }
-}
-
-fn parse_threshold(args: List(String), default: Float) -> Float {
-  case args {
-    ["--threshold", value, ..] ->
-      case float.parse(value) {
-        Ok(threshold) -> threshold
-        Error(_) -> default
-      }
-    [_, ..rest] -> parse_threshold(rest, default)
-    [] -> default
-  }
-}
-
-fn status_counts_to_json(counts: Dict(String, Int)) -> json.Json {
-  counts
-  |> dict.to_list()
-  |> list.sort(by: fn(a, b) { string.compare(a.0, b.0) })
-  |> list.map(fn(pair) { #(pair.0, json.int(pair.1)) })
-  |> json.object
-}
-
-fn memory_docs(workspace: String) -> List(#(String, String, String)) {
-  case memory.load(from: workspace <> "/memories.jsonl") {
-    Ok(memories) ->
-      list.map(memories, fn(memory) {
-        #("memory", store.hash_key(memory.content_hash), memory.text)
-      })
-    Error(_) -> []
-  }
-}
-
-fn task_documents(tasks: List(Task)) -> List(vector_bridge.Document) {
-  list.map(tasks, fn(task) {
-    vector_bridge.Document(
-      "task",
-      task.id,
-      task.title <> " " <> task.description,
-    )
-  })
-}
-
-fn memory_documents(workspace: String) -> List(vector_bridge.Document) {
-  case memory.load(from: workspace <> "/memories.jsonl") {
-    Ok(memories) ->
-      list.map(memories, fn(memory) {
-        vector_bridge.Document(
-          "memory",
-          store.hash_key(memory.content_hash),
-          memory.text,
-        )
-      })
-    Error(_) -> []
-  }
-}
-
-fn search_result_json(result: #(String, String, Float)) -> json.Json {
-  let #(kind, id, score) = result
-  json.object([
-    #("kind", json.string(kind)),
-    #("id", json.string(id)),
-    #("score", json.float(score)),
-  ])
-}
-
-fn match_text(
-  match: vector_bridge.Match,
-  tasks: List(vector_bridge.Document),
-  memories: List(vector_bridge.Document),
-) -> String {
-  case
-    list.find(list.append(tasks, memories), fn(document) {
-      document.kind == match.kind && document.id == match.id
-    })
-  {
-    Ok(vector_bridge.Document(_, _, text)) -> text
-    Error(Nil) -> ""
-  }
-}
-
-fn epic_json(tasks: List(Task), id: String) -> json.Json {
-  let children =
-    list.filter(tasks, fn(task) { task.parent_id == option.Some(id) })
-  let #(open, in_progress, blocked, completed, closed) =
-    list.fold(children, #(0, 0, 0, 0, 0), fn(counts, task) {
-      let #(open, in_progress, blocked, completed, closed) = counts
-      case task.status {
-        Open -> #(open + 1, in_progress, blocked, completed, closed)
-        InProgress -> #(open, in_progress + 1, blocked, completed, closed)
-        Blocked -> #(open, in_progress, blocked + 1, completed, closed)
-        Completed -> #(open, in_progress, blocked, completed + 1, closed)
-        Closed -> #(open, in_progress, blocked, completed, closed + 1)
-      }
-    })
-  let total = list.length(children)
-  let percent = case total {
-    0 -> 0.0
-    _ -> int.to_float(completed + closed) /. int.to_float(total) *. 100.0
-  }
-  json.object([
-    #("parent", json.string(id)),
-    #("children", json.int(total)),
-    #(
-      "status",
-      json.object([
-        #("open", json.int(open)),
-        #("in_progress", json.int(in_progress)),
-        #("blocked", json.int(blocked)),
-        #("completed", json.int(completed)),
-        #("closed", json.int(closed)),
-      ]),
-    ),
-    #("completion_pct", json.float(percent)),
-  ])
-}
+// --- Mutations ---
 
 pub fn create(
   workspace: String,
   title: String,
   rest: List(String),
 ) -> Result(json.Json, String) {
-  let now = time.now()
-  let priority = parse_priority(rest)
-  let labels = parse_labels(rest)
-  let kind = parse_kind(rest)
-  case parse_parent(rest) {
-    option.Some(parent_id) ->
-      case
-        mnesia_store.current_store(workspace),
-        mnesia_store.get_current(workspace, parent_id)
-      {
-        Ok(index), Ok(_) -> {
-          let id = next_child_id(index, parent_id)
-          let rels = [
-            Relationship(target_id: parent_id, relation: ParentChild),
-          ]
-          let task =
-            builder.build_full(
-              id,
-              title,
-              "",
-              Open,
-              option.None,
-              priority,
-              now,
-              now,
-              rels,
-              labels,
-              option.Some(parent_id),
-              kind,
-            )
-          let task = configure_gate(task, rest)
-          mnesia_store.create(workspace, task) |> result_json
-        }
-        Error(error), _ -> Error(error)
-        _, Error(error) -> Error(error)
-      }
-    option.None ->
-      builder.build_with_derived_id(
-        title,
-        "",
-        Open,
-        option.None,
-        priority,
-        now,
-        now,
-        [],
-        labels,
-        option.None,
-        kind,
-      )
-      |> configure_gate(rest)
-      |> mnesia_store.create(workspace, _)
-      |> result_json
-  }
-}
-
-fn configure_gate(task: Task, args: List(String)) -> Task {
-  case task.kind {
-    Gate ->
-      builder.update(task, fn(current) {
-        Task(
-          ..current,
-          gate_due: parse_gate_due(args),
-          gate_satisfied: has_flag(args, "--satisfied"),
-        )
-      })
-    _ -> task
-  }
-}
-
-fn parse_gate_due(args: List(String)) -> option.Option(Int) {
-  case args {
-    ["--due", value, ..] ->
-      case int.parse(value) {
-        Ok(due) -> option.Some(due)
-        Error(_) -> option.None
-      }
-    [_, ..rest] -> parse_gate_due(rest)
-    [] -> option.None
-  }
-}
-
-fn has_flag(args: List(String), flag: String) -> Bool {
-  list.any(args, fn(argument) { argument == flag })
-}
-
-pub fn satisfy_gate(
-  workspace: String,
-  id: String,
-) -> Result(json.Json, String) {
-  mnesia_store.get_current(workspace, id)
-  |> result.try(fn(previous) {
-    case previous.kind {
-      Gate ->
-        builder.update(previous, fn(task) {
-          Task(..task, gate_satisfied: True, updated_at: time.now())
-        })
-        |> mnesia_store.replace(workspace, previous, _)
-      _ -> Error("task is not a gate: " <> id)
-    }
-  })
-  |> result_json
+  mutations.create(workspace, title, rest)
 }
 
 pub fn update(
@@ -648,106 +84,23 @@ pub fn update(
   id: String,
   status: String,
 ) -> Result(json.Json, String) {
-  case cluster.mode(workspace) {
-    Error(error) -> Error(error)
-    Ok(cluster.Local) -> update_local(workspace, id, status)
-    Ok(cluster.Cluster(_, _)) ->
-      Error("clustered claimant transitions require --fence <token>")
-  }
+  mutations.update(workspace, id, status)
 }
 
-fn update_local(
+pub fn update_fenced(
   workspace: String,
   id: String,
   status: String,
+  fence_text: String,
 ) -> Result(json.Json, String) {
-  case
-    serde.status_from_string(status),
-    mnesia_store.get_current(workspace, id)
-  {
-    Ok(new_status), Ok(previous) ->
-      builder.update(previous, fn(task) {
-        Task(..task, status: new_status, updated_at: time.now())
-      })
-      |> mnesia_store.replace(workspace, previous, _)
-      |> result_json
-    Error(_), _ -> Error("invalid status: " <> status)
-    _, Error(error) -> Error(error)
-  }
+  mutations.update_fenced(workspace, id, status, fence_text)
 }
 
-pub fn defer_until(
+pub fn claim_next_ready(
   workspace: String,
-  id: String,
-  until_text: String,
+  rest: List(String),
 ) -> Result(json.Json, String) {
-  case int.parse(until_text), mnesia_store.get_current(workspace, id) {
-    Ok(until), Ok(previous) ->
-      builder.update(previous, fn(task) {
-        Task(..task, defer_until: option.Some(until), updated_at: time.now())
-      })
-      |> mnesia_store.replace(workspace, previous, _)
-      |> result_json
-    Error(_), _ -> Error("defer timestamp must be an integer")
-    _, Error(error) -> Error(error)
-  }
-}
-
-pub fn close(
-  workspace: String,
-  id: String,
-  reason: String,
-) -> Result(json.Json, String) {
-  mnesia_store.get_current(workspace, id)
-  |> result.try(fn(previous) {
-    builder.update(previous, fn(task) {
-      Task(
-        ..task,
-        status: Closed,
-        closure_reason: option.Some(reason),
-        updated_at: time.now(),
-      )
-    })
-    |> mnesia_store.replace(workspace, previous, _)
-  })
-  |> result_json
-}
-
-pub fn add_label(
-  workspace: String,
-  id: String,
-  label: String,
-) -> Result(json.Json, String) {
-  case mnesia_store.get_current(workspace, id) {
-    Ok(previous) ->
-      builder.update(previous, fn(task) {
-        case list.contains(task.labels, label) {
-          True -> task
-          False ->
-            Task(..task, labels: [label, ..task.labels], updated_at: time.now())
-        }
-      })
-      |> mnesia_store.replace(workspace, previous, _)
-      |> result_json
-    Error(error) -> Error(error)
-  }
-}
-
-pub fn set_priority(
-  workspace: String,
-  id: String,
-  priority_text: String,
-) -> Result(json.Json, String) {
-  case int.parse(priority_text), mnesia_store.get_current(workspace, id) {
-    Ok(priority), Ok(previous) ->
-      builder.update(previous, fn(task) {
-        Task(..task, priority:, updated_at: time.now())
-      })
-      |> mnesia_store.replace(workspace, previous, _)
-      |> result_json
-    Error(_), _ -> Error("invalid priority: " <> priority_text)
-    _, Error(error) -> Error(error)
-  }
+  mutations.claim_next_ready(workspace, rest)
 }
 
 pub fn claim(
@@ -755,605 +108,179 @@ pub fn claim(
   id: String,
   rest: List(String),
 ) -> Result(json.Json, String) {
-  claim_record(workspace, id, rest)
-  |> result.map(claimed_json)
+  mutations.claim(workspace, id, rest)
 }
 
-fn claim_record(
+pub fn claim_record(
   workspace: String,
   id: String,
   rest: List(String),
 ) -> Result(Claimed, String) {
-  let assignee = case rest {
-    [value, ..] -> value
-    [] -> "agent"
-  }
-  mnesia_store.get_current(workspace, id)
-  |> result.try(fn(previous) {
-    case previous.status {
-      Open ->
-        builder.update(previous, fn(task) {
-          Task(
-            ..task,
-            status: InProgress,
-            assignee: option.Some(assignee),
-            updated_at: time.now(),
-          )
-        })
-        |> claim_admitted(workspace, previous, assignee, _)
-      _ -> Error("task is not open: " <> id)
-    }
-  })
+  mutations.claim_record(workspace, id, rest)
 }
 
-fn claimed_json(claimed: Claimed) -> json.Json {
-  let Claimed(task, admission) = claimed
-  case admission {
-    option.None -> serde.task_to_json(task)
-    option.Some(cluster.Admission(fence, commit_index, idempotent, command_id)) ->
-      json.object([
-        #("task", serde.task_to_json(task)),
-        #("clustered", json.bool(True)),
-        #("fence", json.int(fence)),
-        #("commit_index", json.int(commit_index)),
-        #("idempotent", json.bool(idempotent)),
-        #("command_id", json.string(command_id)),
-      ])
-  }
+pub fn release(workspace: String, id: String) -> Result(json.Json, String) {
+  mutations.release(workspace, id)
 }
 
-/// A fenced follow-up mutation is required only in explicit clustered mode.
-/// Local mode retains its existing daemon-owned Mnesia CAS behavior.
-pub fn update_fenced(
+pub fn reopen(workspace: String, id: String) -> Result(json.Json, String) {
+  mutations.reopen(workspace, id)
+}
+
+pub fn undefer(workspace: String, id: String) -> Result(json.Json, String) {
+  mutations.undefer(workspace, id)
+}
+
+pub fn defer_until(
   workspace: String,
   id: String,
-  status: String,
-  fence_text: String,
+  until_text: String,
 ) -> Result(json.Json, String) {
-  case int.parse(fence_text), serde.status_from_string(status) {
-    Ok(fence), Ok(next_status) ->
-      mnesia_store.get_current(workspace, id)
-      |> result.try(fn(previous) {
-        builder.update(previous, fn(task) {
-          Task(..task, status: next_status, updated_at: time.now())
-        })
-        |> fenced_replace(workspace, previous, fence, _)
-      })
-      |> result_json
-    Error(_), _ -> Error("fence must be an integer")
-    _, Error(_) -> Error("invalid status: " <> status)
-  }
+  mutations.defer_until(workspace, id, until_text)
 }
 
-fn claim_admitted(
+pub fn close(
   workspace: String,
-  previous: Task,
-  assignee: String,
-  updated: Task,
-) -> Result(Claimed, String) {
-  case cluster.mode(workspace) {
-    Error(error) -> Error(error)
-    Ok(cluster.Local) ->
-      mnesia_store.replace(workspace, previous, updated)
-      |> result.map(fn(task) { Claimed(task, option.None) })
-    Ok(cluster.Cluster(_, _)) ->
-      cluster.claim(
-        workspace,
-        previous.id,
-        assignee,
-        hash_text(previous),
-        hash_text(updated),
-        time.now(),
-      )
-      |> result.try(fn(admission) {
-        let cluster.Admission(_, _, _, command_id) = admission
-        mnesia_store.replace_committed(workspace, command_id, previous, updated)
-        |> result.map(fn(task) { Claimed(task, option.Some(admission)) })
-      })
-  }
-}
-
-fn fenced_replace(
-  workspace: String,
-  previous: Task,
-  fence: Int,
-  updated: Task,
-) -> Result(Task, String) {
-  case cluster.mode(workspace) {
-    Error(error) -> Error(error)
-    Ok(cluster.Local) ->
-      Error("fenced updates require a clustered Bankai profile")
-    Ok(cluster.Cluster(_, _)) ->
-      cluster.transition(
-        workspace,
-        previous.id,
-        hash_text(previous),
-        hash_text(updated),
-        fence,
-        time.now(),
-      )
-      |> result.try(fn(admission) {
-        let cluster.Admission(_, _, _, command_id) = admission
-        mnesia_store.replace_committed(workspace, command_id, previous, updated)
-      })
-  }
-}
-
-fn hash_text(task: Task) -> String {
-  identity.hash_to_debug_string(task.content_hash)
-}
-
-/// Deterministically claim the first ready task matching the optional label.
-/// `graph.ready_tasks` supplies the stable ID order; `claim` then advances that
-/// chosen head through Mnesia compare-and-swap. If another worker wins a race,
-/// retry the remaining ready candidates rather than returning a stale task.
-pub fn claim_next_ready(
-  workspace: String,
-  rest: List(String),
+  id: String,
+  reason: String,
 ) -> Result(json.Json, String) {
-  let assignee_args = claim_assignee_args(rest)
-  let label = parse_label_filter(rest)
-  mnesia_store.current_store(workspace)
-  |> result.try(fn(index) {
-    index
-    |> store.current_tasks()
-    |> graph.ready_tasks_at(time.now())
-    |> filter_by_label(label)
-    |> claim_first_available(workspace, assignee_args)
-  })
+  mutations.close(workspace, id, reason)
 }
 
-fn claim_first_available(
-  tasks: List(Task),
+pub fn add_label(
   workspace: String,
-  assignee_args: List(String),
+  id: String,
+  label: String,
 ) -> Result(json.Json, String) {
-  case tasks {
-    [] -> Error("no ready tasks available")
-    [task, ..rest] ->
-      case claim_record(workspace, task.id, assignee_args) {
-        Ok(value) -> Ok(claimed_json(value))
-        Error(_) -> claim_first_available(rest, workspace, assignee_args)
-      }
-  }
+  mutations.add_label(workspace, id, label)
 }
 
-/// `ready --claim [assignee] [--label label]` carries both selector and
-/// assignee flags. Keep the latter out of the label parser's concern.
-fn claim_assignee_args(args: List(String)) -> List(String) {
-  case args {
-    ["--label", _, ..rest] -> claim_assignee_args(rest)
-    [value, ..] -> [value]
-    [] -> []
-  }
+pub fn remove_label(
+  workspace: String,
+  id: String,
+  label: String,
+) -> Result(json.Json, String) {
+  mutations.remove_label(workspace, id, label)
 }
 
-/// Explicit duplicate consolidation. The caller must name both heads; semantic
-/// candidate discovery never reaches this mutation. Every direct reference to
-/// the source is redirected to the canonical task, then the source is closed
-/// with durable provenance. The whole plan commits through one Mnesia CAS batch.
-pub fn merge_duplicate(
+pub fn set_priority(
+  workspace: String,
+  id: String,
+  priority_text: String,
+) -> Result(json.Json, String) {
+  mutations.set_priority(workspace, id, priority_text)
+}
+
+pub fn merge(
   workspace: String,
   source_id: String,
   canonical_id: String,
 ) -> Result(json.Json, String) {
-  case source_id == canonical_id {
-    True -> Error("source and canonical task must differ")
-    False ->
-      current_tasks(workspace)
-      |> result.try(fn(tasks) {
-        case
-          mnesia_store.get_current(workspace, source_id),
-          mnesia_store.get_current(workspace, canonical_id)
-        {
-          Error(error), _ -> Error(error)
-          _, Error(error) -> Error(error)
-          Ok(source), Ok(_canonical) ->
-            case
-              source.status == Closed
-              && source.closure_reason
-              == option.Some("merged into " <> canonical_id)
-            {
-              True ->
-                Ok(
-                  json.object([
-                    #("source", json.string(source_id)),
-                    #("canonical", json.string(canonical_id)),
-                    #("merged", json.bool(True)),
-                    #("idempotent", json.bool(True)),
-                  ]),
-                )
-              False -> {
-                let rewritten =
-                  rewrite_duplicate_plan(tasks, source, canonical_id)
-                mnesia_store.replace_many(workspace, rewritten)
-                |> result.map(fn(_) {
-                  json.object([
-                    #("source", json.string(source_id)),
-                    #("canonical", json.string(canonical_id)),
-                    #("merged", json.bool(True)),
-                    #("idempotent", json.bool(False)),
-                  ])
-                })
-              }
-            }
-        }
-      })
-  }
+  mutations.merge(workspace, source_id, canonical_id)
 }
 
-fn rewrite_duplicate_plan(
-  tasks: List(Task),
-  source: Task,
-  canonical_id: String,
-) -> List(#(Task, Task)) {
-  tasks
-  |> list.filter_map(fn(task) {
-    let rewritten_relationships =
-      task.relationships
-      |> list.map(fn(relation) {
-        case relation.target_id == source.id {
-          True -> Relationship(canonical_id, relation.relation)
-          False -> relation
-        }
-      })
-    let rewritten_parent = case task.parent_id {
-      option.Some(parent) if parent == source.id -> option.Some(canonical_id)
-      other -> other
-    }
-    let updated = case task.id == source.id {
-      True ->
-        builder.update(task, fn(current) {
-          Task(
-            ..current,
-            status: Closed,
-            relationships: [
-              Relationship(canonical_id, Supersedes),
-              ..rewritten_relationships
-            ],
-            closure_reason: option.Some("merged into " <> canonical_id),
-            updated_at: time.now(),
-          )
-        })
-      False ->
-        builder.update(task, fn(current) {
-          Task(
-            ..current,
-            relationships: rewritten_relationships,
-            parent_id: rewritten_parent,
-            updated_at: time.now(),
-          )
-        })
-    }
-    case updated.content_hash == task.content_hash {
-      True -> Error(Nil)
-      False -> Ok(#(task, updated))
-    }
-  })
+pub fn batch_mutate(
+  workspace: String,
+  idempotency_key: String,
+  mutations: List(String),
+) -> Result(json.Json, String) {
+  task_lifecycle.batch(workspace, idempotency_key, mutations)
 }
 
-pub fn dependency_list(
+pub fn satisfy_gate(
   workspace: String,
   id: String,
 ) -> Result(json.Json, String) {
-  mnesia_store.get_current(workspace, id)
-  |> result.map(fn(task) {
-    json.array(task.relationships, of: fn(relation) {
-      json.object([
-        #("target_id", json.string(relation.target_id)),
-        #("relation", json.string(relation_name(relation.relation))),
-      ])
-    })
-  })
+  mutations.satisfy_gate(workspace, id)
 }
 
-pub fn dependency_tree(
+// --- Queries ---
+
+pub fn list_tasks(
   workspace: String,
-  id: String,
+  rest: List(String),
 ) -> Result(json.Json, String) {
-  current_tasks(workspace)
-  |> result.map(fn(tasks) { dependency_tree_json(tasks, id, []) })
+  queries.list_tasks(workspace, rest)
 }
 
-fn dependency_tree_json(
-  tasks: List(Task),
-  id: String,
-  seen: List(String),
-) -> json.Json {
-  case list.contains(seen, id) {
-    True -> json.object([#("id", json.string(id)), #("cycle", json.bool(True))])
-    False ->
-      case list.find(tasks, fn(task) { task.id == id }) {
-        Error(_) ->
-          json.object([#("id", json.string(id)), #("missing", json.bool(True))])
-        Ok(task) ->
-          json.object([
-            #("id", json.string(id)),
-            #("title", json.string(task.title)),
-            #(
-              "dependencies",
-              json.array(task.relationships, of: fn(r) {
-                json.object([
-                  #("relation", json.string(relation_name(r.relation))),
-                  #(
-                    "node",
-                    dependency_tree_json(tasks, r.target_id, [id, ..seen]),
-                  ),
-                ])
-              }),
-            ),
-          ])
-      }
-  }
-}
-
-pub fn vector_projection_status(
+pub fn ready_tasks(
   workspace: String,
+  rest: List(String),
 ) -> Result(json.Json, String) {
-  vector_bridge.projection_status(workspace)
-  |> result.map(vector_projection_status_json)
+  queries.ready_tasks(workspace, rest)
 }
 
-fn vector_projection_status_json(
-  status: vector_bridge.ProjectionStatus,
-) -> json.Json {
-  let vector_bridge.ProjectionStatus(offset, documents, health, generation) =
-    status
-  json.object([
-    #("last_applied_offset", json.int(offset)),
-    #("documents", json.int(documents)),
-    #("generation", json.int(generation)),
-    #("health", json.string(vector_projection_health_name(health))),
-  ])
+pub fn show_task(workspace: String, id: String) -> Result(json.Json, String) {
+  queries.show_task(workspace, id)
 }
 
-fn vector_projection_health_name(health: projection_index.Health) -> String {
-  case health {
-    projection_index.Building -> "building"
-    projection_index.Rebuilding -> "rebuilding"
-    projection_index.Queryable -> "queryable"
-    projection_index.Degraded(_) -> "degraded"
-    projection_index.Failed(_) -> "failed"
-  }
+pub fn count_tasks(
+  workspace: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  queries.count_tasks(workspace, rest)
 }
 
-pub fn doctor(workspace: String) -> Result(json.Json, String) {
-  case
-    mnesia_store.current_store(workspace),
-    mnesia_store.version_store(workspace),
-    platform_profile.load(workspace)
-  {
-    Ok(current), Ok(versions), Ok(profile) -> {
-      let tasks = store.current_tasks(current)
-      let cycles = graph.cycle_edges(tasks)
-      let missing =
-        list.flat_map(tasks, fn(task) {
-          task.relationships
-          |> list.filter_map(fn(r) {
-            case
-              list.any(tasks, fn(candidate) { candidate.id == r.target_id })
-            {
-              True -> Error(Nil)
-              False -> Ok(task.id <> " -> " <> r.target_id)
-            }
-          })
-        })
-      let projection = projection_diagnostics(workspace)
-      let cluster = cluster_diagnostics(workspace)
-      let transport = cluster_transport.diagnose(workspace, profile)
-      let recovery = recovery_state(profile, cluster, projection, transport)
-      Ok(
-        json.object([
-          #(
-            "healthy",
-            json.bool(
-              list.is_empty(cycles)
-              && list.is_empty(missing)
-              && recovery == "healthy",
-            ),
-          ),
-          #("tasks", json.int(list.length(tasks))),
-          #("versions", json.int(list.length(store.list(versions)))),
-          #("cycles", json.int(list.length(cycles))),
-          #("missing_targets", json.int(list.length(missing))),
-          #("mode", json.string(platform_profile.mode_name(profile.mode))),
-          #("projection", projection),
-          #("cluster", cluster),
-          #("transport", cluster_transport.status_json(transport)),
-          #("recovery", json.string(recovery)),
-          #("repair", json.string("none; diagnostics are read-only")),
-        ]),
-      )
-    }
-    Error(error), _, _ -> Error(error)
-    _, Error(error), _ -> Error(error)
-    _, _, Error(error) -> Error(error)
-  }
+pub fn blocked_tasks(
+  workspace: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  queries.blocked_tasks(workspace, rest)
 }
 
-pub fn cluster_status(workspace: String) -> Result(json.Json, String) {
-  platform_profile.load(workspace)
-  |> result.try(fn(profile) {
-    cluster.status(workspace)
-    |> result.map(fn(status) {
-      let cluster_json = cluster.status_json(status)
-      let transport = cluster_transport.diagnose(workspace, profile)
-      json.object([
-        #("cluster", cluster_json),
-        #("transport", cluster_transport.status_json(transport)),
-        #(
-          "recovery",
-          json.string(recovery_state(
-            profile,
-            cluster_json,
-            projection_diagnostics(workspace),
-            transport,
-          )),
-        ),
-      ])
-    })
-  })
+pub fn cycle_edges(workspace: String) -> Result(json.Json, String) {
+  queries.cycle_edges(workspace)
 }
 
-fn recovery_state(
-  profile: platform_profile.Profile,
-  cluster: json.Json,
-  projection: json.Json,
-  transport: cluster_transport.TransportStatus,
-) -> String {
-  case profile.mode, transport {
-    platform_profile.Clustered, cluster_transport.RecoveryRequired(_) ->
-      "recovery-required"
-    platform_profile.Clustered, _ ->
-      case
-        string.contains(json.to_string(cluster), "\"quorum\":\"healthy\"")
-        && string.contains(json.to_string(projection), "\"healthy\":true")
-      {
-        True -> "healthy"
-        False -> "degraded"
-      }
-    platform_profile.Local, _ ->
-      case string.contains(json.to_string(projection), "\"healthy\":true") {
-        True -> "healthy"
-        False -> "degraded"
-      }
-  }
+pub fn duplicate_pairs(workspace: String) -> Result(json.Json, String) {
+  queries.duplicate_pairs(workspace)
 }
 
-fn cluster_diagnostics(workspace: String) -> json.Json {
-  case cluster.status(workspace) {
-    Ok(status) -> cluster.status_json(status)
-    Error(error) ->
-      json.object([
-        #("mode", json.string("unavailable")),
-        #("error", json.string(error)),
-      ])
-  }
+pub fn stale_tasks(
+  workspace: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  queries.stale_tasks(workspace, rest)
 }
 
-/// AaronDB state is a projection diagnostic only: task truth is Mnesia. The
-/// daemon reports retained worker state, with a fresh rebuild only if startup
-/// failed before the runtime became available.
-fn projection_diagnostics(workspace: String) -> json.Json {
-  case projections.runtime_status(workspace) {
-    Ok(status) ->
-      json.object([
-        #("changefeed", projection_runtime_json(status)),
-        #("vector_index", vector_projection_diagnostics(workspace)),
-      ])
-    Error(_) ->
-      case projections.bootstrap(workspace) {
-        Ok(view) ->
-          json.object([
-            #("healthy", json.bool(projections.healthy(view))),
-            #("high_watermark", json.int(view.source.next_offset - 1)),
-            #("mode", json.string("fresh-mnesia-rebuild")),
-          ])
-        Error(error) ->
-          json.object([
-            #("healthy", json.bool(False)),
-            #("error", json.string(error)),
-          ])
-      }
-  }
+pub fn history(workspace: String, id: String) -> Result(json.Json, String) {
+  queries.history(workspace, id)
 }
 
-fn vector_projection_diagnostics(workspace: String) -> json.Json {
-  case vector_projection_status(workspace) {
-    Ok(status) -> status
-    Error(error) ->
-      json.object([
-        #("health", json.string("unbuilt")),
-        #("error", json.string(error)),
-      ])
-  }
+pub fn analytics(workspace: String) -> Result(json.Json, String) {
+  queries.analytics(workspace)
 }
 
-fn projection_runtime_json(status: projections.RuntimeStatus) -> json.Json {
-  let projections.RuntimeStatus(
-    healthy,
-    high_watermark,
-    history_state,
-    history_offset,
-    history_lag,
-    history_failure,
-    text_state,
-    text_offset,
-    text_lag,
-    text_failure,
-    vector_state,
-    vector_offset,
-    vector_lag,
-    vector_failure,
-  ) = status
-  json.object([
-    #("healthy", json.bool(healthy)),
-    #("high_watermark", json.int(high_watermark)),
-    #("mode", json.string("daemon-runtime")),
-    #(
-      "history",
-      projection_component_json(
-        history_state,
-        history_offset,
-        history_lag,
-        history_failure,
-      ),
-    ),
-    #(
-      "text",
-      projection_component_json(text_state, text_offset, text_lag, text_failure),
-    ),
-    #(
-      "vector_membership",
-      projection_component_json(
-        vector_state,
-        vector_offset,
-        vector_lag,
-        vector_failure,
-      ),
-    ),
-  ])
+pub fn search(
+  workspace: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  queries.search(workspace, rest)
 }
 
-fn projection_component_json(
-  state: String,
-  offset: Int,
-  lag: Int,
-  failure: String,
-) -> json.Json {
-  json.object([
-    #("state", json.string(state)),
-    #("last_applied_offset", json.int(offset)),
-    #("lag", json.int(lag)),
-    #(
-      "failure",
-      json.nullable(
-        case failure == "" {
-          True -> option.None
-          False -> option.Some(failure)
-        },
-        of: json.string,
-      ),
-    ),
-  ])
+pub fn semantic_duplicates(
+  workspace: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  queries.semantic_duplicates(workspace, rest)
 }
 
-fn relation_name(relation: types.RelationType) -> String {
-  case relation {
-    Blocks -> "blocks"
-    RelatesTo -> "relates_to"
-    Duplicates -> "duplicates"
-    Supersedes -> "supersedes"
-    ParentChild -> "parent_child"
-    WaitsFor -> "waits_for"
-    DiscoveredFrom -> "discovered_from"
-    Tracks -> "tracks"
-    CausedBy -> "caused_by"
-    Validates -> "validates"
-    ConditionalBlocks -> "conditional_blocks"
-    RepliesTo -> "replies_to"
-  }
+pub fn inspect(workspace: String, hash: String) -> Result(json.Json, String) {
+  queries.inspect(workspace, hash)
 }
+
+pub fn prime_query(
+  workspace: String,
+  query: String,
+) -> Result(json.Json, String) {
+  queries.prime_query(workspace, query)
+}
+
+pub fn epic(workspace: String, id: String) -> Result(json.Json, String) {
+  queries.epic(workspace, id)
+}
+
+// --- Relations ---
 
 pub fn add_dependency(
   workspace: String,
@@ -1361,41 +288,82 @@ pub fn add_dependency(
   target_id: String,
   rest: List(String),
 ) -> Result(json.Json, String) {
-  let relation = parse_relation_type(rest)
-  case mnesia_store.current_store(workspace) {
-    Error(error) -> Error(error)
-    Ok(index) ->
-      case
-        mnesia_store.get_current(workspace, task_id),
-        mnesia_store.get_current(workspace, target_id)
-      {
-        Error(error), _ -> Error(error)
-        _, Error(error) -> Error(error)
-        Ok(previous), Ok(_) ->
-          case
-            graph.would_cycle(graph.all_edges(store.current_tasks(index)), #(
-              task_id,
-              target_id,
-            ))
-          {
-            True ->
-              Error(
-                "relation would create a cycle: "
-                <> task_id
-                <> " -> "
-                <> target_id,
-              )
-            False ->
-              apply.relation_typed(previous, target_id, relation, time.now())
-              |> mnesia_store.replace(workspace, previous, _)
-              |> result_json
-          }
-      }
-  }
+  relations.add_dependency(workspace, task_id, target_id, rest)
 }
 
-/// JSONL is an explicit interchange artifact. Exports include immutable history,
-/// not only heads, preserving inspect/history and peer reconciliation semantics.
+pub fn remove_dependency(
+  workspace: String,
+  task_id: String,
+  target_id: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  relations.remove_dependency(workspace, task_id, target_id, rest)
+}
+
+pub fn dependency_list(
+  workspace: String,
+  id: String,
+) -> Result(json.Json, String) {
+  relations.dependency_list(workspace, id)
+}
+
+pub fn dependency_tree(
+  workspace: String,
+  id: String,
+) -> Result(json.Json, String) {
+  relations.dependency_tree(workspace, id)
+}
+
+pub fn traverse_dependencies(
+  workspace: String,
+  id: String,
+  args: List(String),
+) -> Result(json.Json, String) {
+  relations.traverse_dependencies(workspace, id, args)
+}
+
+pub fn dependency_graph(
+  workspace: String,
+  args: List(String),
+) -> Result(json.Json, String) {
+  relations.dependency_graph(workspace, args)
+}
+
+pub fn dependency_integrity(workspace: String) -> Result(json.Json, String) {
+  relations.dependency_integrity(workspace)
+}
+
+// --- Memory & Interchange ---
+
+pub fn remember(workspace: String, text: String) -> Result(json.Json, String) {
+  memory.remember(workspace, text) |> result.map(memory.memory_to_json)
+}
+
+pub fn memories(workspace: String) -> Result(json.Json, String) {
+  memory.all(workspace)
+  |> result.map(fn(items) { json.array(items, of: memory.memory_to_json) })
+}
+
+pub fn compact(workspace: String) -> Result(json.Json, String) {
+  mnesia_store.current_store(workspace)
+  |> result.map(store.current_tasks)
+  |> result.try(fn(before) {
+    export_jsonl(workspace)
+    |> result.try(fn(_) {
+      let message = compact.run(workspace, workspace <> "/tasks.jsonl")
+      jsonl.load(from: workspace <> "/tasks.jsonl")
+      |> result.try(fn(tasks) {
+        before
+        |> list.filter(fn(task) { task.kind == Wisp })
+        |> list.append(tasks)
+        |> store.from_list()
+        |> mnesia_store.replace_current_snapshot(workspace, _)
+      })
+      |> result.map(fn(_) { json.string(message) })
+    })
+  })
+}
+
 pub fn export_jsonl_to(
   workspace: String,
   path: String,
@@ -1424,8 +392,6 @@ pub fn backup_jsonl(workspace: String) -> Result(json.Json, String) {
   })
 }
 
-/// Import and reconciliation are daemon operations. JSONL is validated before
-/// Mnesia writes; a same-ID divergent current head is rejected, never replaced.
 pub fn import_jsonl(
   workspace: String,
   path: String,
@@ -1434,18 +400,257 @@ pub fn import_jsonl(
   |> result.try(fn(tasks) {
     mnesia_store.import_snapshot(workspace, store.from_list(tasks))
   })
-  |> result.map(fn(_) { json.string("imported JSONL snapshot from " <> path) })
+  |> result.map(fn(_) { json.string("imported tasks from " <> path) })
 }
 
-pub fn reconcile_jsonl(
+// --- Subsystem Delegations (Backup, Conflicts, Journal, Gates, Wisps, Molecules, Rules) ---
+
+pub fn backup_list(workspace: String) -> Result(json.Json, String) {
+  backup.catalog(workspace)
+  |> result.map(fn(entries) {
+    json.array(entries, fn(e) {
+      json.object([
+        #("path", json.string(e.path)),
+        #("task_count", json.int(e.task_count)),
+        #("valid", json.bool(e.valid)),
+      ])
+    })
+  })
+}
+
+pub fn backup_preview(
   workspace: String,
   path: String,
 ) -> Result(json.Json, String) {
-  import_jsonl(workspace, path)
+  backup.divergence_detail(workspace, path)
+  |> result.map(fn(div) {
+    json.object([
+      #("current_count", json.int(div.current_count)),
+      #("backup_count", json.int(div.backup_count)),
+      #("same_tasks", json.int(div.same_tasks)),
+      #(
+        "added_in_backup",
+        json.array(div.added_in_backup, fn(id) { json.string(id) }),
+      ),
+      #(
+        "missing_in_backup",
+        json.array(div.missing_in_backup, fn(id) { json.string(id) }),
+      ),
+      #(
+        "modified_in_backup",
+        json.array(div.modified_in_backup, fn(id) { json.string(id) }),
+      ),
+    ])
+  })
 }
 
-/// Pull a peer snapshot and import it through the transactional repository.
-/// The TCP transport is deliberately read-only; only this daemon commits it.
+pub fn backup_restore(
+  workspace: String,
+  path: String,
+) -> Result(json.Json, String) {
+  backup.restore(workspace, path)
+  |> result.map(fn(_) { json.string("restored backup from " <> path) })
+}
+
+pub fn backup_prune(workspace: String, keep: Int) -> Result(json.Json, String) {
+  backup.prune(workspace, keep: keep)
+  |> result.map(fn(count) {
+    json.object([
+      #("pruned_count", json.int(count)),
+      #("kept", json.int(keep)),
+    ])
+  })
+}
+
+pub fn conflicts_list(workspace: String) -> Result(json.Json, String) {
+  sync_peer.list_conflicts(workspace)
+  |> result.map(fn(conflicts) {
+    json.array(conflicts, fn(c) {
+      json.object([
+        #("id", json.string(c.id)),
+        #("timestamp", json.int(c.timestamp)),
+        #("author", json.string(c.author)),
+        #("detail", json.string(c.detail)),
+      ])
+    })
+  })
+}
+
+pub fn conflicts_resolve(
+  workspace: String,
+  conflict_id: String,
+) -> Result(json.Json, String) {
+  sync_peer.resolve_conflict(workspace, conflict_id)
+  |> result.map(fn(_) { json.string("resolved conflict " <> conflict_id) })
+}
+
+pub fn conflicts_clear(workspace: String) -> Result(json.Json, String) {
+  sync_peer.clear_conflicts(workspace)
+  |> result.map(fn(_) { json.string("cleared all replication conflicts") })
+}
+
+pub fn journal_tail(
+  workspace: String,
+  after_offset: Int,
+) -> Result(json.Json, String) {
+  mnesia_store.change_tail(workspace, after_offset)
+  |> result.map(fn(events) {
+    json.object([
+      #("after_offset", json.int(after_offset)),
+      #("count", json.int(list.length(events))),
+      #("events", json.array(events, fn(e) { json.string(e) })),
+    ])
+  })
+}
+
+pub fn gate_list(
+  workspace: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  gate_service.list(workspace, rest)
+}
+
+pub fn gate_show(workspace: String, id: String) -> Result(json.Json, String) {
+  gate_service.show(workspace, id)
+}
+
+pub fn gate_check(workspace: String, id: String) -> Result(json.Json, String) {
+  gate_service.check(workspace, id)
+}
+
+pub fn gate_resolve(
+  workspace: String,
+  id: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  gate_service.resolve(workspace, id, rest)
+}
+
+pub fn gate_fact_ingest(
+  workspace: String,
+  gate_id: String,
+  issuer: String,
+  wire: String,
+) -> Result(json.Json, String) {
+  gate_service.ingest_fact(workspace, gate_id, issuer, wire)
+}
+
+pub fn wisp_list(
+  workspace: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  wisp_service.list(workspace, rest)
+}
+
+pub fn wisp_promote(
+  workspace: String,
+  id: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  wisp_service.promote(workspace, id, rest)
+}
+
+pub fn wisp_digest(workspace: String, id: String) -> Result(json.Json, String) {
+  wisp_service.digest(workspace, id)
+}
+
+pub fn wisp_burn(
+  workspace: String,
+  id: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  wisp_service.burn(workspace, id, rest)
+}
+
+pub fn wisp_gc(
+  workspace: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  wisp_service.gc(workspace, rest)
+}
+
+pub fn wisp_archive(
+  workspace: String,
+  id: option.Option(String),
+) -> Result(json.Json, String) {
+  wisp_service.archives(workspace, option.unwrap(id, ""))
+}
+
+pub fn molecule_register(
+  workspace: String,
+  source: String,
+) -> Result(json.Json, String) {
+  molecule_service.register(workspace, source)
+}
+
+pub fn molecule_list(workspace: String) -> Result(json.Json, String) {
+  molecule_service.list(workspace)
+}
+
+pub fn molecule_show(
+  workspace: String,
+  hash: String,
+) -> Result(json.Json, String) {
+  molecule_service.show(workspace, hash)
+}
+
+pub fn molecule_instantiate(
+  workspace: String,
+  template_hash: String,
+  idempotency_key: String,
+  raw_bindings: List(String),
+) -> Result(json.Json, String) {
+  molecule_service.instantiate(
+    workspace,
+    template_hash,
+    idempotency_key,
+    raw_bindings,
+  )
+}
+
+pub fn rule_register(
+  workspace: String,
+  name: String,
+  source: String,
+) -> Result(json.Json, String) {
+  rule_service.register(workspace, name, source)
+}
+
+pub fn rule_list(workspace: String) -> Result(json.Json, String) {
+  rule_service.list(workspace)
+}
+
+pub fn rule_show(workspace: String, hash: String) -> Result(json.Json, String) {
+  rule_service.show(workspace, hash)
+}
+
+pub fn rule_approve(
+  workspace: String,
+  hash: String,
+) -> Result(json.Json, String) {
+  rule_service.approve(workspace, hash)
+}
+
+pub fn rule_eval(
+  workspace: String,
+  hash: String,
+  args: List(String),
+) -> Result(json.Json, String) {
+  rule_service.evaluate(workspace, hash, args)
+}
+
+pub fn rule_audit(workspace: String) -> Result(json.Json, String) {
+  rule_service.audits(workspace, "")
+}
+
+pub fn merge_duplicate(
+  workspace: String,
+  source_id: String,
+  canonical_id: String,
+) -> Result(json.Json, String) {
+  mutations.merge(workspace, source_id, canonical_id)
+}
+
 pub fn pull_peer(
   workspace: String,
   host: String,
@@ -1458,14 +663,10 @@ pub fn pull_peer(
       store.from_list(snapshot.versions),
       snapshot.heads,
     )
-    |> result.map_error(fn(error) {
-      let _ = sync_peer.record_conflict(workspace, snapshot.author, error)
-      error
-    })
   })
   |> result.map(fn(_) {
     json.string(
-      "reconciled transactional store from "
+      "reconciled transactional store with peer at "
       <> host
       <> ":"
       <> int.to_string(port),
@@ -1473,99 +674,15 @@ pub fn pull_peer(
   })
 }
 
-fn result_json(result: Result(Task, String)) -> Result(json.Json, String) {
-  case result {
-    Ok(task) -> Ok(serde.task_to_json(task))
-    Error(error) -> Error(error)
-  }
-}
-
-fn filter_by_label(
-  tasks: List(Task),
-  label: option.Option(String),
-) -> List(Task) {
-  case label {
-    option.Some(wanted) ->
-      list.filter(tasks, fn(task) { list.contains(task.labels, wanted) })
-    option.None -> tasks
-  }
-}
-
-fn parse_label_filter(args: List(String)) -> option.Option(String) {
-  case args {
-    ["--label", label, ..] -> option.Some(label)
-    [_first, ..rest] -> parse_label_filter(rest)
-    [] -> option.None
-  }
-}
-
-fn parse_parent(args: List(String)) -> option.Option(String) {
-  case args {
-    ["--parent", id, ..] -> option.Some(id)
-    [_first, ..rest] -> parse_parent(rest)
-    [] -> option.None
-  }
-}
-
-fn parse_kind(args: List(String)) -> TaskKind {
-  case args {
-    ["--kind", value, ..] -> serde.kind_from_string(value)
-    [_, ..rest] -> parse_kind(rest)
-    [] -> DefaultTask
-  }
-}
-
-fn parse_priority(args: List(String)) -> Int {
-  case args {
-    ["--priority", value, ..] ->
-      case int.parse(value) {
-        Ok(n) -> n
-        Error(_) -> 0
-      }
-    [_first, ..rest] -> parse_priority(rest)
-    [] -> 0
-  }
-}
-
-fn parse_labels(args: List(String)) -> List(String) {
-  case args {
-    ["--label", label, ..rest] -> [label, ..parse_labels(rest)]
-    [_first, ..rest] -> parse_labels(rest)
-    [] -> []
-  }
-}
-
-fn parse_relation_type(args: List(String)) {
-  case args {
-    ["--type", kind, ..] ->
-      case serde.relation_from_string(kind) {
-        Ok(t) -> t
-        Error(_) -> Blocks
-      }
-    [_first, ..rest] -> parse_relation_type(rest)
-    [] -> Blocks
-  }
-}
-
-fn next_child_id(index: store.Store, parent_id: String) -> String {
-  let prefix = parent_id <> "."
-  let max_child =
-    store.current_tasks(index)
-    |> list.fold(0, fn(max, task) {
-      case string.starts_with(task.id, prefix) {
-        True ->
-          case
-            int.parse(string.slice(
-              task.id,
-              string.length(prefix),
-              string.length(task.id),
-            ))
-          {
-            Ok(n) -> int.max(max, n)
-            Error(_) -> max
-          }
-        False -> max
-      }
-    })
-  prefix <> int.to_string(max_child + 1)
+pub fn reconcile_jsonl(
+  workspace: String,
+  path: String,
+) -> Result(json.Json, String) {
+  jsonl.load(from: path)
+  |> result.try(fn(tasks) {
+    mnesia_store.import_snapshot(workspace, store.from_list(tasks))
+  })
+  |> result.map(fn(_) {
+    json.string("reconciled external snapshot from " <> path)
+  })
 }

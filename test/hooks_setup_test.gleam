@@ -73,3 +73,40 @@ pub fn setup_windsurf_writes_windsurf_md_test() {
   let out = cli.run_in(ws, ["setup", "windsurf"])
   out |> string.contains(".windsurf.md") |> should.be_true
 }
+
+pub fn setup_is_non_destructive_and_preserves_custom_instructions_test() {
+  let ws = "/tmp/bk_setup_nondestructive"
+  wipe(ws)
+  let _ = simplifile.create_directory_all(ws)
+  let claude_md = ws <> "/CLAUDE.md"
+  let initial =
+    "# Custom Project Guidelines\n- Always use tabs\n- Never rewrite entire files\n"
+  let _ = simplifile.write(initial, to: claude_md)
+
+  let _ = cli.run_in(ws, ["setup", "claude"])
+  let updated = simplifile.read(from: claude_md) |> should.be_ok
+  updated |> string.contains("# Custom Project Guidelines") |> should.be_true
+  updated
+  |> string.contains("<!-- BANKAI_INSTRUCTIONS_START -->")
+  |> should.be_true
+  updated
+  |> string.contains("<!-- BANKAI_INSTRUCTIONS_END -->")
+  |> should.be_true
+
+  // Second run updates only within markers
+  let _ = cli.run_in(ws, ["setup", "claude"])
+  let second = simplifile.read(from: claude_md) |> should.be_ok
+  second |> string.contains("# Custom Project Guidelines") |> should.be_true
+}
+
+pub fn setup_list_and_check_report_matrix_test() {
+  let ws = "/tmp/bk_setup_matrix_test"
+  wipe(ws)
+  let _ = simplifile.create_directory_all(ws)
+  let list_out = cli.run_in(ws, ["setup", "list"])
+  list_out |> string.contains("claude") |> should.be_true
+  list_out |> string.contains("cursor") |> should.be_true
+
+  let check_out = cli.run_in(ws, ["setup", "check"])
+  check_out |> string.contains("managed_markers") |> should.be_true
+}
