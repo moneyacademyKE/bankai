@@ -5,6 +5,7 @@
 //// messages, and compaction; it is never the live task-write authority.
 
 import bankai/builder
+import bankai/claimant
 import bankai/cli/maintenance
 import bankai/cli/parser
 import bankai/cli/setup
@@ -423,10 +424,7 @@ fn claim_cmd(
   id: String,
   rest: List(String),
 ) -> Result(json.Json, String) {
-  let assignee = case rest {
-    [a, ..] -> a
-    [] -> "agent"
-  }
+  let assignee = claimant.parse(rest)
   let index = load_store(tasks_path)
   case store.find_by_id(index, id) {
     Ok(task) -> {
