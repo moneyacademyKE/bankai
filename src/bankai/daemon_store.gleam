@@ -69,6 +69,10 @@ pub fn vector_projection_status(
   diagnostics.vector_projection_status(workspace)
 }
 
+pub fn warm_vector_projection(workspace: String) -> Result(Int, String) {
+  queries.warm_vector_projection(workspace)
+}
+
 // --- Mutations ---
 
 pub fn create(
