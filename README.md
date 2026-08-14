@@ -2,22 +2,34 @@
 
 > A content-addressed task-memory graph for AI agents — durable local truth on Gleam + the BEAM VM, with derived retrieval powered by aarondb and explicit JSONL snapshot reconciliation between machines.
 
-## What it is
+## Why Bankai: The Modern Beads Replacement for AI Agents
 
-**bankai** is a Jira-style board that multiple AI agents (Claude Code, Python runners, etc.) read and write together, across machines, without drifting out of sync. It runs on **Gleam + the BEAM VM** (Erlang's runtime), so you get thousands of lightweight isolated processes and automatic crash recovery for free.
+**Bankai** is a high-performance, content-addressed workflow graph and issue tracking platform designed specifically for autonomous AI agents (Claude Code, Cursor, Windsurf, OpenCode, Codex, Factory, Mux) and multi-agent systems. Built with **Gleam on the Erlang BEAM VM**, it provides single-writer ACID transactional guarantees, cryptographic tamper detection, sub-5ms resident daemon latency, and seamless agent memory integration.
 
-## What makes it more than a todo board
+### Bankai vs Beads: Architectural & Capability Matrix
 
-Two things:
+| Capability / Concern | Beads (`bd`) | Bankai (`bankai`) | Why Bankai is Superior for Agents |
+|---|---|---|---|
+| **Runtime & Concurrency** | Single Go binary | **BEAM VM + Gleam** | Fault-isolated lightweight processes, crash supervision, and resident sub-5ms daemon. |
+| **Write Authority** | Embedded Dolt (SQL) | **Daemon-owned Mnesia** | Strict single-writer ACID authority without SQL engine overhead or ORM bloat. |
+| **State & Versioning** | SQL row/cell commit graph | **SHA-256 Content-Addressed History** | Every version is an immutable cryptographic value addressable by hash (`bankai_versions_v2`). |
+| **Workflow DAGs (Molecules)** | Imperative template subsystem | **Declarative Pure-Data Molecules** | DAG templates are immutable data; atomic instantiation via `(template_hash, idempotency_key)` (ADR-0010). |
+| **External Signals & Gates** | In-band provider/network calls | **Signed Out-of-Core Adapter Facts** | Zero credentials in core; CI/GitHub facts are verified via cryptographic signatures (ADR-0010). |
+| **Ephemeral Tasks (Wisps)** | Ordinary issues with tags | **First-Class Wisp Lifecycle** | Time-to-live expiry, promotion to permanent tasks, and archive-first disposal policy. |
+| **Backup & Safe Restore** | Raw filesystem/Dolt copies | **Validated Catalog & Divergence Diff** | `backup preview` computes exact head divergence before any restore transaction (ADR-0011). |
+| **Replication & Conflicts** | Dolt push/pull | **Signed Replica Envelopes & Conflict UX** | Explicit conflict recording with interactive CLI/socket resolution (`sync resolve\|clear`). |
+| **Changefeed Journal** | Database binlogs | **Public Ordered Changefeed Tail** | Ordered committed-change stream with retention checkpointing (`bankai journal tail`). |
+| **Derived Intelligence** | SQLite query cache | **AaronDB Changefeed Projections** | BM25 full-text search, Datalog temporal analytics, and lexical HNSW vector retrieval. |
+| **Agent Setup Matrix** | Template generation | **Non-Destructive Marker Injection** | Idempotent `<!-- BANKAI_... -->` instruction injection for 7+ agent environments without human overwrites. |
+| **Agent Memory** | `remember` text buffer | **Content-Addressed Memories** | Memories are versioned records injected into `bankai prime` alongside semantic search context. |
+| **Tool Integration (MCP)** | External `beads-mcp` on PyPI | **Native stdio MCP Server** | Built-in `bankai mcp` command speaking Model Context Protocol over the warm resident daemon. |
+| **Mobile Executable Rules** | Not supported | **Sandboxed Gleamunison Rules** | Content-addressed pure rules evaluated with wall-clock, heap, and BEAM reduction bounds (ADR-0003). |
 
-**1. Content-addressed state.** A task's identity isn't a database row ID — it's a *hash of its contents*. Edit the task → new hash. That gives a tamper-proof, mergeable history chain. Think git, but for task state instead of files.
-
-**2. Mobile rules (the novel bit).** An agent can define a validation rule or graph query and *ship that rule to other agents by its hash*, so they execute it without recompiling a binary. That's exactly what [`gleamunison`](https://github.com/moneyacademyKE/gleamunison) is uniquely built for — and it's the part no other agent-coordination tool has.
+---
 
 ## Installation
 
-bankai needs **Erlang/OTP** (the escript is a BEAM archive) — its honest tradeoff
-vs beads's single static Go binary. No OTP, no bankai.
+Bankai requires **Erlang/OTP** (the escript is a self-contained BEAM archive) — its honest tradeoff vs Beads's static Go binary. No OTP, no Bankai.
 
 ```sh
 # from a checkout — builds the escript and installs `bankai` on PATH
