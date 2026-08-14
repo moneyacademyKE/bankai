@@ -2,6 +2,7 @@
 
 import bankai/aarondb_bridge
 import bankai/backup
+import bankai/builder
 import bankai/cli/parser
 import bankai/compact
 import bankai/memory
@@ -185,9 +186,73 @@ pub fn sync_conflicts_cmd(workspace: String) -> Result(json.Json, String) {
 pub fn sync_resolve_cmd(
   workspace: String,
   conflict_id: String,
+  rest: List(String),
 ) -> Result(json.Json, String) {
-  sync_peer.resolve_conflict(workspace, conflict_id)
-  |> result.map(fn(_) { json.string("resolved conflict " <> conflict_id) })
+  use keep <- result.try(parse_keep(rest))
+  use record <- result.try(find_conflict(workspace, conflict_id))
+  use detail <- result.try(
+    parse_conflict_detail(record.detail)
+    |> result.replace_error(
+      "conflict " <> conflict_id <> " has a non-merge detail; resolve manually",
+    ),
+  )
+  let chosen_hex = case keep {
+    "local" -> detail.local
+    _ -> detail.remote
+  }
+  let tasks_path = workspace <> "/tasks.jsonl"
+  use chosen <- result.try(find_version_by_hex(tasks_path, chosen_hex))
+  // Promotion is an ordinary content-addressed update: stamp the chosen
+  // version as touched now so it wins the head-by-recency view. Both
+  // divergent versions remain in history — the choice is auditable.
+  let promoted =
+    builder.update(chosen, fn(t) { types.Task(..t, updated_at: time.now()) })
+  let existing = load_all_versions(tasks_path)
+  let _ = jsonl.flush(list.append(existing, [promoted]), to: tasks_path)
+  use _ <- result.try(sync_peer.resolve_conflict(workspace, conflict_id))
+  Ok(
+    json.object([
+      #("resolved", json.string(conflict_id)),
+      #("task", json.string(detail.task)),
+      #("kept", json.string(keep)),
+      #("new_head", json.string(store.hash_key(promoted.content_hash))),
+    ]),
+  )
+}
+
+fn parse_keep(rest: List(String)) -> Result(String, String) {
+  case rest {
+    ["--keep", side, ..] if side == "local" || side == "remote" -> Ok(side)
+    _ -> Error("usage: sync resolve <id> --keep local|remote")
+  }
+}
+
+fn find_conflict(
+  workspace: String,
+  conflict_id: String,
+) -> Result(sync_peer.ConflictRecord, String) {
+  sync_peer.list_conflicts(workspace)
+  |> result.try(fn(records) {
+    records
+    |> list.find(fn(r) { r.id == conflict_id })
+    |> result.replace_error("unknown conflict: " <> conflict_id)
+  })
+}
+
+fn find_version_by_hex(
+  tasks_path: String,
+  hex: String,
+) -> Result(types.Task, String) {
+  load_all_versions(tasks_path)
+  |> list.find(fn(t) { store.hash_key(t.content_hash) == hex })
+  |> result.replace_error("chosen version not found in history")
+}
+
+fn load_all_versions(tasks_path: String) -> List(types.Task) {
+  case jsonl.load(from: tasks_path) {
+    Ok(tasks) -> tasks
+    Error(_) -> []
+  }
 }
 
 pub fn sync_clear_cmd(workspace: String) -> Result(json.Json, String) {
