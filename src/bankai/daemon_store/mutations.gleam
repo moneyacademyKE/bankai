@@ -4,6 +4,7 @@
 //// and duplicate merging in Mnesia.
 
 import bankai/builder
+import bankai/claimant
 import bankai/cluster
 import bankai/gates/service as gate_service
 import bankai/graph
@@ -321,10 +322,7 @@ pub fn claim_record(
   id: String,
   rest: List(String),
 ) -> Result(Claimed, String) {
-  let assignee = case rest {
-    [value, ..] -> value
-    [] -> "agent"
-  }
+  let assignee = claimant.parse(rest)
   mnesia_store.get_current(workspace, id)
   |> result.try(fn(previous) {
     case previous.status {
