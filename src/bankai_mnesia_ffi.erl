@@ -1,7 +1,8 @@
 -module(bankai_mnesia_ffi).
 -export([init/1, reset_workspace/1, current_json/1, versions_json/1, snapshot_json/1,
          projection_snapshot_rows/1, get_current/2, put_new/5, compare_and_put/6,
-         compare_and_put_committed/7, replace_many/3, import_if_needed/3, import_snapshot/3,
+         compare_and_put_committed/7, replace_many/3, replace_many_idempotent/4,
+         idempotent_result/3, import_if_needed/3, import_snapshot/3,
          replace_current_snapshot/2, projection_checkpoint/2,
          set_projection_checkpoint/3]).
 
@@ -67,12 +68,14 @@ ensure_table(Name, Attributes) ->
 
 current_json(Workspace) -> transaction(fun() ->
     Rows = mnesia:match_object({?CURRENT, '_', Workspace, '_', '_', '_'}),
-    {ok, [Json || {?CURRENT, _, _, _, _, Json} <- Rows]}
+    Sorted = lists:sort(fun current_before/2, Rows),
+    {ok, [Json || {?CURRENT, _, _, _, _, Json} <- Sorted]}
 end).
 
 versions_json(Workspace) -> transaction(fun() ->
     Rows = mnesia:match_object({?VERSIONS, '_', Workspace, '_', '_'}),
-    {ok, [Json || {?VERSIONS, _, _, _, Json} <- Rows]}
+    Sorted = lists:sort(fun version_before/2, Rows),
+    {ok, [Json || {?VERSIONS, _, _, _, Json} <- Sorted]}
 end).
 
 %% A snapshot is paired with the exact committed change-stream offset while the
@@ -80,7 +83,8 @@ end).
 snapshot_json(Workspace) -> transaction(fun() ->
     Rows = mnesia:match_object({?CURRENT, '_', Workspace, '_', '_', '_'}),
     Watermark = bankai_changefeed_ffi:high_watermark_in_transaction(Workspace),
-    Jsons = [Json || {?CURRENT, _, _, _, _, Json} <- Rows],
+    Jsons = [Json || {?CURRENT, _, _, _, _, Json} <-
+                       lists:sort(fun current_before/2, Rows)],
     {ok, <<"{\"offset\":", (integer_to_binary(Watermark))/binary,
           ",\"tasks\":[", (join_json(Jsons))/binary, "]}">>}
 end).
@@ -90,7 +94,8 @@ end).
 projection_snapshot_rows(Workspace) -> transaction(fun() ->
     Rows = mnesia:match_object({?CURRENT, '_', Workspace, '_', '_', '_'}),
     Watermark = bankai_changefeed_ffi:high_watermark_in_transaction(Workspace),
-    {ok, {Watermark, [Json || {?CURRENT, _, _, _, _, Json} <- Rows]}}
+    {ok, {Watermark, [Json || {?CURRENT, _, _, _, _, Json} <-
+                              lists:sort(fun current_before/2, Rows)]}}
 end).
 
 projection_checkpoint(Workspace, Projection) -> transaction(fun() ->
@@ -174,6 +179,49 @@ write_version_and_current(Workspace, Id, Hash, Json) ->
 %% Atomically compare-and-swap a planned set of current heads. Each row is
 %% {Id, ExpectedHash, NewHash, Json}; validate all heads before writing any row.
 replace_many(Workspace, Rows, Operation) -> transaction(fun() ->
+    apply_replacements(Workspace, Rows, Operation)
+end).
+
+%% Read-only idempotency lookup. Returning the saved fingerprint and summary
+%% lets callers short-circuit before re-planning against heads that the original
+%% command already advanced.
+idempotent_result(Workspace, IdempotencyKey, Namespace) -> transaction(fun() ->
+    Key = {Workspace, <<Namespace/binary, ":", IdempotencyKey/binary>>},
+    case mnesia:read(?META, Key, read) of
+        [{?META, Key, Workspace, _Name, {Fingerprint, Summary}}] ->
+            {ok, {some, {Fingerprint, Summary}}};
+        [] -> {ok, none}
+    end
+end).
+
+%% Local batch idempotency lives in the same Mnesia transaction as validation,
+%% head/version writes, and the committed-change event. A repeated key returns
+%% the original summary; a reused key with different canonical request data is
+%% rejected rather than silently applying a different batch.
+replace_many_idempotent(Workspace, IdempotencyKey, Fingerprint, Rows) ->
+    transaction(fun() ->
+        Key = {Workspace, <<"batch-command:", IdempotencyKey/binary>>},
+        case mnesia:read(?META, Key, write) of
+            [{?META, Key, Workspace, _Name, Saved}] ->
+                case Saved of
+                    {Fingerprint, Summary} -> {ok, Summary};
+                    _ -> {error, <<"idempotency key already used with different batch">>}
+                end;
+            [] ->
+                case apply_replacements(Workspace, Rows, <<"batch">>) of
+                    {ok, nil} ->
+                        Summary = iolist_to_binary(io_lib:format(
+                            "applied ~B mutation(s)", [length(Rows)])),
+                        mnesia:write({?META, Key, Workspace,
+                                      <<"batch-command:", IdempotencyKey/binary>>,
+                                      {Fingerprint, Summary}}),
+                        {ok, Summary};
+                    Error -> Error
+                end
+        end
+    end).
+
+apply_replacements(Workspace, Rows, Operation) ->
     case validate_replacements(Workspace, Rows) of
         ok ->
             lists:foreach(fun({Id, _ExpectedHash, Hash, Json}) ->
@@ -184,8 +232,7 @@ replace_many(Workspace, Rows, Operation) -> transaction(fun() ->
             ]),
             {ok, nil};
         {error, Reason} -> {error, Reason}
-    end
-end).
+    end.
 
 validate_replacements(_Workspace, []) -> ok;
 validate_replacements(Workspace, [{Id, ExpectedHash, _Hash, _Json} | Rest]) ->
@@ -274,6 +321,12 @@ record_change(_Workspace, _Operation, []) -> ok;
 record_change(Workspace, Operation, Rows) ->
     bankai_changefeed_ffi:record_in_transaction(Workspace, Operation, Rows),
     ok.
+
+current_before({?CURRENT, _, _, IdA, _, _},
+               {?CURRENT, _, _, IdB, _, _}) -> IdA < IdB.
+
+version_before({?VERSIONS, _, _, HashA, _},
+               {?VERSIONS, _, _, HashB, _}) -> HashA < HashB.
 
 join_json([]) -> <<>>;
 join_json([Json]) -> Json;

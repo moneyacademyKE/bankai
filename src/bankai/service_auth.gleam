@@ -131,11 +131,22 @@ fn required_capability(
   let action = case method, params {
     "auth_mint", _ -> Ok(auth.Admin)
     "ready", ["--claim", ..] -> Ok(auth.Write)
-    "create", _
+    "gate_resolve", _
+    | "gate_fact_ingest", _
+    | "wisp_promote", _
+    | "wisp_burn", _
+    | "wisp_gc", _
+    | "create", _
     | "update", _
+    | "batch", _
     | "merge", _
     | "dep_add", _
+    | "dep_remove", _
     | "backup", _
+    | "backup_restore", _
+    | "backup_prune", _
+    | "sync_conflict_resolve", _
+    | "sync_conflict_clear", _
     | "export", _
     | "import", _
     | "sync", _
@@ -143,11 +154,31 @@ fn required_capability(
     | "remember", _
     | "compact", _
     | "init", _
+    | "rule_register", _
+    | "rule_approve", _
+    | "rule_revoke", _
+    | "rule_eval", _
+    | "molecule_register", _
+    | "molecule_instantiate", _
+    | "molecule_compose", _
     -> Ok(auth.Write)
     "ready", _
+    | "backup_list", _
+    | "backup_preview", _
+    | "sync_conflicts", _
+    | "journal_tail", _
+    | "gate_list", _
+    | "gate_show", _
+    | "gate_check", _
+    | "wisp_list", _
+    | "wisp_digest", _
+    | "wisp_archive", _
     | "list", _
     | "dep_list", _
     | "dep_tree", _
+    | "dep_traverse", _
+    | "dep_graph", _
+    | "dep_check", _
     | "doctor", _
     | "cluster_status", _
     | "memories", _
@@ -163,6 +194,16 @@ fn required_capability(
     | "prime_query", _
     | "epic", _
     | "inspect", _
+    | "rule_list", _
+    | "rule_show", _
+    | "rule_audit", _
+    | "molecule_list", _
+    | "molecule_show", _
+    | "molecule_instance", _
+    | "molecule_provenance", _
+    | "molecule_progress", _
+    | "molecule_current", _
+    | "molecule_distill", _
     -> Ok(auth.Read)
     _, _ -> Error("unknown service method: " <> method)
   }

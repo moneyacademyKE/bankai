@@ -92,3 +92,37 @@ pub fn untrusted_tampered_wrong_domain_and_revoked_frames_are_rejected_test() {
   // The FFI verifier performs the revocation gate before envelope parsing;
   // the end-to-end transport path exercises it in the next signed exchange.
 }
+
+pub fn conflict_recording_and_resolution_lifecycle_test() {
+  let ws = "/tmp/bankai_conflict_test"
+  reset(ws)
+  let _ =
+    should.be_ok(sync_peer.record_conflict(
+      ws,
+      "peer-key-1",
+      "head collision on bk-100",
+    ))
+  let _ =
+    should.be_ok(sync_peer.record_conflict(
+      ws,
+      "peer-key-2",
+      "schema mismatch on bk-200",
+    ))
+
+  let conflicts = should.be_ok(sync_peer.list_conflicts(ws))
+  conflicts |> list.length |> should.equal(2)
+
+  let first = case conflicts {
+    [c, ..] -> c
+    _ -> panic as "expected at least one conflict"
+  }
+  first.detail |> string.contains("bk-") |> should.be_true
+
+  let _ = should.be_ok(sync_peer.resolve_conflict(ws, first.id))
+  let remaining = should.be_ok(sync_peer.list_conflicts(ws))
+  remaining |> list.length |> should.equal(1)
+
+  let _ = should.be_ok(sync_peer.clear_conflicts(ws))
+  let cleared = should.be_ok(sync_peer.list_conflicts(ws))
+  cleared |> list.length |> should.equal(0)
+}

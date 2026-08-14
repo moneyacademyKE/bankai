@@ -13,7 +13,7 @@ import bankai/memory
 import bankai/storage/store
 import bankai/sync/jsonl
 import bankai/time
-import bankai/types.{type Task, Closed}
+import bankai/types.{type Task, Closed, Wisp}
 import gleam/dict
 import gleam/int
 import gleam/list
@@ -26,7 +26,7 @@ pub fn run(workspace: String, tasks_path: String) -> String {
   let index = load_store(tasks_path)
   let closed_ids =
     store.current_tasks(index)
-    |> list.filter(fn(t) { t.status == Closed })
+    |> list.filter(fn(t) { t.status == Closed && t.kind != Wisp })
     |> list.map(fn(t) { t.id })
     |> set.from_list
 

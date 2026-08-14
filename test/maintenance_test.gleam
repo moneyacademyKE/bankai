@@ -3,7 +3,6 @@
 import bankai/cli
 import bankai/serde
 import bankai/types
-import gleam/option
 import gleam/string
 import gleeunit
 import gleeunit/should
@@ -30,9 +29,6 @@ fn task_json(output: String) -> String {
 fn task_of(output: String) -> types.Task {
   should.be_ok(serde.task_from_json_string(task_json(output)))
 }
-
-@external(erlang, "erlang", "system_time")
-fn now() -> Int
 
 pub fn backup_writes_timestamped_copy_test() {
   let ws = "/tmp/bk_backup_writes"

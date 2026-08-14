@@ -1,182 +1,136 @@
-# ADR-0003: Mobile-rule execution sandbox (pillar 2 security model)
+# ADR-0003: Durable mobile-rule sandbox
 
-**Status:** Accepted
+**Status:** Accepted and implemented
+
 **Date:** 2026-08-03
-**Resolves:** ADR-0001 follow-up #2 (mobile-rule execution sandbox / security model)
+
+**Last reconciled:** 2026-08-12
+
+**Resolves:** ADR-0001 follow-up #2 — mobile-rule execution security model
 
 ## Context
 
-Pillar 2 of bankai (ADR-0001) is **mobile code by design**: one agent defines a
-validation rule or graph predicate as a gleamunison S-expression, content-addresses
-it (SHA-256 of the source via `gleamunison/identity.hash_bytes`), syncs it to other
-agents in the mesh, and those agents **execute** it via `gleamunison/repl.eval_string`.
+Bankai’s second pillar is mobile code: a rule is Gleamunison S-expression source, content-addressed by SHA-256, evaluated through `gleamunison/repl`, and useful as a validation predicate or graph query. This is executable untrusted input. Treating registration as permission or running the evaluator in the daemon process would be reckless.
 
-That is remote code execution. The security model is not optional — it is the
-difference between "agents share pure predicates" and "a compromised agent ships a
-rule that takes down the mesh."
-
-### Threat model
-
-| Asset | At risk from a malicious/buggy rule |
-|---|---|
-| The daemon process (holds the store + the JSON-RPC socket) | A rule that loops or allocates unboundedly can **hang** the daemon (eval is currently synchronous in the caller). |
-| The workspace (`.bankai/tasks.jsonl`, task data) | A rule that can perform I/O could read/corrupt task state. |
-| The host (filesystem, network) | A rule with effectful builtins could exfiltrate or mutate host state. |
-| The eval runtime itself | gleamunison's eval/compile path is young (a `erl_crash.dump` was observed during the daemon build); a malformed rule can trigger an eval **crash**. |
-
-The adversary is a compromised or merely buggy agent in the mesh. Note that even
-**non-malicious** input matters: a rule with an infinite loop or huge allocation
-exhausts resources regardless of intent.
-
-### Current implementation status (be honest about the gap)
-
-As of this ADR, `bankai/rules/registry.gleam#eval` does this:
-
-```gleam
-case set.contains(reg.approved, key(hash)) {
-  False -> Error("rule not approved (allow-list denied)")
-  True -> repl.eval_string(rule.source)   // synchronous, in the caller's process
-}
-```
-
-- **Trust:** allow-list only. `register` **auto-approves**, so registration and
-  approval are currently conflated — anyone who can register can execute.
-- **Capability:** `repl.eval_string`'s S-expression surface has **no effectful
-  builtins today** (no file/network/process; `define` is unsupported), so the
-  capability layer is satisfied *vacuously* for now. The risk is that the surface
-  **grows** as rules need real capabilities.
-- **Resource bounds:** none. A pathological approved rule runs to completion or
-  forever.
-- **Isolation:** none. A rule crash or loop takes the daemon with it.
-
-The layered model below is the **committed target**; layers 3-4 are not yet landed.
-The required-hardening follow-up implements them.
+A rule can be malformed, can loop, can crash an immature evaluator path, or can become more dangerous if the evaluator later gains ambient capabilities. Task state and the daemon must remain safe regardless.
 
 ## Decision
 
-A **defense-in-depth** sandbox: five layers, each independently necessary. No
-single layer is sufficient.
+Rules are durable local artifacts with a separate, local trust decision. They are never task authority.
 
-### Layer 1 — Trust (who may run)
+| Concern | Durable location | Rule |
+|---|---|---|
+| Source artifact | Mnesia `bankai_rule_artifacts_v1` | Content hash identifies source; registration is idempotent and never grants execution permission. |
+| Local approval | Mnesia `bankai_rule_approvals_v1` | Approval/revocation is per workspace and separate from source arrival. |
+| Evaluation audit | Mnesia `bankai_rule_audits_v1` | Every success and failure has an ordered audit record. |
+| Task context | One immutable JSON serialization of an optional current task | Evaluator receives data only; it gets no Mnesia handle, task mutation function, file, network, or process capability. |
 
-A rule executes **only if its content hash is in the allow-list.** Approval is an
-explicit operator action, **separate from registration.** (v1 keeps the allow-list
-as the trust gate; signature-based trust is a v2 follow-up, not the baseline.)
+The operator-facing lifecycle is:
 
-> Behavior change from current: `register` must **stop auto-approving**. A rule is
-> registered (stored, addressable, sync-able) but does not execute until `approve`
-> is called. This is the headline hardening item.
+    bankai rule register <name> <source>
+    bankai rule list
+    bankai rule show <hash>
+    bankai rule approve <hash>
+    bankai rule revoke <hash>
+    bankai rule eval <hash> [--caller <name>] [--task <task-id>]
+    bankai rule audit [hash]
 
-### Layer 2 — Capability (what a rule may do)
+The daemon socket exposes equivalent methods (`rule_register`, `rule_list`, `rule_show`, `rule_approve`, `rule_revoke`, `rule_eval`, and `rule_audit`) and Bankai MCP exposes matching tools. Results keep the project’s stable JSON-envelope contract.
 
-**Pillar-2 rules are pure by policy — no side effects.** The eval surface exposed to
-rules must **never** include ambient file/network/process builtins. If a rule
-genuinely needs an effect (e.g. "inspect this task"), it is granted via an explicit,
-audited **capability token** passed as an argument — never via global builtins.
+## Security model
 
-For MVP this is already true (the surface is literal/constructor-only). This ADR
-makes it a **hard rule**: any future growth of the eval surface that adds effects
-must route them through capability tokens, and is itself a follow-up ADR.
+### 1. Trust: explicit local allow-list
 
-### Layer 3 — Resource bounds (how long / how much)
+A source can be stored without being executable. `register` records an artifact as **unapproved**. `approve` is a local operator action. `revoke` immediately denies later evaluation. The evaluator checks approval immediately before execution and fails closed with `rule not approved (allow-list denied)`.
 
-Every rule eval runs with:
+Artifacts are intentionally local-only. Peer replication does not transport rule artifacts or approval rows. If source exchange is added later, arrival must remain unapproved and cannot inherit trust from another workspace or rig.
 
-- a **wall-clock timeout** (default 1000 ms), and
-- a **reduction / call budget** (BEAM reductions) as a CPU bound independent of
-  wall-clock.
+### 2. Capability: pure evaluation only
 
-On timeout or budget exhaustion, the eval is killed and returns a bounded error
-(`Error("rule timed out")` / `Error("rule exceeded reduction budget")`). This is
-what stops a pathological-but-approved rule from hanging the daemon.
+Rules evaluate as a unary pure function over an immutable JSON text input. The constructed expression quotes the input, preventing task data from escaping into code syntax. No file, network, process, database, or daemon capability is supplied to the evaluator.
 
-> Residual risk (documented): BEAM does not cheaply bound a single process's **heap
-> growth**. A memory bomb is killed only when the wall-clock timer fires, not the
-> instant it over-allocates. A hard per-process `max_heap_size` kill is a follow-up;
-> until then the timeout is the bound.
+A future effectful rule feature requires a separate ADR defining explicit, auditable capability tokens. Ambient authority is prohibited.
 
-### Layer 4 — Isolation (where it runs)
+### 3. Resource bounds: timeout, heap, reductions, and artifact size
 
-Rule eval runs in a **dedicated, spawned, monitored process** — never in the
-daemon's accept loop and never in the caller's process. A crash, exit, or timeout
-in a rule kills **only** that transient process; the daemon survives.
+The service limits rule source to 16,384 characters and names to 256 characters. Every evaluation runs with three independent worker limits:
 
-This reuses the **per-connection isolation pattern already proven in the socket
-layer** (`bankai/socket.gleam` spawns a fresh process per connection so a malformed
-line can't take down the accept loop). The same `process.spawn` + monitor discipline
-applies to rule eval.
+- wall-clock timeout: `1,000 ms`;
+- process heap: `262,144` BEAM words (roughly 2 MiB on a 64-bit VM), enforced with `spawn_opt` `max_heap_size` and kill-on-exceed;
+- reductions: `250,000`, sampled every millisecond and killed on exceed.
 
-### Layer 5 — Audit (observability)
+Timeout, heap exhaustion, and reduction exhaustion are distinct audited errors. These bounds are deliberately proportional to small predicate/annotation rules; materially more expressive workloads require a separate policy decision rather than silently increasing them.
 
-Every execution is logged: **rule hash, origin/caller, duration, result or error**.
-Malicious or pathological rules are visible, not silent.
+### 4. Isolation: unlinked monitored worker
+
+`registry.run_isolated` evaluates in a spawned **unlinked** process. The caller monitors that worker and races its reply against a monitor-down signal and the timeout. Therefore:
+
+- an evaluator crash produces a bounded `crashed` error rather than taking down the socket handler;
+- a non-replying loop times out and is killed;
+- malformed source is contained in the worker;
+- no rule evaluation can mutate task state because the evaluator has no mutation path.
+
+### 5. Audit: ordered evidence
+
+Every evaluation attempt appends a durable audit record. Each record contains:
+
+- monotonic sequence;
+- rule hash and caller;
+- immutable input hash;
+- optional task ID and the task content hash observed;
+- elapsed duration in nanoseconds;
+- `ok` or `error` outcome and returned text.
+
+Audit ordering uses an append sequence rather than wall-clock ordering, so replay/debugging output is deterministic.
 
 ## Consequences
 
-**Positive**
-- A compromised agent's rule is contained: it can't hang the daemon (timeout +
-  isolation), can't exfiltrate via ambient builtins (capability policy), and can't
-  run without explicit approval (allow-list).
-- bankai's fault-tolerance NFR (the supervisor survives; the store is durable)
-  holds even under adversarial rule input.
-- The hardening reuses an existing, tested isolation pattern — no new mechanism,
-  just applied to rule eval.
+### Positive
 
-**Negative / cost**
-- The spawn + monitor + timeout wrapper adds per-eval latency (a process spawn) and
-  module complexity.
-- Capability-token plumbing is real future work the moment a rule needs an effect.
-- Splitting `register` from `approve` is a behavior change that touches the registry
-  API and its tests.
-- Residual memory-bomb risk until a hard heap limit lands.
+- Rules survive daemon restart as data, while permission and audit survive separately.
+- A registration does not become execution merely because it arrived.
+- Unapproved and revoked hashes fail closed.
+- Rule evaluation cannot become a second task writer or bypass Mnesia compare-and-swap.
+- Crashing, malformed, and timing-out rules are contained while leaving the daemon and task history alive.
+- MCP, CLI, and socket clients use one command shape rather than inventing separate rule semantics.
 
-**Neutral**
-- Rules remain pure functions. The sandbox restricts **how** they run, not **what**
-  they can express — pillar 2's value (mobile, content-addressed, sync-able
-  predicates) is preserved.
+### Costs and limits
 
-## Alternatives considered
+- Every evaluation pays the cost of process spawn, monitoring, input serialization, and audit persistence.
+- Rule source is portable content, but approval is intentionally not portable. That friction is security, not an unfinished sync feature.
+- Rules currently observe only one optional task snapshot. They do not query arbitrary board state or authorize transitions.
+- The heap cap is hard; the reduction cap is cooperative sampling at a 1 ms interval, so a worker can overshoot modestly before termination. This is bounded policy, not instruction-level determinism.
 
-**Allow-list only (current MVP).** Insufficient as the sole control: a
-pathological-but-approved rule (infinite loop / large allocation) hangs the daemon
-synchronously. Kept as **layer 1**, rejected as the *only* layer.
+## Alternatives rejected
 
-**Signature-based trust (content signing).** Sign each rule with the origin agent's
-key; verify the signature on sync before it's even eligible for approval. Stronger
-origin authentication than a bare allow-list, but heavier (key distribution,
-verification). Layered in as a **v2 follow-up**, not the baseline.
+### In-memory registry only
 
-**Separate sandbox runtime / isolated BEAM node / WASM.** Run rules in a fully
-isolated runtime with no host access at all — the strongest containment. Heavy
-plumbing (a second node, serialization across it). Deferred: the in-process
-spawn + timeout + capability-policy is the MVP; a separate sandbox node is the
-documented escalation if the eval surface ever grows genuinely effectful.
+Rejected. It loses source, approval, and audit across daemon restart and makes a product claim impossible.
 
-**No execution — treat rules as data only.** Safest, but discards pillar 2's entire
-premise (mobile *executable* rules). Rejected on the same grounds as ADR-0001's
-Option A — it abandons the project's novelty.
+### Registration auto-approves
 
-## Verification / follow-up
+Rejected. Arrival and trust are different things. Merging them turns any source submitter into an executor.
 
-**Required hardening — IMPLEMENTED (45 tests green):**
+### Rule writes task state directly
 
-1. ✅ `registry.eval` runs `repl.eval_string` in a spawned, **unlinked** process
-   bounded by a wall-clock timeout (default 1s). On timeout the runaway is killed.
-2. ✅ **Monitor-based instant crash detection:** the worker is `monitor`-ed, and a
-   `Selector` races the reply against the DOWN message. A crash wins instantly
-   (distinct `"crashed"` error) rather than waiting out the budget. This upgrades
-   the original "timeout-only" plan; a looping rule that neither replies nor
-   crashes still hits the timeout.
-3. ✅ `register` no longer auto-approves — execution requires an explicit `approve`.
-4. ✅ Tests: a slow rule is killed at the budget (`"timed out"`); a panicking rule
-   returns `"crashed"` instantly without taking down the caller; an unapproved
-   rule is denied even after registration.
+Rejected. That would create hidden mutation authority alongside `daemon_store` and Mnesia transactions. Rules remain predicates; command semantics remain explicit data and code in Bankai’s daemon.
 
-**Longer-term (still open):**
-- A reduction / call budget in addition to wall-clock.
-- A per-process `max_heap_size` kill to close the memory-bomb residual.
-- Capability tokens for effectful rules (+ a follow-up ADR defining the token model).
-- Signature-based trust on sync.
+### Sync approvals between rigs
 
-This ADR resolves ADR-0001 follow-up #2. The hardening above is landed, not
-aspirational — see `src/bankai/rules/registry.gleam#run_isolated`.
+Rejected. Trust is local policy. A remote approval cannot authorize execution here.
+
+### Separate VM/node now
+
+Deferred. An isolated BEAM worker with no ambient effects, monitor crash detection, and timeout is the current proportional boundary. A distinct sandbox node becomes appropriate if capabilities or attack surface materially grow.
+
+## Verification
+
+`test/rule_service_test.gleam` covers durable source/approval/audit recovery, unapproved and revoked denial, malformed source containment, immutable task-view evaluation without task mutation, and socket envelope behavior. Existing `rules_test` covers isolated crash survival and timeout behavior.
+
+At the 2026-08-12 reconciliation point, `gleam test` reports **182 passing tests**. Test output intentionally includes a crash report from the isolated worker crash-survival test; that report is the evidence that the worker dies without taking the caller down.
+
+## Follow-up hardening
+
+- Define capability-token semantics before adding effects.
+- Add signed source provenance only if rule exchange is introduced; local approval remains mandatory regardless.
+- Re-measure and explicitly revise budgets only if real predicate workloads exceed them.

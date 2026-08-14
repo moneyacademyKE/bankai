@@ -43,11 +43,25 @@ pub fn tools_list_advertises_bankai_commands_test() {
     )
   resp |> string.contains("ready") |> should.be_true
   resp |> string.contains("create") |> should.be_true
+  resp |> string.contains("update") |> should.be_true
+  resp |> string.contains("batch") |> should.be_true
+  resp |> string.contains("release") |> should.be_true
+  resp |> string.contains("reopen") |> should.be_true
+  resp |> string.contains("undefer") |> should.be_true
+  resp |> string.contains("remove label") |> should.be_true
   resp |> string.contains("dep_list") |> should.be_true
   resp |> string.contains("dep_tree") |> should.be_true
   resp |> string.contains("doctor") |> should.be_true
   resp |> string.contains("cluster_status") |> should.be_true
   resp |> string.contains("platform_status") |> should.be_true
+  resp |> string.contains("rule_register") |> should.be_true
+  resp |> string.contains("rule_audit") |> should.be_true
+  resp |> string.contains("gate_list") |> should.be_true
+  resp |> string.contains("gate_resolve") |> should.be_true
+  resp |> string.contains("gate_fact_ingest") |> should.be_true
+  resp |> string.contains("wisp_list") |> should.be_true
+  resp |> string.contains("wisp_promote") |> should.be_true
+  resp |> string.contains("wisp_gc") |> should.be_true
 }
 
 pub fn platform_status_remains_a_daemon_only_mcp_health_contract_test() {

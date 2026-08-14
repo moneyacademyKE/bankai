@@ -4,10 +4,14 @@
 import bankai/cli
 import bankai/cluster_transport
 import bankai/daemon_store
+import bankai/gates/service as gate_service
+import bankai/molecules/service as molecule_service
 import bankai/platform_profile
+import bankai/rules/service as rule_service
 import bankai/service_auth
 import bankai/service_protocol
 import bankai/sync/jsonl
+import bankai/wisps/service as wisp_service
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -58,6 +62,14 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
           daemon_result(daemon_store.update_fenced(workspace, id, status, fence))
         [id, status, "--fence", fence, ..] ->
           daemon_result(daemon_store.update_fenced(workspace, id, status, fence))
+        [id, "--release", ..] ->
+          daemon_result(daemon_store.release(workspace, id))
+        [id, "--reopen", ..] ->
+          daemon_result(daemon_store.reopen(workspace, id))
+        [id, "--undefer", ..] ->
+          daemon_result(daemon_store.undefer(workspace, id))
+        [id, "--remove-label", label, ..] ->
+          daemon_result(daemon_store.remove_label(workspace, id, label))
         [id, "--defer-until", until, ..] ->
           daemon_result(daemon_store.defer_until(workspace, id, until))
         [id, "--satisfy-gate", ..] ->
@@ -74,7 +86,16 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
           daemon_result(daemon_store.update(workspace, id, status))
         _ ->
           ErrorResponse(
-            message: "update requires <id> <status> or --claim [assignee]",
+            message: "update requires <id> <status> or --claim|--release|--reopen|--undefer|--label|--remove-label|--priority",
+          )
+      }
+    "batch" ->
+      case request.params {
+        ["--idempotency-key", key, ..mutations] ->
+          daemon_result(daemon_store.batch_mutate(workspace, key, mutations))
+        _ ->
+          ErrorResponse(
+            message: "batch requires --idempotency-key <key> <mutation>...",
           )
       }
     "merge" ->
@@ -98,6 +119,17 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
           ))
         _ -> ErrorResponse(message: "dep_add requires <task-id> <target-id>")
       }
+    "dep_remove" ->
+      case request.params {
+        [task_id, target_id, ..rest] ->
+          daemon_result(daemon_store.remove_dependency(
+            workspace,
+            task_id,
+            target_id,
+            rest,
+          ))
+        _ -> ErrorResponse(message: "dep_remove requires <task-id> <target-id>")
+      }
     "dep_list" ->
       case request.params {
         [id, ..] -> daemon_result(daemon_store.dependency_list(workspace, id))
@@ -108,9 +140,71 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
         [id, ..] -> daemon_result(daemon_store.dependency_tree(workspace, id))
         _ -> ErrorResponse(message: "dep_tree requires <task-id>")
       }
+    "dep_traverse" ->
+      case request.params {
+        [id, ..rest] ->
+          daemon_result(daemon_store.traverse_dependencies(workspace, id, rest))
+        _ -> ErrorResponse(message: "dep_traverse requires <task-id>")
+      }
+    "dep_graph" ->
+      daemon_result(daemon_store.dependency_graph(workspace, request.params))
+    "dep_check" -> daemon_result(daemon_store.dependency_integrity(workspace))
     "doctor" -> daemon_result(daemon_store.doctor(workspace))
     "cluster_status" -> daemon_result(daemon_store.cluster_status(workspace))
     "backup" -> daemon_result(daemon_store.backup_jsonl(workspace))
+    "backup_list" -> daemon_result(daemon_store.backup_list(workspace))
+    "backup_preview" ->
+      case request.params {
+        [path, ..] ->
+          daemon_result(daemon_store.backup_preview(workspace, path))
+        _ -> ErrorResponse(message: "backup_preview requires <path>")
+      }
+    "backup_restore" ->
+      case request.params {
+        [path, ..] ->
+          daemon_result(daemon_store.backup_restore(workspace, path))
+        _ -> ErrorResponse(message: "backup_restore requires <path>")
+      }
+    "backup_prune" ->
+      case request.params {
+        ["--keep", keep_text, ..] ->
+          case int.parse(keep_text) {
+            Ok(k) -> daemon_result(daemon_store.backup_prune(workspace, k))
+            Error(_) -> ErrorResponse(message: "keep must be an integer")
+          }
+        [keep_text, ..] ->
+          case int.parse(keep_text) {
+            Ok(k) -> daemon_result(daemon_store.backup_prune(workspace, k))
+            Error(_) -> ErrorResponse(message: "keep must be an integer")
+          }
+        _ -> daemon_result(daemon_store.backup_prune(workspace, 5))
+      }
+    "sync_conflicts" -> daemon_result(daemon_store.conflicts_list(workspace))
+    "sync_conflict_resolve" ->
+      case request.params {
+        [id, ..] -> daemon_result(daemon_store.conflicts_resolve(workspace, id))
+        _ ->
+          ErrorResponse(message: "sync_conflict_resolve requires <conflict-id>")
+      }
+    "sync_conflict_clear" ->
+      daemon_result(daemon_store.conflicts_clear(workspace))
+    "journal_tail" ->
+      case request.params {
+        ["--after", offset_text, ..] ->
+          case int.parse(offset_text) {
+            Ok(offset) ->
+              daemon_result(daemon_store.journal_tail(workspace, offset))
+            Error(_) ->
+              ErrorResponse(message: "after offset must be an integer")
+          }
+        [offset_text, ..] ->
+          case int.parse(offset_text) {
+            Ok(offset) ->
+              daemon_result(daemon_store.journal_tail(workspace, offset))
+            Error(_) -> ErrorResponse(message: "offset must be an integer")
+          }
+        [] -> daemon_result(daemon_store.journal_tail(workspace, -1))
+      }
     "export" -> daemon_result(daemon_store.export_jsonl(workspace))
     "import" ->
       case request.params {
@@ -211,6 +305,150 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
           ErrorResponse(
             message: "auth_mint requires <read|write|admin> [--ttl seconds]",
           )
+      }
+    "gate_list" -> daemon_result(gate_service.list(workspace, request.params))
+    "gate_show" ->
+      case request.params {
+        [id, ..] -> daemon_result(gate_service.show(workspace, id))
+        _ -> ErrorResponse(message: "gate_show requires <gate-id>")
+      }
+    "gate_check" ->
+      case request.params {
+        [id, ..] -> daemon_result(gate_service.check(workspace, id))
+        _ -> ErrorResponse(message: "gate_check requires <gate-id>")
+      }
+    "gate_resolve" ->
+      case request.params {
+        [id, ..rest] -> daemon_result(gate_service.resolve(workspace, id, rest))
+        _ -> ErrorResponse(message: "gate_resolve requires <gate-id>")
+      }
+    "gate_fact_ingest" ->
+      case request.params {
+        [id, "--issuer", issuer, "--wire", wire, ..] ->
+          daemon_result(gate_service.ingest_fact(workspace, id, issuer, wire))
+        _ ->
+          ErrorResponse(
+            message: "gate_fact_ingest requires <gate-id> --issuer <public-key> --wire <json>",
+          )
+      }
+    "wisp_list" -> daemon_result(wisp_service.list(workspace, request.params))
+    "wisp_promote" ->
+      case request.params {
+        [id, ..rest] -> daemon_result(wisp_service.promote(workspace, id, rest))
+        _ -> ErrorResponse(message: "wisp_promote requires <wisp-id>")
+      }
+    "wisp_digest" ->
+      case request.params {
+        [id, ..] -> daemon_result(wisp_service.digest(workspace, id))
+        _ -> ErrorResponse(message: "wisp_digest requires <wisp-id>")
+      }
+    "wisp_burn" ->
+      case request.params {
+        [id, ..rest] -> daemon_result(wisp_service.burn(workspace, id, rest))
+        _ -> ErrorResponse(message: "wisp_burn requires <wisp-id>")
+      }
+    "wisp_gc" -> daemon_result(wisp_service.gc(workspace, request.params))
+    "wisp_archive" ->
+      case request.params {
+        [] -> daemon_result(wisp_service.archives(workspace, ""))
+        [id, ..] -> daemon_result(wisp_service.archives(workspace, id))
+      }
+    "molecule_register" ->
+      case request.params {
+        [source, ..] ->
+          daemon_result(molecule_service.register(workspace, source))
+        _ ->
+          ErrorResponse(message: "molecule_register requires <template-json>")
+      }
+    "molecule_list" -> daemon_result(molecule_service.list(workspace))
+    "molecule_show" ->
+      case request.params {
+        [hash, ..] -> daemon_result(molecule_service.show(workspace, hash))
+        _ -> ErrorResponse(message: "molecule_show requires <template-hash>")
+      }
+    "molecule_instantiate" ->
+      case request.params {
+        [hash, "--idempotency-key", key, ..bindings] ->
+          daemon_result(molecule_service.instantiate(
+            workspace,
+            hash,
+            key,
+            bindings,
+          ))
+        _ ->
+          ErrorResponse(
+            message: "molecule_instantiate requires <hash> --idempotency-key <key> [name=value]...",
+          )
+      }
+    "molecule_compose" ->
+      case request.params {
+        [name, left, right, ..] ->
+          daemon_result(molecule_service.compose(workspace, name, left, right))
+        _ ->
+          ErrorResponse(
+            message: "molecule_compose requires <name> <left-hash> <right-hash>",
+          )
+      }
+    "molecule_instance" ->
+      case request.params {
+        [id, ..] -> daemon_result(molecule_service.instance(workspace, id))
+        _ -> ErrorResponse(message: "molecule_instance requires <instance-id>")
+      }
+    "molecule_provenance" ->
+      case request.params {
+        [id, ..] -> daemon_result(molecule_service.provenance(workspace, id))
+        _ -> ErrorResponse(message: "molecule_provenance requires <task-id>")
+      }
+    "molecule_progress" ->
+      case request.params {
+        [id, ..] -> daemon_result(molecule_service.progress(workspace, id))
+        _ -> ErrorResponse(message: "molecule_progress requires <instance-id>")
+      }
+    "molecule_current" ->
+      case request.params {
+        [id, ..] -> daemon_result(molecule_service.current(workspace, id))
+        _ -> ErrorResponse(message: "molecule_current requires <instance-id>")
+      }
+    "molecule_distill" ->
+      case request.params {
+        [id, ..] -> daemon_result(molecule_service.distill(workspace, id))
+        _ -> ErrorResponse(message: "molecule_distill requires <instance-id>")
+      }
+    "rule_register" ->
+      case request.params {
+        [name, source, ..] ->
+          daemon_result(rule_service.register(workspace, name, source))
+        _ -> ErrorResponse(message: "rule_register requires <name> <source>")
+      }
+    "rule_list" -> daemon_result(rule_service.list(workspace))
+    "rule_show" ->
+      case request.params {
+        [hash, ..] -> daemon_result(rule_service.show(workspace, hash))
+        _ -> ErrorResponse(message: "rule_show requires <hash>")
+      }
+    "rule_approve" ->
+      case request.params {
+        [hash, ..] -> daemon_result(rule_service.approve(workspace, hash))
+        _ -> ErrorResponse(message: "rule_approve requires <hash>")
+      }
+    "rule_revoke" ->
+      case request.params {
+        [hash, ..] -> daemon_result(rule_service.revoke(workspace, hash))
+        _ -> ErrorResponse(message: "rule_revoke requires <hash>")
+      }
+    "rule_eval" ->
+      case request.params {
+        [hash, ..rest] ->
+          daemon_result(rule_service.evaluate(workspace, hash, rest))
+        _ ->
+          ErrorResponse(
+            message: "rule_eval requires <hash> [--caller <name>] [--task <id>]",
+          )
+      }
+    "rule_audit" ->
+      case request.params {
+        [] -> daemon_result(rule_service.audits(workspace, ""))
+        [hash, ..] -> daemon_result(rule_service.audits(workspace, hash))
       }
     _ -> ErrorResponse(message: "unknown method: " <> request.method)
   }

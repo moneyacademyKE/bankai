@@ -2,16 +2,17 @@
 ////
 //// SEMANTICS (documented once, used everywhere):
 ////   A blocking relationship `Relationship(target, relation)` on task T means
-////   "T cannot proceed until target is Completed" — this holds for Blocks,
-////   WaitsFor, and ConditionalBlocks. ParentChild establishes hierarchy but
-////   does NOT block readiness. All other relation types (RelatesTo, Duplicates,
-////   Supersedes, RepliesTo, DiscoveredFrom, Tracks, CausedBy, Validates) are
-////   informational — they do not affect readiness or cycle detection.
+////   "T cannot proceed until target is satisfied" — ordinary work is satisfied
+////   only by Completed; a Gate is satisfied by a local manual, due-timer, or
+////   already-verified signed fact. ParentChild establishes hierarchy but does NOT
+////   block readiness. All other relation types (RelatesTo, Duplicates, Supersedes,
+////   RepliesTo, DiscoveredFrom, Tracks, CausedBy, Validates) are informational.
 ////
 //// READINESS POLICY:
-////   Blocks, WaitsFor, ConditionalBlocks → target must be Completed.
-////   ParentChild → informational; child tasks can be ready independently.
-////   All other types → informational only.
+////   Blocks, WaitsFor, ConditionalBlocks → target must be satisfied as above.
+////   Gates are satisfaction facts and never appear as executable ready work.
+////   Wisps are scratch state and also never appear as executable ready work.
+////   ParentChild and all other relation types → informational only.
 ////
 //// CYCLE DETECTION:
 ////   Blocks/WaitsFor/ConditionalBlocks edges are cycle-checked in the dep graph.
@@ -23,9 +24,10 @@
 //// module is coupled to its internal index and drags a web-framework dep tree).
 
 import bankai/types.{
-  type Task, type TaskKind, type TaskStatus, Blocks, Closed, Completed,
-  ConditionalBlocks, Gate, WaitsFor,
+  type Task, type TaskStatus, Blocked, Blocks, Closed, Completed,
+  ConditionalBlocks, Gate, InProgress, Open, WaitsFor,
 }
+import gleam/json
 import gleam/list
 import gleam/option
 import gleam/set.{type Set}
@@ -39,7 +41,7 @@ pub fn dependency_edges(task: Task) -> List(#(String, String)) {
   |> list.map(fn(r) { #(task.id, r.target_id) })
 }
 
-/// Returns True if the relation type blocks readiness (target must be Completed).
+/// Returns True when a relationship type requires its target to be satisfied.
 pub fn is_blocking_relation(rel: types.RelationType) -> Bool {
   case rel {
     Blocks -> True
@@ -54,11 +56,10 @@ pub fn all_edges(tasks: List(Task)) -> List(#(String, String)) {
   list.flat_map(tasks, dependency_edges)
 }
 
-/// Edges that participate in a dependency cycle (the `cycles` query). An edge
-/// (a -> b) — "a depends on b" — is on a cycle iff the dependency b can already
-/// reach the dependent a (b -> ... -> a). Pure over the task DAG; self-loops
-/// count. Only Blocks relations can cycle (they are the only directional edges),
-/// which is why `all_edges` filters to Blocks.
+/// Edges that participate in a dependency cycle (`cycles`). An edge
+/// `(a -> b)` means `a depends on b`; it is cyclic when `b` can reach `a`.
+/// Self-loops count. Every blocking relation participates because `all_edges`
+/// filters through `is_blocking_relation`.
 pub fn cycle_edges(tasks: List(Task)) -> List(#(String, String)) {
   let edges = all_edges(tasks)
   edges
@@ -135,7 +136,8 @@ fn parent_chain_walk(
 }
 
 /// A task is ready iff it is active (not Completed/Closed) AND every blocking
-/// relationship's target is Completed. Unknown/missing blockers count as blocking.
+/// relationship target is present in the supplied satisfied-id set. Context-free
+/// callers normally use `ready_tasks`; `is_ready` remains the low-level predicate.
 /// ParentChild and informational relations do not block readiness.
 pub fn is_ready(task: Task, done: Set(String)) -> Bool {
   is_ready_at(task, done, 0)
@@ -171,12 +173,10 @@ pub fn gate_is_open(task: Task, now: Int) -> Bool {
   }
 }
 
-/// All currently-ready tasks. Plain function — NOT a gleamunison eval.
+/// All currently-ready executable work at `now`. An open gate is a satisfied
+/// dependency fact, not a work item, so gates never appear in this list.
 pub fn ready_tasks(tasks: List(Task)) -> List(Task) {
-  let done = satisfied_ids(tasks)
-  tasks
-  |> list.filter(fn(t) { is_ready(t, done) })
-  |> list.sort(by: fn(a, b) { string.compare(a.id, b.id) })
+  ready_tasks_at(tasks, 0)
 }
 
 /// Topological order of task ids: dependencies before dependents.
@@ -243,14 +243,12 @@ pub fn is_active(status: TaskStatus) -> Bool {
   }
 }
 
-// BUG-03 fix: a Blocks dependency is satisfied ONLY by Completed work — NOT by
-// Closed. "Closed" = abandoned/won't-do: the dependency was not delivered, so
-// the dependent stays blocked (NOT auto-ready). (was `completed_ids`, which
-// wrongly included Closed via `!is_active`.)
-fn satisfied_ids(tasks: List(Task)) -> Set(String) {
+// BUG-03 fix: Closed work never satisfies a dependency. A Completed task does;
+// a Gate satisfies it when its local manual/timer/signed fact is open at `now`.
+fn satisfied_ids_at(tasks: List(Task), now: Int) -> Set(String) {
   tasks
-  |> list.filter(fn(t) { t.status == Completed })
-  |> list.map(fn(t) { t.id })
+  |> list.filter(fn(task) { blocker_is_satisfied(task, now) })
+  |> list.map(fn(task) { task.id })
   |> set.from_list()
 }
 
@@ -287,12 +285,16 @@ fn do_topo(
   }
 }
 
-/// Ready work at `now`, excluding tasks deferred into the future.
+/// Ready executable work at `now`, excluding deferred tasks, gate facts, and wisps.
 pub fn ready_tasks_at(tasks: List(Task), now: Int) -> List(Task) {
-  let done = satisfied_ids(tasks)
+  let satisfied = satisfied_ids_at(tasks, now)
   tasks
-  |> list.filter(fn(task) { is_ready_at(task, done, now) })
-  |> list.filter(fn(task) { !is_deferred(task, now) })
+  |> list.filter(fn(task) {
+    task.kind != Gate
+    && task.kind != types.Wisp
+    && !is_deferred(task, now)
+    && is_ready_at(task, satisfied, now)
+  })
   |> list.sort(by: fn(a, b) { string.compare(a.id, b.id) })
 }
 
@@ -300,5 +302,112 @@ pub fn is_deferred(task: Task, now: Int) -> Bool {
   case task.defer_until {
     option.Some(until) -> until > now
     option.None -> False
+  }
+}
+
+/// Context-aware readiness treats an open gate as a satisfied blocker. This is
+/// how timer/manual/signed gate resolution deterministically wakes waiters
+/// without rewriting each waiter's relationship or status.
+pub fn task_is_ready(task: Task, tasks: List(Task), now: Int) -> Bool {
+  task.kind != Gate
+  && task.kind != types.Wisp
+  && is_active(task.status)
+  && !is_deferred(task, now)
+  && list.all(task.relationships, fn(relation) {
+    case is_blocking_relation(relation.relation) {
+      False -> True
+      True ->
+        list.any(tasks, fn(target) {
+          target.id == relation.target_id && blocker_is_satisfied(target, now)
+        })
+    }
+  })
+}
+
+fn blocker_is_satisfied(task: Task, now: Int) -> Bool {
+  case task.kind {
+    Gate -> gate_is_open(task, now)
+    types.Wisp -> False
+    _ -> task.status == Completed
+  }
+}
+
+/// Explain readiness from the same predicates used by `ready_tasks_at`.
+/// The output is stable data: clients never need to reconstruct policy.
+pub fn readiness_explanation(
+  task: Task,
+  tasks: List(Task),
+  now: Int,
+) -> json.Json {
+  let active = is_active(task.status)
+  let executable = task.kind != Gate && task.kind != types.Wisp
+  let deferred = is_deferred(task, now)
+  let gate_open = gate_is_open(task, now)
+  let blockers =
+    task.relationships
+    |> list.filter(fn(relation) { is_blocking_relation(relation.relation) })
+    |> list.sort(by: fn(a, b) { string.compare(a.target_id, b.target_id) })
+    |> list.map(fn(relation) {
+      let target =
+        list.find(tasks, fn(candidate) { candidate.id == relation.target_id })
+      let #(present, satisfied, status) = case target {
+        Ok(found) -> #(
+          True,
+          blocker_is_satisfied(found, now),
+          status_name(found.status),
+        )
+        Error(Nil) -> #(False, False, "missing")
+      }
+      json.object([
+        #("target_id", json.string(relation.target_id)),
+        #("relation", json.string(relation_name(relation.relation))),
+        #("present", json.bool(present)),
+        #("status", json.string(status)),
+        #("satisfied", json.bool(satisfied)),
+      ])
+    })
+  let blockers_clear =
+    list.all(task.relationships, fn(relation) {
+      case is_blocking_relation(relation.relation) {
+        False -> True
+        True ->
+          list.any(tasks, fn(target) {
+            target.id == relation.target_id && blocker_is_satisfied(target, now)
+          })
+      }
+    })
+  let ready = executable && active && !deferred && blockers_clear
+  json.object([
+    #("task_id", json.string(task.id)),
+    #("ready", json.bool(ready)),
+    #("active", json.bool(active)),
+    #("executable", json.bool(executable)),
+    #("status", json.string(status_name(task.status))),
+    #("deferred", json.bool(deferred)),
+    #("defer_until", json.nullable(task.defer_until, of: json.int)),
+    #("gate_open", json.bool(gate_open)),
+    #("gate_satisfied", json.bool(task.gate_satisfied)),
+    #("gate_due", json.nullable(task.gate_due, of: json.int)),
+    #("claimable", json.bool(ready && task.assignee == option.None)),
+    #("blockers", json.array(blockers, of: fn(value) { value })),
+  ])
+}
+
+fn status_name(status: TaskStatus) -> String {
+  case status {
+    Open -> "open"
+    InProgress -> "in_progress"
+    Blocked -> "blocked"
+    Completed -> "completed"
+    Closed -> "closed"
+  }
+}
+
+fn relation_name(relation: types.RelationType) -> String {
+  case relation {
+    Blocks -> "blocks"
+    WaitsFor -> "waits_for"
+    ConditionalBlocks -> "conditional_blocks"
+    _ -> "informational"
   }
 }

@@ -2,11 +2,13 @@
 //// Gleam's Task layout never leaks into the persisted Erlang schema.
 
 import bankai/ast_bridge
+import bankai/gate_wisp/store as lifecycle_store
 import bankai/serde
 import bankai/storage/store
 import bankai/sync/merge
 import bankai/types.{type Task, Wisp}
 import gleam/list
+import gleam/option.{type Option}
 import gleam/result
 import gleamunison/identity
 
@@ -69,6 +71,21 @@ fn ffi_replace_many(
   operation: String,
 ) -> Result(Nil, String)
 
+@external(erlang, "bankai_mnesia_ffi", "idempotent_result")
+fn ffi_idempotent_result(
+  workspace: String,
+  idempotency_key: String,
+  namespace: String,
+) -> Result(Option(#(String, String)), String)
+
+@external(erlang, "bankai_mnesia_ffi", "replace_many_idempotent")
+fn ffi_replace_many_idempotent(
+  workspace: String,
+  idempotency_key: String,
+  fingerprint: String,
+  rows: List(#(String, String, String, String)),
+) -> Result(String, String)
+
 @external(erlang, "bankai_mnesia_ffi", "import_snapshot")
 fn ffi_import_snapshot(
   workspace: String,
@@ -117,6 +134,8 @@ pub fn init(workspace: String) -> Result(Nil, String) {
 /// only this workspace's Mnesia rows so repeatable tests do not leak history.
 pub fn reset_workspace_for_test(workspace: String) -> Result(Nil, String) {
   ffi_reset_workspace(workspace)
+  |> result.try(fn(_) { lifecycle_store.init(workspace) })
+  |> result.try(fn(_) { lifecycle_store.reset_workspace_for_test(workspace) })
 }
 
 /// Lazily imports the legacy JSONL history exactly once. The version rows retain
@@ -370,14 +389,35 @@ pub fn replace_many(
   replacements: List(#(Task, Task)),
 ) -> Result(Nil, String) {
   replacements
-  |> list.map(fn(pair) {
-    let #(previous, updated) = pair
-    #(
-      updated.id,
-      identity.hash_to_debug_string(previous.content_hash),
-      identity.hash_to_debug_string(updated.content_hash),
-      serde.task_to_json_string(updated),
-    )
-  })
+  |> list.map(replacement_row)
   |> ffi_replace_many(workspace, _, "replace-many")
+}
+
+pub fn idempotent_result(
+  workspace: String,
+  idempotency_key: String,
+  namespace: String,
+) -> Result(Option(#(String, String)), String) {
+  ffi_idempotent_result(workspace, idempotency_key, namespace)
+}
+
+pub fn replace_many_idempotent(
+  workspace: String,
+  idempotency_key: String,
+  fingerprint: String,
+  replacements: List(#(Task, Task)),
+) -> Result(String, String) {
+  replacements
+  |> list.map(replacement_row)
+  |> ffi_replace_many_idempotent(workspace, idempotency_key, fingerprint, _)
+}
+
+fn replacement_row(pair: #(Task, Task)) -> #(String, String, String, String) {
+  let #(previous, updated) = pair
+  #(
+    updated.id,
+    identity.hash_to_debug_string(previous.content_hash),
+    identity.hash_to_debug_string(updated.content_hash),
+    serde.task_to_json_string(updated),
+  )
 }

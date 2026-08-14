@@ -4,7 +4,6 @@
 
 import bankai/builder
 import bankai/cli
-import bankai/serde
 import bankai/sync/jsonl
 import bankai/types
 import gleam/option
@@ -27,16 +26,6 @@ fn wipe(ws: String) -> Nil {
 fn seed(ws: String, tasks: List(types.Task)) -> Nil {
   let _ = jsonl.flush(tasks, to: ws <> "/tasks.jsonl")
   Nil
-}
-
-fn task_json(output: String) -> String {
-  let stripped = string.replace(output, "{\"ok\":", "")
-  let n = string.length(stripped)
-  string.slice(stripped, 0, n - 1)
-}
-
-fn task_of(output: String) -> types.Task {
-  should.be_ok(serde.task_from_json_string(task_json(output)))
 }
 
 @external(erlang, "erlang", "system_time")

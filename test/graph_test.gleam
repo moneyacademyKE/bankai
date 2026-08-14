@@ -1,8 +1,8 @@
 import bankai/builder
 import bankai/graph
 import bankai/types.{
-  Blocks, Closed, Completed, ConditionalBlocks, InProgress, Open, RelatesTo,
-  Relationship, WaitsFor,
+  Blocks, Closed, Completed, ConditionalBlocks, Gate, InProgress, Open,
+  RelatesTo, Relationship, Task, WaitsFor,
 }
 import gleam/list
 import gleam/option
@@ -98,6 +98,81 @@ pub fn waits_for_and_conditional_blocks_are_blocking_test() {
   list.contains(ready_ids, "W") |> should.be_false
   list.contains(ready_ids, "C") |> should.be_false
   list.contains(ready_ids, "B") |> should.be_true
+}
+
+pub fn resolved_and_timer_gates_satisfy_dependencies_but_are_not_ready_work_test() {
+  let resolved =
+    builder.build_full(
+      "G-resolved",
+      "resolved gate",
+      "d",
+      Open,
+      option.None,
+      1,
+      1,
+      1,
+      [],
+      [],
+      option.None,
+      Gate,
+    )
+    |> builder.update(fn(gate) { Task(..gate, gate_satisfied: True) })
+  let timer =
+    builder.build_full(
+      "G-timer",
+      "timer gate",
+      "d",
+      Open,
+      option.None,
+      1,
+      1,
+      1,
+      [],
+      [],
+      option.None,
+      Gate,
+    )
+    |> builder.update(fn(gate) { Task(..gate, gate_due: option.Some(10)) })
+  let manual =
+    builder.build_full(
+      "G-manual",
+      "manual gate",
+      "d",
+      Open,
+      option.None,
+      1,
+      1,
+      1,
+      [],
+      [],
+      option.None,
+      Gate,
+    )
+  let after_resolved =
+    builder.build("A", "after resolved", "d", Open, option.None, 1, 1, 1, [
+      Relationship("G-resolved", WaitsFor),
+    ])
+  let after_timer =
+    builder.build("B", "after timer", "d", Open, option.None, 1, 1, 1, [
+      Relationship("G-timer", WaitsFor),
+    ])
+  let after_manual =
+    builder.build("C", "after manual", "d", Open, option.None, 1, 1, 1, [
+      Relationship("G-manual", WaitsFor),
+    ])
+  let ready_ids =
+    graph.ready_tasks_at(
+      [resolved, timer, manual, after_resolved, after_timer, after_manual],
+      10,
+    )
+    |> list.map(fn(task) { task.id })
+
+  list.contains(ready_ids, "A") |> should.be_true
+  list.contains(ready_ids, "B") |> should.be_true
+  list.contains(ready_ids, "C") |> should.be_false
+  list.contains(ready_ids, "G-resolved") |> should.be_false
+  list.contains(ready_ids, "G-timer") |> should.be_false
+  list.contains(ready_ids, "G-manual") |> should.be_false
 }
 
 pub fn waits_for_and_conditional_blocks_cycle_test() {
