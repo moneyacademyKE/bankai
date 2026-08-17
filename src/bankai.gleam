@@ -56,7 +56,8 @@ pub fn main() -> Nil {
             )
           {
             Ok(out) -> io.println(out)
-            Error("no daemon") -> io.println(daemon_fallback(method, params, args))
+            Error("no daemon") ->
+              io.println(daemon_fallback(method, params, args))
             Error("unknown service method" <> _) ->
               // Route miss: this daemon build doesn't serve the method —
               // the CLI's own dispatch may still run it embedded.
@@ -82,7 +83,9 @@ fn daemon_fallback(
 ) -> String {
   case is_mutation(method, params) {
     True ->
-      cli.error_envelope("bankai daemon required for mutations; run bankai serve")
+      cli.error_envelope(
+        "bankai daemon required for mutations; run bankai serve",
+      )
     False ->
       case is_task_operation(method, params) {
         True ->
