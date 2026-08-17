@@ -56,24 +56,41 @@ pub fn main() -> Nil {
             )
           {
             Ok(out) -> io.println(out)
-            Error(_) ->
-              case is_mutation(method, params) {
-                True ->
-                  io.println(cli.error_envelope(
-                    "bankai daemon required for mutations; run bankai serve",
-                  ))
-                False ->
-                  case is_task_operation(method, params) {
-                    True ->
-                      io.println(cli.error_envelope(
-                        "bankai daemon required for task operations; run bankai serve",
-                      ))
-                    False -> io.println(cli.run_in(cli.default_workspace, args))
-                  }
-              }
+            Error("no daemon") -> io.println(daemon_fallback(method, params, args))
+            Error("unknown service method" <> _) ->
+              // Route miss: this daemon build doesn't serve the method —
+              // the CLI's own dispatch may still run it embedded.
+              io.println(daemon_fallback(method, params, args))
+            Error(message) ->
+              // The daemon answered with a real error (auth, policy, parse) or
+              // token minting failed locally — surface it instead of masking it
+              // as "daemon required", which hid the actual failure for days.
+              io.println(cli.error_envelope("bankai daemon: " <> message))
           }
       }
     }
+  }
+}
+
+/// Answer for when the daemon cannot serve the request at all (not listening,
+/// or doesn't know the method): mutations and task ops honestly require the
+/// daemon; everything else falls back to the embedded single-shot run.
+fn daemon_fallback(
+  method: String,
+  params: List(String),
+  args: List(String),
+) -> String {
+  case is_mutation(method, params) {
+    True ->
+      cli.error_envelope("bankai daemon required for mutations; run bankai serve")
+    False ->
+      case is_task_operation(method, params) {
+        True ->
+          cli.error_envelope(
+            "bankai daemon required for task operations; run bankai serve",
+          )
+        False -> cli.run_in(cli.default_workspace, args)
+      }
   }
 }
 
@@ -166,6 +183,8 @@ fn daemon_request(
       )
     "cluster-status", _ -> Ok(#("cluster_status", []))
     "cluster_status", _ -> Ok(#("cluster_status", []))
+    // `gc` is the README-documented alias of daemon-side `compact`.
+    "gc", _ -> Ok(#("compact", []))
     _, _ -> Ok(#(method, params))
   }
 }
