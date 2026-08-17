@@ -675,6 +675,29 @@ pub fn client_request(
   })
 }
 
+/// Recv helper: gen_tcp {packet, line} with no buffer option delivers a reply
+/// longer than the recv buffer as several partial "lines". Once the task store
+/// grew past ~4KB, the single recv here returned a mid-JSON fragment and every
+/// read died as "malformed daemon response" — masked upstream as
+/// "daemon required". Accumulate chunks until the whole line parses or the
+/// daemon closes the socket.
+fn recv_full_response(sock: Dynamic, acc: String) -> Result(String, Dynamic) {
+  case ffi_recv_line(sock) {
+    Ok(chunk) -> {
+      let line = acc <> chunk
+      case extract_result(line) {
+        Ok(_) -> Ok(line)
+        Error(_) -> recv_full_response(sock, line)
+      }
+    }
+    Error(reason) ->
+      case acc {
+        "" -> Error(reason)
+        _ -> Ok(acc)
+      }
+  }
+}
+
 /// Send an attenuated request to the resident service. The token is included in
 /// the request only; errors and responses never echo bearer credentials.
 pub fn client_request_with_token(
@@ -695,7 +718,7 @@ pub fn client_request_with_token(
         ])
         |> json.to_string()
       let _ = ffi_send(sock, req <> "\n")
-      let response = ffi_recv_line(sock)
+      let response = recv_full_response(sock, "")
       let _ = ffi_close(sock)
       case response {
         Ok(line) -> extract_result(line)
