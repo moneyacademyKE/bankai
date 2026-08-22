@@ -4,7 +4,8 @@
     reset_workspace/1,
     record_in_transaction/3,
     high_watermark_in_transaction/1,
-    tail_json/2
+    tail_json/2,
+    tail_page_json/3
 ]).
 
 %% Bankai's committed change source. These tables are owned by Bankai, not by
@@ -60,6 +61,43 @@ tail_json(Workspace, After) ->
                                          Offset > After]),
         {ok, [event_json(Row) || Row <- Ordered]}
     end).
+
+%% Public journal page contract: a bounded window of committed events plus the
+%% metadata a tail consumer needs to detect skips (floor) and advance safely
+%% (next_after, latest). Nothing here truncates — the log is append-only; the
+%% floor is the retention bound consumers verify against, ahead of any future
+%% retention policy.
+tail_page_json(Workspace, After, Limit)
+        when is_integer(After), is_integer(Limit), Limit >= 1 ->
+    transaction(fun() ->
+        Rows = mnesia:match_object({?CHANGES, '_', Workspace, '_', '_', '_', '_', '_', '_'}),
+        Ordered = lists:keysort(4, [Row || Row = {?CHANGES, _, _, Offset, _, _, _, _, _} <- Rows,
+                                         Offset > After]),
+        Bounded = lists:sublist(Ordered, Limit),
+        Floor = case [Offset || {?CHANGES, _, _, Offset, _, _, _, _, _} <- Rows] of
+            [] -> -1;
+            Offsets -> lists:min(Offsets)
+        end,
+        Latest = high_watermark_in_transaction(Workspace),
+        NextAfter = case Bounded of
+            [] -> After;
+            _ -> element(4, lists:last(Bounded))
+        end,
+        EventsJson = case [event_json(Row) || Row <- Bounded] of
+            [] -> <<"[]">>;
+            Events -> [<<"[">>, join_comma(Events), <<"]">>]
+        end,
+        {ok, iolist_to_binary([
+            <<"{\"floor\":">>, integer_to_binary(Floor),
+            <<",\"latest\":">>, integer_to_binary(Latest),
+            <<",\"next_after\":">>, integer_to_binary(NextAfter),
+            <<",\"events\":">>, EventsJson, <<"}">>
+        ])}
+    end).
+
+join_comma([]) -> [];
+join_comma([Item]) -> Item;
+join_comma([Item | Rest]) -> [Item, <<",">>, join_comma(Rest)].
 
 ensure_table(Name, Attributes) ->
     case mnesia:create_table(Name, [{attributes, Attributes}, {disc_copies, [node()]}]) of

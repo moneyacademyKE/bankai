@@ -1,4 +1,6 @@
 import aarondb/projection_index
+import bankai/ast_bridge
+import bankai/builder
 import bankai/daemon_store
 import bankai/mnesia_store
 import bankai/projections
@@ -44,6 +46,121 @@ fn task_id(response: Result(json.Json, String)) -> String {
   case response {
     Ok(value) -> json.to_string(value)
     Error(_) -> ""
+  }
+}
+
+/// Task-integrity boundary: a version whose claimed content_hash does not
+/// match its canonical fields must never cross into Mnesia, while the
+/// untampered equivalent imports cleanly.
+pub fn import_snapshot_rejects_tampered_version_identity_test() {
+  let ok_ws = "/tmp/bankai_mnesia_import_tamper_ok"
+  let bad_ws = "/tmp/bankai_mnesia_import_tamper_bad"
+  reset_workspace(ok_ws)
+  reset_workspace(bad_ws)
+  let honest =
+    builder.build(
+      "bk-tamper-a",
+      "Honest",
+      "desc",
+      types.Open,
+      option.None,
+      1,
+      1000,
+      1000,
+      [],
+    )
+  let other =
+    builder.build(
+      "bk-tamper-b",
+      "Other",
+      "desc",
+      types.Open,
+      option.None,
+      1,
+      1000,
+      1000,
+      [],
+    )
+  // Control: the untampered store imports.
+  mnesia_store.import_snapshot(ok_ws, store.from_list([honest, other]))
+  |> should.be_ok
+  // One field edited without rehashing: the claimed identity is a lie.
+  let tampered = types.Task(..other, title: "Edited without rehashing")
+  mnesia_store.import_snapshot(bad_ws, store.from_list([honest, tampered]))
+  |> should.be_error
+}
+
+/// The legacy bootstrap path validates every JSONL-sourced version the same
+/// way; a stale hash claim is rejected instead of bootstrapped.
+pub fn legacy_import_rejects_tampered_identity_test() {
+  let ws = "/tmp/bankai_mnesia_legacy_tamper"
+  reset_workspace(ws)
+  let tampered =
+    types.Task(
+      ..builder.build(
+        "bk-legacy-tamper",
+        "Legacy",
+        "desc",
+        types.Open,
+        option.None,
+        1,
+        1000,
+        1000,
+        [],
+      ),
+      description: "swapped without rehash",
+    )
+  mnesia_store.import_legacy_if_needed(ws, store.from_list([tampered]))
+  |> should.be_error
+}
+
+/// Head view claims are validated independently of the version set: valid
+/// versions cannot smuggle in a divergent tampered head.
+pub fn replica_import_rejects_tampered_head_identity_test() {
+  let ws = "/tmp/bankai_mnesia_head_tamper"
+  reset_workspace(ws)
+  let honest =
+    builder.build(
+      "bk-head-a",
+      "Honest head",
+      "desc",
+      types.Open,
+      option.None,
+      1,
+      1000,
+      1000,
+      [],
+    )
+  let tampered_head = types.Task(..honest, priority: 9)
+  mnesia_store.import_replica_snapshot(ws, store.from_list([honest]), [
+    tampered_head,
+  ])
+  |> should.be_error
+}
+
+/// The public validator is descriptive: it names the rejected task.
+pub fn validator_error_names_the_task_test() {
+  let tampered =
+    types.Task(
+      ..builder.build(
+        "bk-named-tamper",
+        "Named",
+        "desc",
+        types.Open,
+        option.None,
+        1,
+        1000,
+        1000,
+        [],
+      ),
+      labels: ["edited"],
+    )
+  let outcome = ast_bridge.validate(tampered)
+  should.be_error(outcome)
+  case outcome {
+    Error(message) ->
+      message |> string.contains("bk-named-tamper") |> should.be_true
+    Ok(_) -> Nil
   }
 }
 
