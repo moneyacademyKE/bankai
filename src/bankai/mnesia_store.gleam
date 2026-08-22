@@ -7,6 +7,8 @@ import bankai/serde
 import bankai/storage/store
 import bankai/sync/merge
 import bankai/types.{type Task, Wisp}
+import gleam/dynamic/decode
+import gleam/json
 import gleam/list
 import gleam/option.{type Option}
 import gleam/result
@@ -125,6 +127,40 @@ fn ffi_change_tail_json(
   workspace: String,
   after: Int,
 ) -> Result(List(String), String)
+
+@external(erlang, "bankai_changefeed_ffi", "tail_page_json")
+fn ffi_change_page_json(
+  workspace: String,
+  after: Int,
+  limit: Int,
+) -> Result(String, String)
+
+/// One bounded page of the public committed-change journal plus the cursor
+/// metadata: `floor` (lowest retained offset; -1 when empty — nothing ever
+/// truncates today, so floor is the retention contract ahead of any policy),
+/// `latest` (high watermark), `next_after` (offset of the last event in this
+/// page, or the requested offset when the page is empty).
+pub type ChangePage {
+  ChangePage(floor: Int, latest: Int, next_after: Int, events: List(String))
+}
+
+pub fn change_page(
+  workspace: String,
+  after: Int,
+  limit: Int,
+) -> Result(ChangePage, String) {
+  use raw <- result.try(ffi_change_page_json(workspace, after, limit))
+  json.parse(from: raw, using: change_page_decoder())
+  |> result.map_error(fn(_) { "failed to decode journal page" })
+}
+
+fn change_page_decoder() -> decode.Decoder(ChangePage) {
+  use floor <- decode.field("floor", decode.int)
+  use latest <- decode.field("latest", decode.int)
+  use next_after <- decode.field("next_after", decode.int)
+  use events <- decode.field("events", decode.list(of: decode.string))
+  decode.success(ChangePage(floor:, latest:, next_after:, events:))
+}
 
 pub fn init(workspace: String) -> Result(Nil, String) {
   ffi_init(workspace)
