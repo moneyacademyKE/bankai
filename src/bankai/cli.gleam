@@ -156,6 +156,7 @@ fn create_cmd(
   let labels = parser.parse_labels(rest)
   let priority = parser.parse_priority(rest)
   let kind = parser.parse_kind(rest)
+  let description = parser.parse_description(rest)
   case parser.parse_parent(rest) {
     option.Some(parent_id) -> {
       let index = load_store(tasks_path)
@@ -205,7 +206,7 @@ fn create_cmd(
       let task =
         builder.build_with_derived_id(
           title,
-          "",
+          description,
           Open,
           option.None,
           priority,

@@ -300,7 +300,10 @@ fn tools() -> List(json.Json) {
     tool("count", "Count tasks matching the same structured query options."),
     tool("blocked", "Query blocked tasks with the same structured options."),
     tool("show", "Show a task by id. args: [\"bk-xxxx\"]."),
-    tool("create", "Create a task. args: [\"title\", \"--label\", \"L\"...]."),
+    tool(
+      "create",
+      "Create a task. args: [\"title\", \"--label\", \"L\", \"--description\", \"D\"].",
+    ),
     tool(
       "update",
       "Update lifecycle: status, claim, release, reopen, defer/undefer, add/remove label, priority.",
