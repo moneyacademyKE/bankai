@@ -192,7 +192,7 @@ pub fn resident_service_accepts_attenuated_client_tokens_test() {
   let read = should.be_ok(service_auth.mint(service_workspace, "read", 3600))
   let write = should.be_ok(service_auth.mint(service_workspace, "write", 3600))
   let _ = process.spawn_unlinked(fn() { socket.serve(service_workspace) })
-  process.sleep(200)
+  wait_for_socket(service_workspace, 100)
 
   socket.client_request_with_token(service_workspace, "list", [], read)
   |> should.be_ok
@@ -226,4 +226,20 @@ pub fn resident_service_accepts_attenuated_client_tokens_test() {
   |> should.be_ok
   |> string.contains("allowed over service")
   |> should.be_true
+}
+
+/// Poll until the daemon's socket file exists (max ~5s) instead of guessing
+/// a sleep length — daemon warmup can exceed any fixed wait under load.
+fn wait_for_socket(workspace: String, tries: Int) -> Nil {
+  case tries <= 0 {
+    True -> Nil
+    False ->
+      case simplifile.is_file(socket.socket_path(workspace)) {
+        Ok(True) -> Nil
+        _ -> {
+          process.sleep(50)
+          wait_for_socket(workspace, tries - 1)
+        }
+      }
+  }
 }

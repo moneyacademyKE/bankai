@@ -3,7 +3,9 @@
 # so every invocation re-exports it. Invoke targets with: make build / make test.
 export PATH := /opt/homebrew/bin:$(PATH)
 
-.PHONY: build test run deps clean escript
+.PHONY: build test run deps clean escript install
+
+PREFIX ?= $(HOME)/.local/bin
 
 build:
 	gleam build
@@ -30,3 +32,12 @@ escript:
 	@mkdir -p dist
 	@mv -f bankai dist/bankai
 	@echo "Built ./dist/bankai (self-contained escript; requires Erlang/OTP)"
+
+# One build, two names: bankai (client) and bankai-serve (launchd runs
+# `bankai-serve serve`). Same escript copied twice so they cannot desync —
+# a stale bankai-serve once made the watchdog respawn the OLD daemon binary
+# silently after every upgrade.
+install: escript
+	install -m 755 dist/bankai $(PREFIX)/bankai
+	install -m 755 dist/bankai $(PREFIX)/bankai-serve
+	@echo "Installed $(PREFIX)/bankai + $(PREFIX)/bankai-serve (same binary, two names)"
