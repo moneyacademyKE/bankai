@@ -12,6 +12,7 @@ import bankai/sync_peer
 import bankai/version
 import gleam/io
 import gleam/list
+import gleam/string
 
 pub const version = version.current
 
@@ -56,17 +57,23 @@ pub fn main() -> Nil {
             )
           {
             Ok(out) -> io.println(out)
-            Error("no daemon") ->
-              io.println(daemon_fallback(method, params, args))
-            Error("unknown service method" <> _) ->
-              // Route miss: this daemon build doesn't serve the method —
-              // the CLI's own dispatch may still run it embedded.
-              io.println(daemon_fallback(method, params, args))
-            Error(message) ->
-              // The daemon answered with a real error (auth, policy, parse) or
-              // token minting failed locally — surface it instead of masking it
-              // as "daemon required", which hid the actual failure for days.
-              io.println(cli.error_envelope("bankai daemon: " <> message))
+            Error(message) -> {
+              // Fall back to the embedded single-shot run when the daemon
+              // was never usable ("no daemon*": not listening, or connect
+              // timed out) or this daemon build doesn't serve the method
+              // (route miss — the local dispatch may still handle it).
+              // Anything else is a REAL daemon/auth/timeout error: surface
+              // it instead of masking it. Match by PREFIX, not exact string,
+              // so client wording can evolve without breaking the contract.
+              let fallback =
+                string.starts_with(message, "no daemon")
+                || string.starts_with(message, "unknown service method")
+              case fallback {
+                True -> io.println(daemon_fallback(method, params, args))
+                False ->
+                  io.println(cli.error_envelope("bankai daemon: " <> message))
+              }
+            }
           }
       }
     }

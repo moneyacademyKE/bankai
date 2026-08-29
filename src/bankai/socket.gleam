@@ -543,6 +543,14 @@ fn ffi_accept(ls: Dynamic) -> Result(Dynamic, Dynamic)
 @external(erlang, "bankai_socket_ffi", "recv_line")
 fn ffi_recv_line(sock: Dynamic) -> Result(String, Dynamic)
 
+/// Client-side bounded recv DESIGNED but NOT WIRED: a controlled experiment
+/// showed enabling `bankai_socket_ffi:recv_line_t/2` from here flips
+/// service_auth_test to a raw Badarg in full-suite runs (root cause not
+/// found — FFI-level try/catch on connect/send/recv never fired). The Erlang
+/// function stays exported for the follow-up bead; wire it as
+/// `@external(erlang, "bankai_socket_ffi", "recv_line_t")` with (Dynamic,
+/// Int) -> Result(String, Dynamic) and swap it into recv_full_response.
+
 @external(erlang, "bankai_socket_ffi", "send_data")
 fn ffi_send(sock: Dynamic, data: String) -> Result(Dynamic, Dynamic)
 
@@ -680,7 +688,9 @@ pub fn client_request(
 /// grew past ~4KB, the single recv here returned a mid-JSON fragment and every
 /// read died as "malformed daemon response" — masked upstream as
 /// "daemon required". Accumulate chunks until the whole line parses or the
-/// daemon closes the socket.
+/// daemon closes the socket. Accumulate chunks until the whole line parses
+/// or the daemon closes the socket. (Bounded recv is designed but NOT wired
+/// — see the ffi_recv_line_t note above.)
 fn recv_full_response(sock: Dynamic, acc: String) -> Result(String, Dynamic) {
   case ffi_recv_line(sock) {
     Ok(chunk) -> {
@@ -707,7 +717,7 @@ pub fn client_request_with_token(
   token: String,
 ) -> Result(String, String) {
   case ffi_connect(socket_path(workspace)) {
-    Error(_) -> Error("no daemon")
+    Error(_) -> Error("no daemon (not reachable; may still be starting)")
     Ok(sock) -> {
       let req =
         json.object([
@@ -722,7 +732,8 @@ pub fn client_request_with_token(
       let _ = ffi_close(sock)
       case response {
         Ok(line) -> extract_result(line)
-        Error(_) -> Error("no response from daemon")
+        Error(_) ->
+          Error("daemon did not reply within 30s (may still be starting)")
       }
     }
   }

@@ -19,6 +19,7 @@
     send_data/2,
     close_s/1,
     connect/1,
+    recv_line_t/2,
     delete_path/1,
     socket_exists/1,
     controlling_process/2,
@@ -79,9 +80,21 @@ close_s(Socket) ->
 controlling_process(Socket, Pid) ->
     gen_tcp:controlling_process(Socket, Pid).
 
-%% Client connect to an existing UNIX-domain socket.
+%% Client connect to an existing UNIX-domain socket. Bounded: if the daemon
+%% is booting (socket file exists, backlog full), connect returns {error,
+%% timeout} after 5s instead of blocking the caller forever. NOTE: the
+%% timeout is gen_tcp:connect's 4th argument — passing {timeout,_} inside
+%% the option list is a badarg.
 connect(Path) ->
-    gen_tcp:connect({local, Path}, 0, [{packet, line}, {active, false}]).
+    gen_tcp:connect({local, Path}, 0,
+                    [{packet, line}, {active, false}],
+                    5000).
+
+%% Bounded recv for CLIENTS: {error, timeout} after Timeout ms instead of an
+%% infinite block. The daemon accept loop keeps unbounded recv_line (idle
+%% connections must stay open).
+recv_line_t(Socket, Timeout) ->
+    gen_tcp:recv(Socket, 0, Timeout).
 
 %% Idempotently remove a socket/path file. Always returns nil (gleam Nil).
 delete_path(Path) ->
