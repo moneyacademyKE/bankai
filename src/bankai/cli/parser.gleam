@@ -41,6 +41,15 @@ pub fn parse_parent(args: List(String)) -> Option(String) {
   }
 }
 
+/// --description D: the single argv token after the flag ("" when absent).
+pub fn parse_description(args: List(String)) -> String {
+  case args {
+    [] -> ""
+    ["--description", v, ..] -> v
+    [_, ..rest] -> parse_description(rest)
+  }
+}
+
 pub fn parse_labels(args: List(String)) -> List(String) {
   let #(_, labels) =
     list.fold(args, #(False, []), fn(acc, a) {

@@ -38,6 +38,7 @@ pub fn create(
   let priority = parse_priority(rest)
   let labels = parse_labels(rest)
   let kind = parse_kind(rest)
+  let description = parse_description(rest)
   case parse_parent(rest) {
     option.Some(parent_id) ->
       case
@@ -53,7 +54,7 @@ pub fn create(
             builder.build_full(
               id,
               title,
-              "",
+              description,
               Open,
               option.None,
               priority,
@@ -73,7 +74,7 @@ pub fn create(
     option.None ->
       builder.build_with_derived_id(
         title,
-        "",
+        description,
         Open,
         option.None,
         priority,
@@ -573,6 +574,15 @@ fn parse_parent(args: List(String)) -> option.Option(String) {
     [] -> option.None
     ["--parent", v, ..] -> option.Some(v)
     [_, ..rest] -> parse_parent(rest)
+  }
+}
+
+/// --description D: the single argv token after the flag ("" when absent).
+fn parse_description(args: List(String)) -> String {
+  case args {
+    [] -> ""
+    ["--description", v, ..] -> v
+    [_, ..rest] -> parse_description(rest)
   }
 }
 
