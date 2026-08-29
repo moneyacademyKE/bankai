@@ -18,6 +18,7 @@ import bankai/storage/store
 import bankai/sync/jsonl
 import bankai/sync/merge
 import bankai/sync_peer
+import bankai/task_view
 import bankai/time
 import bankai/types.{
   type Task, Blocked, Blocks, Duplicates, InProgress, Open, ParentChild,
@@ -83,8 +84,19 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
       parser.envelope(dep_add_cmd(tasks_path, task_id, target_id, rest))
     ["dep", ..] ->
       parser.envelope(Error("usage: dep add <task-id> <target-id> [--type T]"))
-    ["update", id, "--label", label, ..] ->
-      parser.envelope(label_add_cmd(tasks_path, id, label))
+    ["update", id, "--label", label, ..rest] -> {
+      // Every --label flag applies; each add re-reads the store, so folding
+      // the sequence lands all of them (the last successful JSON wins).
+      let labels = [label, ..parser.parse_labels(rest)]
+      parser.envelope(
+        list.fold(labels, Ok(json.null()), fn(acc, l) {
+          case acc {
+            Ok(_) -> label_add_cmd(tasks_path, id, l)
+            Error(e) -> Error(e)
+          }
+        }),
+      )
+    }
     ["update", id, "--claim", ..rest] ->
       parser.envelope(claim_cmd(tasks_path, id, rest))
     ["update", id, "--priority", n, ..] ->
@@ -224,13 +236,24 @@ fn create_cmd(
   }
 }
 
+/// Same envelope as the daemon path (task_view) so scripts see ONE list
+/// shape whether the daemon answered or this process read the store itself.
 fn list_cmd(
   tasks_path: String,
   rest: List(String),
 ) -> Result(json.Json, String) {
-  let tasks = load_store(tasks_path) |> store.current_tasks()
-  let tasks = filter_by_label(tasks, parser.parse_label_filter(rest))
-  Ok(json.array(tasks, of: serde.task_to_json))
+  case task_view.parse(rest) {
+    Error(e) -> Error(e)
+    Ok(spec) -> {
+      let tasks = load_store(tasks_path) |> store.current_tasks()
+      Ok(task_view.envelope(
+        tasks,
+        spec,
+        time.now(),
+        task_view.has_flag(rest, "--compact"),
+      ))
+    }
+  }
 }
 
 fn ready_cmd(

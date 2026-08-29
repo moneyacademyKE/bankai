@@ -3,6 +3,7 @@ import bankai/serde
 import bankai/types
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/string
 import gleamunison/identity
 import gleeunit
@@ -77,4 +78,23 @@ pub fn update_adds_label_and_is_idempotent_test() {
     )
   identity.hash_equal(twice.content_hash, once.content_hash)
   |> should.be_true
+}
+
+/// G3b: `update --label` applies EVERY --label flag, not just the first.
+pub fn update_with_multiple_labels_applies_all_test() {
+  let ws = "/tmp/bankai_labels_update_multi"
+  wipe(ws)
+  let _ = cli.run_in(ws, ["init"])
+  let t = should.be_ok(task_from_output(cli.run_in(ws, ["create", "Multi"])))
+  let updated =
+    should.be_ok(
+      task_from_output(
+        cli.run_in(ws, [
+          "update", t.id, "--label", "bug", "--label", "ui", "--label", "p1",
+        ]),
+      ),
+    )
+  list.contains(updated.labels, "bug") |> should.be_true
+  list.contains(updated.labels, "ui") |> should.be_true
+  list.contains(updated.labels, "p1") |> should.be_true
 }
