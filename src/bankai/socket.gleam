@@ -2,6 +2,7 @@
 //// write authority; JSONL is no longer a fallback for mutations.
 
 import bankai/cli
+import bankai/cli/parser
 import bankai/cluster_transport
 import bankai/daemon_store
 import bankai/gates/service as gate_service
@@ -18,6 +19,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/json
+import gleam/list
 import gleam/result
 import gleam/string
 
@@ -78,8 +80,19 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
           daemon_result(daemon_store.close(workspace, id, reason))
         [id, "--claim", ..rest] ->
           daemon_result(daemon_store.claim(workspace, id, rest))
-        [id, "--label", label, ..] ->
-          daemon_result(daemon_store.add_label(workspace, id, label))
+        [id, "--label", label, ..rest] -> {
+          // Every --label flag applies (same fix as the embedded CLI path):
+          // each add re-reads the store, so the fold lands all of them.
+          let labels = [label, ..parser.parse_labels(rest)]
+          daemon_result(
+            list.fold(labels, Ok(json.null()), fn(acc, l) {
+              case acc {
+                Ok(_) -> daemon_store.add_label(workspace, id, l)
+                Error(e) -> Error(e)
+              }
+            }),
+          )
+        }
         [id, "--priority", value, ..] ->
           daemon_result(daemon_store.set_priority(workspace, id, value))
         [id, status, ..] ->
@@ -550,7 +563,6 @@ fn ffi_recv_line(sock: Dynamic) -> Result(String, Dynamic)
 /// function stays exported for the follow-up bead; wire it as
 /// `@external(erlang, "bankai_socket_ffi", "recv_line_t")` with (Dynamic,
 /// Int) -> Result(String, Dynamic) and swap it into recv_full_response.
-
 @external(erlang, "bankai_socket_ffi", "send_data")
 fn ffi_send(sock: Dynamic, data: String) -> Result(Dynamic, Dynamic)
 
