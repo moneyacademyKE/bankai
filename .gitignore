@@ -17,3 +17,10 @@ dist/
 
 # aarondb Mnesia runtime storage (created by the Datalog backend during runs)
 Mnesia.*/
+
+# mnesia core dumps (crash artifacts, regen on crash)
+MnesiaCore.*
+.escript_a.zip
+.escript_x/
+# machine-synced marker (bind tool owns it)
+.opencrabs.md
