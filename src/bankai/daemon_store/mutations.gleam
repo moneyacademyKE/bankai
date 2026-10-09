@@ -181,6 +181,94 @@ pub fn reopen(workspace: String, id: String) -> Result(json.Json, String) {
   task_lifecycle.reopen(workspace, id)
 }
 
+/// Composed field update (bk-57c1): status, claim, labels, priority in one
+/// transactional rewrite. Claim implies InProgress when no explicit status
+/// is given. Local mode only; clustered updates keep requiring --fence.
+pub fn update_fields(
+  workspace: String,
+  id: String,
+  status: option.Option(String),
+  claim: option.Option(String),
+  labels: List(String),
+  priority: option.Option(String),
+) -> Result(json.Json, String) {
+  let new_status = case status {
+    option.None -> Ok(option.None)
+    option.Some(s) ->
+      case serde.status_from_string(s) {
+        Ok(parsed) -> Ok(option.Some(parsed))
+        Error(_) -> Error("invalid status: " <> s)
+      }
+  }
+  use new_status <- result.try(new_status)
+  let new_priority = case priority {
+    option.None -> Ok(option.None)
+    option.Some(p) ->
+      case int.parse(p) {
+        Ok(parsed) -> Ok(option.Some(parsed))
+        Error(_) -> Error("invalid priority: " <> p)
+      }
+  }
+  use new_priority <- result.try(new_priority)
+  case cluster.mode(workspace) {
+    Error(error) -> Error(error)
+    Ok(cluster.Cluster(_, _)) ->
+      Error("clustered updates require --fence (one status at a time)")
+    Ok(cluster.Local) ->
+      mnesia_store.get_current(workspace, id)
+      |> result.try(fn(previous) {
+        let effective_status = case new_status, claim {
+          option.Some(s), _ -> option.Some(s)
+          option.None, option.Some(_) -> option.Some(InProgress)
+          option.None, option.None -> option.None
+        }
+        let added_labels =
+          list.filter(labels, fn(l) { !list.contains(previous.labels, l) })
+        let changed =
+          added_labels != []
+          || case claim {
+            option.None -> False
+            option.Some(a) -> previous.assignee != option.Some(a)
+          }
+          || case new_priority {
+            option.None -> False
+            option.Some(p) -> previous.priority != p
+          }
+          || case effective_status {
+            option.None -> False
+            option.Some(s) -> previous.status != s
+          }
+        case changed {
+          False -> Ok(previous)
+          True -> {
+            let updated =
+              builder.update(previous, fn(task) {
+                let task = case added_labels {
+                  [] -> task
+                  new -> Task(..task, labels: list.append(new, task.labels))
+                }
+                let task = case claim {
+                  option.None -> task
+                  option.Some(a) -> Task(..task, assignee: option.Some(a))
+                }
+                let task = case new_priority {
+                  option.None -> task
+                  option.Some(p) -> Task(..task, priority: p)
+                }
+                let task = case effective_status {
+                  option.None -> task
+                  option.Some(s) -> Task(..task, status: s)
+                }
+                Task(..task, updated_at: time.now())
+              })
+            mnesia_store.replace(workspace, previous, updated)
+          }
+        }
+      })
+      |> result.map(serde.task_to_json)
+  }
+}
+
 pub fn undefer(workspace: String, id: String) -> Result(json.Json, String) {
   task_lifecycle.undefer(workspace, id)
 }

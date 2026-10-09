@@ -20,6 +20,7 @@ import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
+import gleam/option
 import gleam/result
 import gleam/string
 
@@ -53,54 +54,23 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
 
     "list" -> daemon_result(daemon_store.list_tasks(workspace, request.params))
     "create" ->
-      case request.params {
-        [title, ..rest] ->
-          daemon_result(daemon_store.create(workspace, title, rest))
-        _ -> ErrorResponse(message: "create requires a title")
+      case parser.parse_create_args(request.params) {
+        Error(e) -> ErrorResponse(message: e)
+        Ok(parsed) -> {
+          // Strip the title token(s) but pass every other flag through raw:
+          // gate/wisp handlers downstream still read the original argv.
+          let rest = case request.params {
+            ["--title", _, ..r] -> r
+            [_, ..r] -> r
+            [] -> []
+          }
+          daemon_result(daemon_store.create(workspace, parsed.title, rest))
+        }
       }
     "update" ->
-      case request.params {
-        [id, "--fence", fence, status, ..] ->
-          daemon_result(daemon_store.update_fenced(workspace, id, status, fence))
-        [id, status, "--fence", fence, ..] ->
-          daemon_result(daemon_store.update_fenced(workspace, id, status, fence))
-        [id, "--release", ..] ->
-          daemon_result(daemon_store.release(workspace, id))
-        [id, "--reopen", ..] ->
-          daemon_result(daemon_store.reopen(workspace, id))
-        [id, "--undefer", ..] ->
-          daemon_result(daemon_store.undefer(workspace, id))
-        [id, "--remove-label", label, ..] ->
-          daemon_result(daemon_store.remove_label(workspace, id, label))
-        [id, "--defer-until", until, ..] ->
-          daemon_result(daemon_store.defer_until(workspace, id, until))
-        [id, "--satisfy-gate", ..] ->
-          daemon_result(daemon_store.satisfy_gate(workspace, id))
-        [id, "--close", reason, ..] ->
-          daemon_result(daemon_store.close(workspace, id, reason))
-        [id, "--claim", ..rest] ->
-          daemon_result(daemon_store.claim(workspace, id, rest))
-        [id, "--label", label, ..rest] -> {
-          // Every --label flag applies (same fix as the embedded CLI path):
-          // each add re-reads the store, so the fold lands all of them.
-          let labels = [label, ..parser.parse_labels(rest)]
-          daemon_result(
-            list.fold(labels, Ok(json.null()), fn(acc, l) {
-              case acc {
-                Ok(_) -> daemon_store.add_label(workspace, id, l)
-                Error(e) -> Error(e)
-              }
-            }),
-          )
-        }
-        [id, "--priority", value, ..] ->
-          daemon_result(daemon_store.set_priority(workspace, id, value))
-        [id, status, ..] ->
-          daemon_result(daemon_store.update(workspace, id, status))
-        _ ->
-          ErrorResponse(
-            message: "update requires <id> <status> or --claim|--release|--reopen|--undefer|--label|--remove-label|--priority",
-          )
+      case parser.parse_update_args(request.params) {
+        Error(e) -> ErrorResponse(message: e)
+        Ok(parsed) -> route_update(workspace, parsed)
       }
     "batch" ->
       case request.params {
@@ -464,6 +434,102 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
         [hash, ..] -> daemon_result(rule_service.audits(workspace, hash))
       }
     _ -> ErrorResponse(message: "unknown method: " <> request.method)
+  }
+}
+
+/// Route one parsed update (bk-57c1): lifecycle verbs stay exclusive,
+/// `--fence` pairs only with a status, and everything else (status, claim,
+/// labels, priority) composes in one daemon_store.update_fields call.
+fn route_update(workspace: String, args: parser.UpdateArgs) -> Response {
+  let id = args.id
+  let simple_requested =
+    args.status != option.None
+    || args.claim != option.None
+    || args.labels != []
+    || args.priority != option.None
+  let exclusive_count =
+    bool_int(args.release)
+    + bool_int(args.reopen)
+    + bool_int(args.undefer)
+    + bool_int(args.satisfy_gate)
+    + bool_int(args.close != option.None)
+    + bool_int(args.defer_until != option.None)
+    + bool_int(args.remove_labels != [])
+    + bool_int(args.fence != option.None)
+  case exclusive_count, simple_requested {
+    0, True ->
+      daemon_result(daemon_store.update_fields(
+        workspace,
+        id,
+        args.status,
+        args.claim,
+        args.labels,
+        args.priority,
+      ))
+    0, False -> ErrorResponse(message: "update requires a change")
+    1, True ->
+      case args.fence, args.status {
+        option.Some(fence), option.Some(status) ->
+          daemon_result(daemon_store.update_fenced(workspace, id, status, fence))
+        _, _ ->
+          ErrorResponse(
+            message: "only --fence may combine with a status update",
+          )
+      }
+    1, False ->
+      case args.fence {
+        option.Some(_) -> ErrorResponse(message: "--fence requires a status")
+        option.None -> route_exclusive(workspace, args)
+      }
+    _, _ ->
+      ErrorResponse(
+        message: "cannot combine lifecycle verbs (--release/--reopen/--undefer/--satisfy-gate/--close/--defer-until/--remove-label/--fence)",
+      )
+  }
+}
+
+fn bool_int(value: Bool) -> Int {
+  case value {
+    True -> 1
+    False -> 0
+  }
+}
+
+fn route_exclusive(workspace: String, args: parser.UpdateArgs) -> Response {
+  let id = args.id
+  // Tuple-of-discriminants match: record patterns with `..` would match an
+  // empty remove_labels list and shadow the arms below it.
+  case
+    args.release,
+    args.reopen,
+    args.undefer,
+    args.satisfy_gate,
+    args.close,
+    args.defer_until,
+    args.remove_labels,
+    args.fence
+  {
+    True, _, _, _, _, _, _, _ ->
+      daemon_result(daemon_store.release(workspace, id))
+    _, True, _, _, _, _, _, _ ->
+      daemon_result(daemon_store.reopen(workspace, id))
+    _, _, True, _, _, _, _, _ ->
+      daemon_result(daemon_store.undefer(workspace, id))
+    _, _, _, True, _, _, _, _ ->
+      daemon_result(daemon_store.satisfy_gate(workspace, id))
+    _, _, _, _, option.Some(reason), _, _, _ ->
+      daemon_result(daemon_store.close(workspace, id, reason))
+    _, _, _, _, _, option.Some(until), _, _ ->
+      daemon_result(daemon_store.defer_until(workspace, id, until))
+    _, _, _, _, _, _, labels, _ ->
+      daemon_result(
+        list.fold(labels, Ok(json.null()), fn(acc, l) {
+          case acc {
+            Ok(_) -> daemon_store.remove_label(workspace, id, l)
+            Error(e) -> Error(e)
+          }
+        }),
+      )
   }
 }
 

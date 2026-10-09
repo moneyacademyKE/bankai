@@ -91,6 +91,20 @@ pub fn update(
   mutations.update(workspace, id, status)
 }
 
+/// Composed field update (bk-57c1): status, claim, labels and priority in
+/// one transactional rewrite instead of per-flag dispatches that swallowed
+/// each other's arguments.
+pub fn update_fields(
+  workspace: String,
+  id: String,
+  status: option.Option(String),
+  claim: option.Option(String),
+  labels: List(String),
+  priority: option.Option(String),
+) -> Result(json.Json, String) {
+  mutations.update_fields(workspace, id, status, claim, labels, priority)
+}
+
 pub fn update_fenced(
   workspace: String,
   id: String,
