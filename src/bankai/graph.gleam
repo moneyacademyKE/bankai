@@ -27,9 +27,11 @@ import bankai/types.{
   type Task, type TaskStatus, Blocked, Blocks, Closed, Completed,
   ConditionalBlocks, Gate, InProgress, Open, WaitsFor,
 }
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option
+import gleam/order
 import gleam/set.{type Set}
 import gleam/string
 
@@ -295,7 +297,14 @@ pub fn ready_tasks_at(tasks: List(Task), now: Int) -> List(Task) {
     && !is_deferred(task, now)
     && is_ready_at(task, satisfied, now)
   })
-  |> list.sort(by: fn(a, b) { string.compare(a.id, b.id) })
+  |> list.sort(by: fn(a, b) {
+    // bk-e0a0: priority first (1 = highest), then oldest-first FIFO.
+    // Random hex id order made priority decorative.
+    case int.compare(a.priority, b.priority) {
+      order.Eq -> int.compare(a.created_at, b.created_at)
+      other -> other
+    }
+  })
 }
 
 pub fn is_deferred(task: Task, now: Int) -> Bool {
