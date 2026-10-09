@@ -189,6 +189,7 @@ pub fn update_fields(
   id: String,
   status: option.Option(String),
   claim: option.Option(String),
+  force: Bool,
   labels: List(String),
   priority: option.Option(String),
 ) -> Result(json.Json, String) {
@@ -217,55 +218,101 @@ pub fn update_fields(
     Ok(cluster.Local) ->
       mnesia_store.get_current(workspace, id)
       |> result.try(fn(previous) {
-        let effective_status = case new_status, claim {
-          option.Some(s), _ -> option.Some(s)
-          option.None, option.Some(_) -> option.Some(InProgress)
-          option.None, option.None -> option.None
+        // Claim guards (bk-9f48): claimable only while Open/InProgress;
+        // someone else's claim needs --force. A silent steal corrupts the
+        // ledger — loud beats clever.
+        let claim_error = case claim {
+          option.None -> option.None
+          option.Some(new_claimant) ->
+            case previous.status {
+              Open | InProgress ->
+                case previous.assignee, force {
+                  option.Some(owner), False ->
+                    case owner == new_claimant {
+                      True -> option.None
+                      False ->
+                        option.Some(
+                          "already claimed by "
+                          <> owner
+                          <> " (use --force to reclaim)",
+                        )
+                    }
+                  _, _ -> option.None
+                }
+              _ -> option.Some("task is not open: " <> id)
+            }
         }
-        let added_labels =
-          list.filter(labels, fn(l) { !list.contains(previous.labels, l) })
-        let changed =
-          added_labels != []
-          || case claim {
-            option.None -> False
-            option.Some(a) -> previous.assignee != option.Some(a)
-          }
-          || case new_priority {
-            option.None -> False
-            option.Some(p) -> previous.priority != p
-          }
-          || case effective_status {
-            option.None -> False
-            option.Some(s) -> previous.status != s
-          }
-        case changed {
-          False -> Ok(previous)
-          True -> {
-            let updated =
-              builder.update(previous, fn(task) {
-                let task = case added_labels {
-                  [] -> task
-                  new -> Task(..task, labels: list.append(new, task.labels))
-                }
-                let task = case claim {
-                  option.None -> task
-                  option.Some(a) -> Task(..task, assignee: option.Some(a))
-                }
-                let task = case new_priority {
-                  option.None -> task
-                  option.Some(p) -> Task(..task, priority: p)
-                }
-                let task = case effective_status {
-                  option.None -> task
-                  option.Some(s) -> Task(..task, status: s)
-                }
-                Task(..task, updated_at: time.now())
-              })
-            mnesia_store.replace(workspace, previous, updated)
-          }
+        case claim_error {
+          option.Some(message) -> Error(message)
+          option.None ->
+            update_fields_apply(
+              workspace,
+              previous,
+              new_status,
+              claim,
+              labels,
+              new_priority,
+            )
         }
       })
       |> result.map(serde.task_to_json)
+  }
+}
+
+fn update_fields_apply(
+  workspace: String,
+  previous: Task,
+  new_status: option.Option(types.TaskStatus),
+  claim: option.Option(String),
+  labels: List(String),
+  new_priority: option.Option(Int),
+) -> Result(Task, String) {
+  let effective_status = case new_status, claim {
+    option.Some(s), _ -> option.Some(s)
+    option.None, option.Some(_) -> option.Some(InProgress)
+    option.None, option.None -> option.None
+  }
+  let added_labels =
+    list.filter(labels, fn(l) { !list.contains(previous.labels, l) })
+  let changed =
+    added_labels != []
+    || case claim {
+      option.None -> False
+      option.Some(a) -> previous.assignee != option.Some(a)
+    }
+    || case new_priority {
+      option.None -> False
+      option.Some(p) -> previous.priority != p
+    }
+    || case effective_status {
+      option.None -> False
+      option.Some(s) -> previous.status != s
+    }
+  case changed {
+    False -> Ok(previous)
+    True -> {
+      let updated =
+        builder.update(previous, fn(task) {
+          let task = case added_labels {
+            [] -> task
+            new -> Task(..task, labels: list.append(new, task.labels))
+          }
+          let task = case claim {
+            option.None -> task
+            option.Some(a) -> Task(..task, assignee: option.Some(a))
+          }
+          let task = case new_priority {
+            option.None -> task
+            option.Some(p) -> Task(..task, priority: p)
+          }
+          let task = case effective_status {
+            option.None -> task
+            option.Some(s) -> Task(..task, status: s)
+          }
+          Task(..task, updated_at: time.now())
+        })
+      mnesia_store.replace(workspace, previous, updated)
+    }
   }
 }
 
@@ -412,22 +459,42 @@ pub fn claim_record(
   rest: List(String),
 ) -> Result(Claimed, String) {
   let assignee = claimant.parse(rest)
+  let force = list.contains(rest, "--force")
   mnesia_store.get_current(workspace, id)
   |> result.try(fn(previous) {
     case previous.status {
       Open ->
-        builder.update(previous, fn(task) {
-          Task(
-            ..task,
-            status: InProgress,
-            assignee: option.Some(assignee),
-            updated_at: time.now(),
-          )
-        })
-        |> claim_admitted(workspace, previous, assignee, _)
+        // Assignee CAS (bk-9f48): an owned task needs --force to reclaim.
+        case previous.assignee, force {
+          option.Some(owner), False ->
+            case owner == assignee {
+              True -> apply_claim(workspace, previous, assignee)
+              False ->
+                Error(
+                  "already claimed by " <> owner <> " (use --force to reclaim)",
+                )
+            }
+          _, _ -> apply_claim(workspace, previous, assignee)
+        }
       _ -> Error("task is not open: " <> id)
     }
   })
+}
+
+fn apply_claim(
+  workspace: String,
+  previous: Task,
+  assignee: String,
+) -> Result(Claimed, String) {
+  builder.update(previous, fn(task) {
+    Task(
+      ..task,
+      status: InProgress,
+      assignee: option.Some(assignee),
+      updated_at: time.now(),
+    )
+  })
+  |> claim_admitted(workspace, previous, assignee, _)
 }
 
 pub fn claimed_json(claimed: Claimed) -> json.Json {

@@ -458,14 +458,20 @@ fn route_update(workspace: String, args: parser.UpdateArgs) -> Response {
     + bool_int(args.fence != option.None)
   case exclusive_count, simple_requested {
     0, True ->
-      daemon_result(daemon_store.update_fields(
-        workspace,
-        id,
-        args.status,
-        args.claim,
-        args.labels,
-        args.priority,
-      ))
+      case args.force, args.claim {
+        True, option.None ->
+          ErrorResponse(message: "--force only applies with --claim")
+        _, _ ->
+          daemon_result(daemon_store.update_fields(
+            workspace,
+            id,
+            args.status,
+            args.claim,
+            args.force,
+            args.labels,
+            args.priority,
+          ))
+      }
     0, False -> ErrorResponse(message: "update requires a change")
     1, True ->
       case args.fence, args.status {

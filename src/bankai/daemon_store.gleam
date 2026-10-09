@@ -99,10 +99,11 @@ pub fn update_fields(
   id: String,
   status: option.Option(String),
   claim: option.Option(String),
+  force: Bool,
   labels: List(String),
   priority: option.Option(String),
 ) -> Result(json.Json, String) {
-  mutations.update_fields(workspace, id, status, claim, labels, priority)
+  mutations.update_fields(workspace, id, status, claim, force, labels, priority)
 }
 
 pub fn update_fenced(

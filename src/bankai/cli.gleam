@@ -463,65 +463,115 @@ fn apply_update(
       }
   }
   use new_priority <- result.try(new_priority)
+  // --force is only meaningful alongside --claim.
+  use Nil <- result.try(case args.force, args.claim {
+    True, option.None -> Error("--force only applies with --claim")
+    _, _ -> Ok(Nil)
+  })
   let index = load_store(tasks_path)
   case store.find_by_id(index, args.id) {
     Error(Nil) -> Error("no such task: " <> args.id)
     Ok(task) -> {
-      // Idempotency: a no-op update must leave the task (and its content
-      // hash) byte-identical — no updated_at bump, matching the old
-      // per-flag handlers that returned the task unchanged.
-      let effective_status = case new_status, args.claim {
-        option.Some(s), _ -> option.Some(s)
-        // Claim implies in_progress when no explicit status was given:
-        // one claim semantic on every path (bk-9f48 groundwork).
-        option.None, option.Some(_) -> option.Some(InProgress)
-        option.None, option.None -> option.None
+      // Claim guards (bk-9f48): only Open/InProgress tasks are claimable,
+      // and a task owned by someone else needs --force to reclaim. Loud
+      // beats clever: a silent steal corrupts the ledger.
+      let claim_error = case args.claim {
+        option.None -> option.None
+        option.Some(new_claimant) ->
+          case task.status {
+            Open | InProgress ->
+              case task.assignee, args.force {
+                option.Some(owner), False ->
+                  case owner == new_claimant {
+                    True -> option.None
+                    False ->
+                      option.Some(
+                        "already claimed by "
+                        <> owner
+                        <> " (use --force to reclaim)",
+                      )
+                  }
+                _, _ -> option.None
+              }
+            _ -> option.Some("task is not open: " <> args.id)
+          }
       }
-      let added_labels =
-        list.filter(args.labels, fn(l) { !list.contains(task.labels, l) })
-      let changed =
-        added_labels != []
-        || case args.claim {
-          option.None -> False
-          option.Some(a) -> task.assignee != option.Some(a)
-        }
-        || case new_priority {
-          option.None -> False
-          option.Some(p) -> task.priority != p
-        }
-        || case effective_status {
-          option.None -> False
-          option.Some(s) -> task.status != s
-        }
-      case changed {
-        False -> Ok(serde.task_to_json(task))
-        True -> {
-          let updated =
-            builder.update(task, fn(t) {
-              let t = case added_labels {
-                [] -> t
-                new -> Task(..t, labels: list.append(new, t.labels))
-              }
-              let t = case args.claim {
-                option.None -> t
-                option.Some(assignee) ->
-                  Task(..t, assignee: option.Some(assignee))
-              }
-              let t = case new_priority {
-                option.None -> t
-                option.Some(p) -> Task(..t, priority: p)
-              }
-              let t = case effective_status {
-                option.None -> t
-                option.Some(s) -> Task(..t, status: s)
-              }
-              Task(..t, updated_at: time.now())
-            })
-          let index = store.put(index, updated)
-          let _ = jsonl.flush(store.list(index), to: tasks_path)
-          Ok(serde.task_to_json(updated))
-        }
+      case claim_error {
+        option.Some(message) -> Error(message)
+        option.None ->
+          apply_guarded_update(
+            tasks_path,
+            index,
+            task,
+            args,
+            new_status,
+            new_priority,
+          )
       }
+    }
+  }
+}
+
+fn apply_guarded_update(
+  tasks_path: String,
+  index: store.Store,
+  task: Task,
+  args: parser.UpdateArgs,
+  new_status: option.Option(types.TaskStatus),
+  new_priority: option.Option(Int),
+) -> Result(json.Json, String) {
+  // Idempotency: a no-op update must leave the task (and its content
+  // hash) byte-identical — no updated_at bump, matching the old
+  // per-flag handlers that returned the task unchanged.
+  let effective_status = case new_status, args.claim {
+    option.Some(s), _ -> option.Some(s)
+    // Claim implies in_progress when no explicit status was given:
+    // one claim semantic on every path (bk-9f48 groundwork).
+    option.None, option.Some(_) -> option.Some(InProgress)
+    option.None, option.None -> option.None
+  }
+  let added_labels =
+    list.filter(args.labels, fn(l) { !list.contains(task.labels, l) })
+  let changed =
+    added_labels != []
+    || case args.claim {
+      option.None -> False
+      option.Some(a) -> task.assignee != option.Some(a)
+    }
+    || case new_priority {
+      option.None -> False
+      option.Some(p) -> task.priority != p
+    }
+    || case effective_status {
+      option.None -> False
+      option.Some(s) -> task.status != s
+    }
+  case changed {
+    False -> Ok(serde.task_to_json(task))
+    True -> {
+      let updated =
+        builder.update(task, fn(t) {
+          let t = case added_labels {
+            [] -> t
+            new -> Task(..t, labels: list.append(new, t.labels))
+          }
+          let t = case args.claim {
+            option.None -> t
+            option.Some(assignee) -> Task(..t, assignee: option.Some(assignee))
+          }
+          let t = case new_priority {
+            option.None -> t
+            option.Some(p) -> Task(..t, priority: p)
+          }
+          let t = case effective_status {
+            option.None -> t
+            option.Some(s) -> Task(..t, status: s)
+          }
+          Task(..t, updated_at: time.now())
+        })
+      let index = store.put(index, updated)
+      let _ = jsonl.flush(store.list(index), to: tasks_path)
+      Ok(serde.task_to_json(updated))
     }
   }
 }

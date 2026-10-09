@@ -161,6 +161,7 @@ pub type UpdateArgs {
     id: String,
     status: Option(String),
     claim: Option(String),
+    force: Bool,
     labels: List(String),
     remove_labels: List(String),
     priority: Option(String),
@@ -248,6 +249,7 @@ pub fn parse_update_args(args: List(String)) -> Result(UpdateArgs, String) {
               id: id,
               status: option.None,
               claim: option.None,
+              force: False,
               labels: [],
               remove_labels: [],
               priority: option.None,
@@ -281,6 +283,8 @@ fn parse_update_rest(
           parse_update_rest(rest, UpdateArgs(..acc, claim: option.Some(value)))
       }
     ["--claim"] -> Ok(UpdateArgs(..acc, claim: option.Some("agent")))
+    ["--force", ..rest] ->
+      parse_update_rest(rest, UpdateArgs(..acc, force: True))
     ["--label", value, ..rest] ->
       parse_update_rest(
         rest,
