@@ -47,6 +47,12 @@ fn ffi_runtime_status(
   String,
 )
 
+/// Per-catch-up batch bound shared by every projection construction site.
+/// Replays pace themselves to this bound; exceeding it is never an error.
+const batch_limit: Int = 512
+
+const max_restarts: Int = 3
+
 pub type RuntimeStatus {
   RuntimeStatus(
     healthy: Bool,
@@ -143,9 +149,9 @@ pub fn empty(workspace: String) -> View {
   let source = durable_log.new(workspace)
   View(
     source,
-    projection.new("bankai-history", 512, 3),
-    projection.new("bankai-text", 512, 3),
-    projection.new("bankai-vector-membership", 512, 3),
+    projection.new("bankai-history", batch_limit, max_restarts),
+    projection.new("bankai-text", batch_limit, max_restarts),
+    projection.new("bankai-vector-membership", batch_limit, max_restarts),
   )
 }
 
@@ -161,32 +167,19 @@ pub fn bootstrap(workspace: String) -> Result(View, String) {
     |> result.try(fn(offset) {
       mnesia_store.change_tail(workspace, -1)
       |> result.try(fn(entries) {
-        let source = append_all(durable_log.new(workspace), "", entries)
-        let view =
-          View(
-            source,
-            projection.new("bankai-history", 512, 3),
-            projection.new("bankai-text", 512, 3),
-            projection.new("bankai-vector-membership", 512, 3),
-          )
-        case offset < 0 {
-          True ->
-            catch_up_all(view)
-            |> result.try(fn(ready) { checkpoint_all(ready, workspace) })
-          False ->
-            case high_watermark(source) == offset {
-              False ->
-                catch_up_all(view)
-                |> result.try(fn(ready) { checkpoint_all(ready, workspace) })
-              True ->
-                durable_log.snapshot(source, offset, snapshot)
-                |> result.map_error(durable_error)
-                |> result.try(fn(with_snapshot) {
-                  catch_up_all(View(..view, source: with_snapshot))
-                  |> result.try(fn(ready) { checkpoint_all(ready, workspace) })
-                })
-            }
-        }
+        append_catch_up_chunks(empty(workspace), entries)
+        |> result.try(fn(replayed) {
+          let tip = high_watermark(replayed.source)
+          case offset >= 0 && tip == offset {
+            True ->
+              durable_log.snapshot(replayed.source, offset, snapshot)
+              |> result.map_error(durable_error)
+              |> result.try(fn(seeded) {
+                checkpoint_all(View(..replayed, source: seeded), workspace)
+              })
+            False -> checkpoint_all(replayed, workspace)
+          }
+        })
       })
     })
   })
@@ -197,12 +190,10 @@ pub fn bootstrap(workspace: String) -> Result(View, String) {
 pub fn catch_up(view: View, workspace: String) -> Result(View, String) {
   let cursor = high_watermark(view.source)
   mnesia_store.change_tail(workspace, cursor)
-  |> result.map(fn(entries) {
-    let source = append_all(view.source, "", entries)
-    View(..view, source:)
+  |> result.try(fn(entries) {
+    append_catch_up_chunks(view, entries)
+    |> result.try(fn(updated) { checkpoint_all(updated, workspace) })
   })
-  |> result.try(catch_up_all)
-  |> result.try(fn(updated) { checkpoint_all(updated, workspace) })
 }
 
 pub fn health(view: View) -> Health {
@@ -255,6 +246,25 @@ fn append_all(
     let #(next, _) = durable_log.append(log, entry, entry_id(entry))
     next
   })
+}
+
+/// Append a committed tail in bounded chunks, catching projections up after
+/// each chunk. Backpressure is paced, never fatal: a backlog of any size
+/// replays without tripping the per-batch pressure bound, so daemon boot
+/// survives restarts with an arbitrarily large committed tail.
+fn append_catch_up_chunks(
+  view: View,
+  entries: List(String),
+) -> Result(View, String) {
+  case entries {
+    [] -> Ok(view)
+    _ -> {
+      let #(chunk, rest) = list.split(entries, batch_limit)
+      let source = append_all(view.source, "", chunk)
+      catch_up_all(View(..view, source: source))
+      |> result.try(fn(updated) { append_catch_up_chunks(updated, rest) })
+    }
+  }
 }
 
 fn catch_up_all(view: View) -> Result(View, String) {
