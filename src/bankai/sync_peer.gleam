@@ -205,7 +205,7 @@ fn send_snapshot(workspace: String, connection: Dynamic) -> Nil {
         Error(v) -> v
       }
     }
-  let _ = ffi_send(connection, message <> "\n")
+  let _ = ffi_send(connection, message)
   let _ = ffi_close(connection)
   Nil
 }
