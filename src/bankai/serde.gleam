@@ -51,6 +51,10 @@ pub fn task_to_json(task: Task) -> json.Json {
     #("closure_reason", json.nullable(task.closure_reason, of: json.string)),
     #("gate_due", json.nullable(task.gate_due, of: json.int)),
     #("gate_satisfied", json.bool(task.gate_satisfied)),
+    #(
+      "claim_lease_expires_at",
+      json.nullable(task.claim_lease_expires_at, json.int),
+    ),
   ])
 }
 
@@ -106,6 +110,11 @@ pub fn task_decoder() -> decode.Decoder(Task) {
     False,
     decode.bool,
   )
+  use claim_lease_expires_at <- decode.optional_field(
+    "claim_lease_expires_at",
+    option.None,
+    decode.optional(decode.int),
+  )
   let kind = kind_from_string(kind_str)
   case status_from_string(status_str) {
     Ok(status) -> {
@@ -128,6 +137,7 @@ pub fn task_decoder() -> decode.Decoder(Task) {
           closure_reason: closure_reason,
           gate_due: gate_due,
           gate_satisfied: gate_satisfied,
+          claim_lease_expires_at: claim_lease_expires_at,
         )
       case ast_bridge.validate(task) {
         Ok(valid) -> decode.success(valid)
@@ -154,6 +164,7 @@ pub fn task_decoder() -> decode.Decoder(Task) {
           closure_reason: closure_reason,
           gate_due: gate_due,
           gate_satisfied: gate_satisfied,
+          claim_lease_expires_at: option.None,
         ),
         "valid status",
       )

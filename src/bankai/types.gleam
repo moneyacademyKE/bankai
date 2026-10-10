@@ -72,5 +72,8 @@ pub type Task {
     closure_reason: Option(String),
     gate_due: Option(Int),
     gate_satisfied: Bool,
+    /// Epoch (µs) when the current claim's lease expires; None = no lease
+    /// (bk-ccbf). Claims without a live lease can be reclaimed.
+    claim_lease_expires_at: Option(Int),
   )
 }

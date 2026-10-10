@@ -138,6 +138,7 @@ fn required_capability(
     | "wisp_gc", _
     | "create", _
     | "update", _
+    | "reclaim", _
     | "batch", _
     | "merge", _
     | "dep_add", _

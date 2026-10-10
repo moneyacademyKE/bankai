@@ -9,6 +9,7 @@ import bankai/cli/maintenance
 import bankai/cli/parser
 import bankai/cli/setup
 import bankai/graph
+import bankai/lease
 import bankai/memory
 import bankai/message
 import bankai/relations
@@ -20,8 +21,8 @@ import bankai/sync_peer
 import bankai/task_view
 import bankai/time
 import bankai/types.{
-  type Task, Blocked, Blocks, Duplicates, InProgress, Open, ParentChild,
-  Relationship, Task,
+  type Task, Blocked, Blocks, Closed, Completed, Duplicates, InProgress, Open,
+  ParentChild, Relationship, Task,
 }
 import gleam/int
 import gleam/json
@@ -92,6 +93,7 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
         Error(e) -> parser.envelope(Error(e))
         Ok(parsed) -> parser.envelope(update_dispatch(tasks_path, parsed))
       }
+    ["reclaim", ..] -> parser.envelope(reclaim_cmd(tasks_path))
     ["remember", text, ..] -> parser.envelope(remember_cmd(workspace, text))
     ["memories", ..] -> parser.envelope(memories_cmd(workspace))
     ["inspect", hash, ..] -> parser.envelope(inspect_cmd(tasks_path, hash))
@@ -422,6 +424,27 @@ fn update_dispatch(
   tasks_path: String,
   args: parser.UpdateArgs,
 ) -> Result(json.Json, String) {
+  // Heartbeat is exclusive: it refreshes a live claim's lease and combines
+  // with nothing (a fresh claim already stamps a lease).
+  case args.heartbeat {
+    True ->
+      case
+        args.status == option.None
+        && args.claim == option.None
+        && args.labels == []
+        && args.priority == option.None
+      {
+        True -> heartbeat_cmd(tasks_path, args.id, args.ttl)
+        False -> Error("--heartbeat does not combine with other update fields")
+      }
+    False -> update_dispatch_rest(tasks_path, args)
+  }
+}
+
+fn update_dispatch_rest(
+  tasks_path: String,
+  args: parser.UpdateArgs,
+) -> Result(json.Json, String) {
   // Daemon-only lifecycle verbs fail loudly here rather than being ignored.
   case
     args.release
@@ -535,8 +558,9 @@ fn apply_guarded_update(
   let changed =
     added_labels != []
     || case args.claim {
+      // A re-claim always renews the lease, so it always counts as a change.
       option.None -> False
-      option.Some(a) -> task.assignee != option.Some(a)
+      option.Some(_) -> True
     }
     || case new_priority {
       option.None -> False
@@ -557,7 +581,16 @@ fn apply_guarded_update(
           }
           let t = case args.claim {
             option.None -> t
-            option.Some(assignee) -> Task(..t, assignee: option.Some(assignee))
+            option.Some(assignee) ->
+              // A claim stamps a fresh lease (bk-ccbf); re-claim renews.
+              Task(
+                ..t,
+                assignee: option.Some(assignee),
+                claim_lease_expires_at: lease.fresh(
+                  time.now(),
+                  lease.ttl_from(args.ttl),
+                ),
+              )
           }
           let t = case new_priority {
             option.None -> t
@@ -567,11 +600,82 @@ fn apply_guarded_update(
             option.None -> t
             option.Some(s) -> Task(..t, status: s)
           }
+          // Terminal statuses retire the lease with the claim.
+          let t = case effective_status {
+            option.Some(Closed) | option.Some(Completed) ->
+              Task(..t, claim_lease_expires_at: option.None)
+            _ -> t
+          }
           Task(..t, updated_at: time.now())
         })
       let index = store.put(index, updated)
       let _ = jsonl.flush(store.list(index), to: tasks_path)
       Ok(serde.task_to_json(updated))
+    }
+  }
+}
+
+fn heartbeat_cmd(
+  tasks_path: String,
+  id: String,
+  ttl: option.Option(String),
+) -> Result(json.Json, String) {
+  let index = load_store(tasks_path)
+  case store.find_by_id(index, id) {
+    Error(Nil) -> Error("no such task: " <> id)
+    Ok(task) ->
+      case task.assignee {
+        option.None -> Error("task is not claimed: " <> id)
+        option.Some(_) -> {
+          let updated =
+            builder.update(task, fn(t) {
+              Task(
+                ..t,
+                claim_lease_expires_at: lease.fresh(
+                  time.now(),
+                  lease.ttl_from(ttl),
+                ),
+                updated_at: time.now(),
+              )
+            })
+          let index = store.put(index, updated)
+          let _ = jsonl.flush(store.list(index), to: tasks_path)
+          Ok(serde.task_to_json(updated))
+        }
+      }
+  }
+}
+
+/// Free tasks whose claim lease has expired (bk-ccbf): back to open,
+/// assignee and lease cleared. Returns the reclaimed ids.
+fn reclaim_cmd(tasks_path: String) -> Result(json.Json, String) {
+  let index = load_store(tasks_path)
+  let now = time.now()
+  let expired =
+    store.current_tasks(index)
+    |> list.filter(fn(t) {
+      t.status == InProgress && lease.is_expired(t.claim_lease_expires_at, now)
+    })
+  case expired {
+    [] -> Ok(json.array([], of: json.string))
+    _ -> {
+      let expired_ids = list.map(expired, fn(t) { t.id })
+      let updated_tasks =
+        list.map(expired, fn(t) {
+          builder.update(t, fn(x) {
+            Task(
+              ..x,
+              status: Open,
+              assignee: option.None,
+              claim_lease_expires_at: option.None,
+              updated_at: now,
+            )
+          })
+        })
+      let index =
+        list.fold(updated_tasks, index, fn(acc, t) { store.put(acc, t) })
+      let _ = jsonl.flush(store.list(index), to: tasks_path)
+      Ok(json.array(expired_ids, of: json.string))
     }
   }
 }

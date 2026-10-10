@@ -251,6 +251,7 @@ fn is_mutation(method: String, params: List(String)) -> Bool {
     "dep", ["add", ..] -> True
     "dep", ["remove", ..] -> True
     "update", _ -> True
+    "reclaim", _ -> True
     _, _ -> False
   }
 }

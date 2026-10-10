@@ -162,6 +162,8 @@ pub type UpdateArgs {
     status: Option(String),
     claim: Option(String),
     force: Bool,
+    ttl: Option(String),
+    heartbeat: Bool,
     labels: List(String),
     remove_labels: List(String),
     priority: Option(String),
@@ -250,6 +252,8 @@ pub fn parse_update_args(args: List(String)) -> Result(UpdateArgs, String) {
               status: option.None,
               claim: option.None,
               force: False,
+              ttl: option.None,
+              heartbeat: False,
               labels: [],
               remove_labels: [],
               priority: option.None,
@@ -285,6 +289,10 @@ fn parse_update_rest(
     ["--claim"] -> Ok(UpdateArgs(..acc, claim: option.Some("agent")))
     ["--force", ..rest] ->
       parse_update_rest(rest, UpdateArgs(..acc, force: True))
+    ["--ttl", value, ..rest] ->
+      parse_update_rest(rest, UpdateArgs(..acc, ttl: option.Some(value)))
+    ["--heartbeat", ..rest] ->
+      parse_update_rest(rest, UpdateArgs(..acc, heartbeat: True))
     ["--label", value, ..rest] ->
       parse_update_rest(
         rest,

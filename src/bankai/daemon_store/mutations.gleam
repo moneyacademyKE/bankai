@@ -8,14 +8,15 @@ import bankai/claimant
 import bankai/cluster
 import bankai/gates/service as gate_service
 import bankai/graph
+import bankai/lease
 import bankai/mnesia_store
 import bankai/serde
 import bankai/storage/store
 import bankai/task_lifecycle
 import bankai/time
 import bankai/types.{
-  type Task, type TaskKind, Closed, DefaultTask, Gate, InProgress, Open,
-  ParentChild, Relationship, Supersedes, Task, Wisp,
+  type Task, type TaskKind, Closed, Completed, DefaultTask, Gate, InProgress,
+  Open, ParentChild, Relationship, Supersedes, Task, Wisp,
 }
 import bankai/wisps/service as wisp_service
 import gleam/int
@@ -190,6 +191,7 @@ pub fn update_fields(
   status: option.Option(String),
   claim: option.Option(String),
   force: Bool,
+  ttl: option.Option(String),
   labels: List(String),
   priority: option.Option(String),
 ) -> Result(json.Json, String) {
@@ -250,6 +252,7 @@ pub fn update_fields(
               previous,
               new_status,
               claim,
+              ttl,
               labels,
               new_priority,
             )
@@ -264,6 +267,7 @@ fn update_fields_apply(
   previous: Task,
   new_status: option.Option(types.TaskStatus),
   claim: option.Option(String),
+  claim_ttl: option.Option(String),
   labels: List(String),
   new_priority: option.Option(Int),
 ) -> Result(Task, String) {
@@ -277,8 +281,9 @@ fn update_fields_apply(
   let changed =
     added_labels != []
     || case claim {
+      // A re-claim always renews the lease, so it always counts as a change.
       option.None -> False
-      option.Some(a) -> previous.assignee != option.Some(a)
+      option.Some(_) -> True
     }
     || case new_priority {
       option.None -> False
@@ -299,7 +304,15 @@ fn update_fields_apply(
           }
           let task = case claim {
             option.None -> task
-            option.Some(a) -> Task(..task, assignee: option.Some(a))
+            option.Some(a) ->
+              Task(
+                ..task,
+                assignee: option.Some(a),
+                claim_lease_expires_at: lease.fresh(
+                  time.now(),
+                  lease.ttl_from(claim_ttl),
+                ),
+              )
           }
           let task = case new_priority {
             option.None -> task
@@ -309,11 +322,82 @@ fn update_fields_apply(
             option.None -> task
             option.Some(s) -> Task(..task, status: s)
           }
+          // Terminal statuses retire the lease with the claim (bk-ccbf).
+          let task = case effective_status {
+            option.Some(Closed) | option.Some(Completed) ->
+              Task(..task, claim_lease_expires_at: option.None)
+            _ -> task
+          }
           Task(..task, updated_at: time.now())
         })
       mnesia_store.replace(workspace, previous, updated)
     }
   }
+}
+
+/// Refresh a live claim's lease (bk-ccbf). Exclusive op; fails on unclaimed
+/// tasks. Local mode only, same rule as update_fields.
+pub fn heartbeat(
+  workspace: String,
+  id: String,
+  ttl: option.Option(String),
+) -> Result(json.Json, String) {
+  case cluster.mode(workspace) {
+    Error(error) -> Error(error)
+    Ok(cluster.Cluster(_, _)) ->
+      Error("clustered heartbeats require --fence discipline; not supported")
+    Ok(cluster.Local) ->
+      mnesia_store.get_current(workspace, id)
+      |> result.try(fn(previous) {
+        case previous.assignee {
+          option.None -> Error("task is not claimed: " <> id)
+          option.Some(_) -> {
+            let updated =
+              builder.update(previous, fn(task) {
+                Task(
+                  ..task,
+                  claim_lease_expires_at: lease.fresh(
+                    time.now(),
+                    lease.ttl_from(ttl),
+                  ),
+                  updated_at: time.now(),
+                )
+              })
+            mnesia_store.replace(workspace, previous, updated)
+          }
+        }
+      })
+      |> result.map(serde.task_to_json)
+  }
+}
+
+/// Free tasks whose claim lease has expired (bk-ccbf): back to open,
+/// assignee and lease cleared. Returns the reclaimed ids.
+pub fn reclaim_expired(workspace: String) -> Result(json.Json, String) {
+  let now = time.now()
+  use tasks <- result.try(
+    mnesia_store.current_store(workspace) |> result.map(store.current_tasks),
+  )
+  let expired =
+    list.filter(tasks, fn(t) {
+      t.status == InProgress && lease.is_expired(t.claim_lease_expires_at, now)
+    })
+  list.try_map(expired, fn(t) {
+    let updated =
+      builder.update(t, fn(task) {
+        Task(
+          ..task,
+          status: Open,
+          assignee: option.None,
+          claim_lease_expires_at: option.None,
+          updated_at: now,
+        )
+      })
+    mnesia_store.replace(workspace, t, updated)
+  })
+  |> result.map(fn(reclaimed) {
+    json.array(list.map(reclaimed, fn(t) { t.id }), of: json.string)
+  })
 }
 
 pub fn undefer(workspace: String, id: String) -> Result(json.Json, String) {
@@ -357,6 +441,7 @@ pub fn close(
         ..task,
         status: Closed,
         closure_reason: option.Some(reason),
+        claim_lease_expires_at: option.None,
         updated_at: time.now(),
       )
     })
@@ -491,6 +576,7 @@ fn apply_claim(
       ..task,
       status: InProgress,
       assignee: option.Some(assignee),
+      claim_lease_expires_at: lease.fresh(time.now(), lease.default_ttl_seconds),
       updated_at: time.now(),
     )
   })

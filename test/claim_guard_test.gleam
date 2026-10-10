@@ -71,17 +71,20 @@ pub fn claim_force_overrides_test() {
   updated.assignee |> should.equal(option.Some("bob"))
 }
 
-/// bk-9f48: re-claiming your own task is an idempotent no-op, not an error.
-pub fn claim_same_assignee_idempotent_test() {
+/// bk-9f48/bk-ccbf: re-claiming your own task is allowed and renews the
+/// lease — not an error, but no longer a byte-identical no-op (the lease
+/// moves forward; that renewal IS the heartbeat semantic).
+pub fn claim_same_assignee_renews_lease_test() {
   let ws = "/tmp/bankai_claim_same"
   wipe(ws)
   let _ = cli.run_in(ws, ["init"])
   let created = cli.run_in(ws, ["create", "Still mine"])
   let assert Ok(task) = task_from_output(created)
   let once = cli.run_in(ws, ["update", task.id, "--claim", "alice"])
-  let assert Ok(first) = task_from_output(once)
+  let assert Ok(_first) = task_from_output(once)
   let twice = cli.run_in(ws, ["update", task.id, "--claim", "alice"])
   let assert Ok(second) = task_from_output(twice)
   second.assignee |> should.equal(option.Some("alice"))
-  second.content_hash |> should.equal(first.content_hash)
+  { second.claim_lease_expires_at != option.None } |> should.be_true
+  { second.status == types.InProgress } |> should.be_true
 }

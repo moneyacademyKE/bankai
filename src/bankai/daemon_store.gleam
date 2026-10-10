@@ -100,10 +100,20 @@ pub fn update_fields(
   status: option.Option(String),
   claim: option.Option(String),
   force: Bool,
+  ttl: option.Option(String),
   labels: List(String),
   priority: option.Option(String),
 ) -> Result(json.Json, String) {
-  mutations.update_fields(workspace, id, status, claim, force, labels, priority)
+  mutations.update_fields(
+    workspace,
+    id,
+    status,
+    claim,
+    force,
+    ttl,
+    labels,
+    priority,
+  )
 }
 
 pub fn update_fenced(
@@ -140,6 +150,20 @@ pub fn claim_record(
 
 pub fn release(workspace: String, id: String) -> Result(json.Json, String) {
   mutations.release(workspace, id)
+}
+
+/// Refresh a live claim's lease (bk-ccbf).
+pub fn heartbeat(
+  workspace: String,
+  id: String,
+  ttl: option.Option(String),
+) -> Result(json.Json, String) {
+  mutations.heartbeat(workspace, id, ttl)
+}
+
+/// Free tasks whose claim lease expired (bk-ccbf). Returns reclaimed ids.
+pub fn reclaim_expired(workspace: String) -> Result(json.Json, String) {
+  mutations.reclaim_expired(workspace)
 }
 
 pub fn reopen(workspace: String, id: String) -> Result(json.Json, String) {

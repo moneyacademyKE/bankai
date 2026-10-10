@@ -53,6 +53,7 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
       }
 
     "list" -> daemon_result(daemon_store.list_tasks(workspace, request.params))
+    "reclaim" -> daemon_result(daemon_store.reclaim_expired(workspace))
     "create" ->
       case parser.parse_create_args(request.params) {
         Error(e) -> ErrorResponse(message: e)
@@ -442,6 +443,27 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
 /// labels, priority) composes in one daemon_store.update_fields call.
 fn route_update(workspace: String, args: parser.UpdateArgs) -> Response {
   let id = args.id
+  // Heartbeat is exclusive and supported: refresh the live claim's lease.
+  case args.heartbeat {
+    True ->
+      case
+        args.status == option.None
+        && args.claim == option.None
+        && args.labels == []
+        && args.priority == option.None
+      {
+        True -> daemon_result(daemon_store.heartbeat(workspace, id, args.ttl))
+        False ->
+          ErrorResponse(
+            message: "--heartbeat does not combine with other update fields",
+          )
+      }
+    False -> route_update_rest(workspace, args)
+  }
+}
+
+fn route_update_rest(workspace: String, args: parser.UpdateArgs) -> Response {
+  let id = args.id
   let simple_requested =
     args.status != option.None
     || args.claim != option.None
@@ -468,6 +490,7 @@ fn route_update(workspace: String, args: parser.UpdateArgs) -> Response {
             args.status,
             args.claim,
             args.force,
+            args.ttl,
             args.labels,
             args.priority,
           ))

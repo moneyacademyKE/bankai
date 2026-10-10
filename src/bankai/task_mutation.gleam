@@ -63,7 +63,13 @@ fn release(task: Task, now: Int) -> Result(Task, String) {
     InProgress ->
       Ok(
         builder.update(task, fn(current) {
-          Task(..current, status: Open, assignee: option.None, updated_at: now)
+          Task(
+            ..current,
+            status: Open,
+            assignee: option.None,
+            claim_lease_expires_at: option.None,
+            updated_at: now,
+          )
         }),
       )
     Open ->
@@ -72,7 +78,12 @@ fn release(task: Task, now: Int) -> Result(Task, String) {
         option.Some(_) ->
           Ok(
             builder.update(task, fn(current) {
-              Task(..current, assignee: option.None, updated_at: now)
+              Task(
+                ..current,
+                assignee: option.None,
+                claim_lease_expires_at: option.None,
+                updated_at: now,
+              )
             }),
           )
       }
@@ -89,6 +100,7 @@ fn reopen(task: Task, now: Int) -> Result(Task, String) {
             ..current,
             status: Open,
             closure_reason: option.None,
+            claim_lease_expires_at: option.None,
             updated_at: now,
           )
         }),
