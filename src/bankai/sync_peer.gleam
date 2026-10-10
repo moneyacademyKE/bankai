@@ -191,9 +191,20 @@ fn send_snapshot(workspace: String, connection: Dynamic) -> Nil {
     |> result.try(fn(value) {
       ffi_sign_snapshot(workspace, value.0, [], value.1)
     })
-    |> result.unwrap(
-      "{\"protocol\":\"bankai-replica-v2\",\"error\":\"signing failed\"}",
-    )
+    |> result.map_error(fn(reason) {
+      json.to_string(
+        json.object([
+          #("protocol", json.string(envelope_protocol)),
+          #("error", json.string(reason)),
+        ]),
+      )
+    })
+    |> fn(r) {
+      case r {
+        Ok(v) -> v
+        Error(v) -> v
+      }
+    }
   let _ = ffi_send(connection, message <> "\n")
   let _ = ffi_close(connection)
   Nil
@@ -280,7 +291,8 @@ fn decode_signed_snapshot(
   case json.parse(from: string.trim(line), using: envelope_decoder()) {
     Error(_) ->
       Error(
-        "incompatible sync peer response: expected bankai-replica-v2 envelope",
+        "incompatible sync peer response: expected bankai-replica-v2 envelope, got: "
+        <> string.slice(from: string.trim(line), at_index: 0, length: 160),
       )
     Ok(wire) -> {
       let EnvelopeWire(
