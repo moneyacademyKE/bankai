@@ -70,6 +70,7 @@ pub fn build_full(
       closure_reason: option.None,
       gate_due: option.None,
       gate_satisfied: False,
+      claim_lease_expires_at: option.None,
     )
   ast_bridge.rehash(draft)
 }
@@ -129,6 +130,7 @@ pub fn build_with_derived_id(
       closure_reason: option.None,
       gate_due: option.None,
       gate_satisfied: False,
+      claim_lease_expires_at: option.None,
     )
   let draft = ast_bridge.rehash(draft)
   let id = short_id_from_hash(draft.content_hash)
@@ -151,6 +153,7 @@ pub fn build_with_derived_id(
       closure_reason: option.None,
       gate_due: option.None,
       gate_satisfied: False,
+      claim_lease_expires_at: option.None,
     )
   ast_bridge.rehash(final)
 }

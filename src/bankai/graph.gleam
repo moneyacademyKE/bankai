@@ -27,9 +27,11 @@ import bankai/types.{
   type Task, type TaskStatus, Blocked, Blocks, Closed, Completed,
   ConditionalBlocks, Gate, InProgress, Open, WaitsFor,
 }
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option
+import gleam/order
 import gleam/set.{type Set}
 import gleam/string
 
@@ -293,15 +295,61 @@ pub fn ready_tasks_at(tasks: List(Task), now: Int) -> List(Task) {
     task.kind != Gate
     && task.kind != types.Wisp
     && !is_deferred(task, now)
+    // bk-dc4e: a deferred parent hides its whole subtree from ready
+    // (beads parity) — otherwise children of a future-deferred epic leak.
+    && !ancestor_deferred_at(tasks, task, now)
     && is_ready_at(task, satisfied, now)
   })
-  |> list.sort(by: fn(a, b) { string.compare(a.id, b.id) })
+  |> list.sort(by: fn(a, b) {
+    // bk-e0a0: priority first (1 = highest), then oldest-first FIFO.
+    // Random hex id order made priority decorative.
+    case int.compare(a.priority, b.priority) {
+      order.Eq -> int.compare(a.created_at, b.created_at)
+      other -> other
+    }
+  })
 }
 
 pub fn is_deferred(task: Task, now: Int) -> Bool {
   case task.defer_until {
     option.Some(until) -> until > now
     option.None -> False
+  }
+}
+
+/// True when any ancestor up the parent_id chain is deferred at `now`.
+/// Cycle-safe via a visited set (same discipline as parent_chain_walk).
+fn ancestor_deferred_at(tasks: List(Task), task: Task, now: Int) -> Bool {
+  ancestor_deferred_walk(tasks, task.parent_id, now, set.new())
+}
+
+fn ancestor_deferred_walk(
+  tasks: List(Task),
+  current: option.Option(String),
+  now: Int,
+  visited: Set(String),
+) -> Bool {
+  case current {
+    option.None -> False
+    option.Some(id) ->
+      case set.contains(visited, id) {
+        True -> False
+        False ->
+          case list.find(tasks, fn(t) { t.id == id }) {
+            Error(Nil) -> False
+            Ok(parent) ->
+              case is_deferred(parent, now) {
+                True -> True
+                False ->
+                  ancestor_deferred_walk(
+                    tasks,
+                    parent.parent_id,
+                    now,
+                    set.insert(visited, id),
+                  )
+              }
+          }
+      }
   }
 }
 

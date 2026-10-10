@@ -8,14 +8,15 @@ import bankai/claimant
 import bankai/cluster
 import bankai/gates/service as gate_service
 import bankai/graph
+import bankai/lease
 import bankai/mnesia_store
 import bankai/serde
 import bankai/storage/store
 import bankai/task_lifecycle
 import bankai/time
 import bankai/types.{
-  type Task, type TaskKind, Closed, DefaultTask, Gate, InProgress, Open,
-  ParentChild, Relationship, Supersedes, Task, Wisp,
+  type Task, type TaskKind, Closed, Completed, DefaultTask, Gate, InProgress,
+  Open, ParentChild, Relationship, Supersedes, Task, Wisp,
 }
 import bankai/wisps/service as wisp_service
 import gleam/int
@@ -181,6 +182,224 @@ pub fn reopen(workspace: String, id: String) -> Result(json.Json, String) {
   task_lifecycle.reopen(workspace, id)
 }
 
+/// Composed field update (bk-57c1): status, claim, labels, priority in one
+/// transactional rewrite. Claim implies InProgress when no explicit status
+/// is given. Local mode only; clustered updates keep requiring --fence.
+pub fn update_fields(
+  workspace: String,
+  id: String,
+  status: option.Option(String),
+  claim: option.Option(String),
+  force: Bool,
+  ttl: option.Option(String),
+  labels: List(String),
+  priority: option.Option(String),
+) -> Result(json.Json, String) {
+  let new_status = case status {
+    option.None -> Ok(option.None)
+    option.Some(s) ->
+      case serde.status_from_string(s) {
+        Ok(parsed) -> Ok(option.Some(parsed))
+        Error(_) -> Error("invalid status: " <> s)
+      }
+  }
+  use new_status <- result.try(new_status)
+  let new_priority = case priority {
+    option.None -> Ok(option.None)
+    option.Some(p) ->
+      case int.parse(p) {
+        Ok(parsed) -> Ok(option.Some(parsed))
+        Error(_) -> Error("invalid priority: " <> p)
+      }
+  }
+  use new_priority <- result.try(new_priority)
+  case cluster.mode(workspace) {
+    Error(error) -> Error(error)
+    Ok(cluster.Cluster(_, _)) ->
+      Error("clustered updates require --fence (one status at a time)")
+    Ok(cluster.Local) ->
+      mnesia_store.get_current(workspace, id)
+      |> result.try(fn(previous) {
+        // Claim guards (bk-9f48): claimable only while Open/InProgress;
+        // someone else's claim needs --force. A silent steal corrupts the
+        // ledger — loud beats clever.
+        let claim_error = case claim {
+          option.None -> option.None
+          option.Some(new_claimant) ->
+            case previous.status {
+              Open | InProgress ->
+                case previous.assignee, force {
+                  option.Some(owner), False ->
+                    case owner == new_claimant {
+                      True -> option.None
+                      False ->
+                        option.Some(
+                          "already claimed by "
+                          <> owner
+                          <> " (use --force to reclaim)",
+                        )
+                    }
+                  _, _ -> option.None
+                }
+              _ -> option.Some("task is not open: " <> id)
+            }
+        }
+        case claim_error {
+          option.Some(message) -> Error(message)
+          option.None ->
+            update_fields_apply(
+              workspace,
+              previous,
+              new_status,
+              claim,
+              ttl,
+              labels,
+              new_priority,
+            )
+        }
+      })
+      |> result.map(serde.task_to_json)
+  }
+}
+
+fn update_fields_apply(
+  workspace: String,
+  previous: Task,
+  new_status: option.Option(types.TaskStatus),
+  claim: option.Option(String),
+  claim_ttl: option.Option(String),
+  labels: List(String),
+  new_priority: option.Option(Int),
+) -> Result(Task, String) {
+  let effective_status = case new_status, claim {
+    option.Some(s), _ -> option.Some(s)
+    option.None, option.Some(_) -> option.Some(InProgress)
+    option.None, option.None -> option.None
+  }
+  let added_labels =
+    list.filter(labels, fn(l) { !list.contains(previous.labels, l) })
+  let changed =
+    added_labels != []
+    || case claim {
+      // A re-claim always renews the lease, so it always counts as a change.
+      option.None -> False
+      option.Some(_) -> True
+    }
+    || case new_priority {
+      option.None -> False
+      option.Some(p) -> previous.priority != p
+    }
+    || case effective_status {
+      option.None -> False
+      option.Some(s) -> previous.status != s
+    }
+  case changed {
+    False -> Ok(previous)
+    True -> {
+      let updated =
+        builder.update(previous, fn(task) {
+          let task = case added_labels {
+            [] -> task
+            new -> Task(..task, labels: list.append(new, task.labels))
+          }
+          let task = case claim {
+            option.None -> task
+            option.Some(a) ->
+              Task(
+                ..task,
+                assignee: option.Some(a),
+                claim_lease_expires_at: lease.fresh(
+                  time.now(),
+                  lease.ttl_from(claim_ttl),
+                ),
+              )
+          }
+          let task = case new_priority {
+            option.None -> task
+            option.Some(p) -> Task(..task, priority: p)
+          }
+          let task = case effective_status {
+            option.None -> task
+            option.Some(s) -> Task(..task, status: s)
+          }
+          // Terminal statuses retire the lease with the claim (bk-ccbf).
+          let task = case effective_status {
+            option.Some(Closed) | option.Some(Completed) ->
+              Task(..task, claim_lease_expires_at: option.None)
+            _ -> task
+          }
+          Task(..task, updated_at: time.now())
+        })
+      mnesia_store.replace(workspace, previous, updated)
+    }
+  }
+}
+
+/// Refresh a live claim's lease (bk-ccbf). Exclusive op; fails on unclaimed
+/// tasks. Local mode only, same rule as update_fields.
+pub fn heartbeat(
+  workspace: String,
+  id: String,
+  ttl: option.Option(String),
+) -> Result(json.Json, String) {
+  case cluster.mode(workspace) {
+    Error(error) -> Error(error)
+    Ok(cluster.Cluster(_, _)) ->
+      Error("clustered heartbeats require --fence discipline; not supported")
+    Ok(cluster.Local) ->
+      mnesia_store.get_current(workspace, id)
+      |> result.try(fn(previous) {
+        case previous.assignee {
+          option.None -> Error("task is not claimed: " <> id)
+          option.Some(_) -> {
+            let updated =
+              builder.update(previous, fn(task) {
+                Task(
+                  ..task,
+                  claim_lease_expires_at: lease.fresh(
+                    time.now(),
+                    lease.ttl_from(ttl),
+                  ),
+                  updated_at: time.now(),
+                )
+              })
+            mnesia_store.replace(workspace, previous, updated)
+          }
+        }
+      })
+      |> result.map(serde.task_to_json)
+  }
+}
+
+/// Free tasks whose claim lease has expired (bk-ccbf): back to open,
+/// assignee and lease cleared. Returns the reclaimed ids.
+pub fn reclaim_expired(workspace: String) -> Result(json.Json, String) {
+  let now = time.now()
+  use tasks <- result.try(
+    mnesia_store.current_store(workspace) |> result.map(store.current_tasks),
+  )
+  let expired =
+    list.filter(tasks, fn(t) {
+      t.status == InProgress && lease.is_expired(t.claim_lease_expires_at, now)
+    })
+  list.try_map(expired, fn(t) {
+    let updated =
+      builder.update(t, fn(task) {
+        Task(
+          ..task,
+          status: Open,
+          assignee: option.None,
+          claim_lease_expires_at: option.None,
+          updated_at: now,
+        )
+      })
+    mnesia_store.replace(workspace, t, updated)
+  })
+  |> result.map(fn(reclaimed) {
+    json.array(list.map(reclaimed, fn(t) { t.id }), of: json.string)
+  })
+}
+
 pub fn undefer(workspace: String, id: String) -> Result(json.Json, String) {
   task_lifecycle.undefer(workspace, id)
 }
@@ -222,6 +441,7 @@ pub fn close(
         ..task,
         status: Closed,
         closure_reason: option.Some(reason),
+        claim_lease_expires_at: option.None,
         updated_at: time.now(),
       )
     })
@@ -324,22 +544,43 @@ pub fn claim_record(
   rest: List(String),
 ) -> Result(Claimed, String) {
   let assignee = claimant.parse(rest)
+  let force = list.contains(rest, "--force")
   mnesia_store.get_current(workspace, id)
   |> result.try(fn(previous) {
     case previous.status {
       Open ->
-        builder.update(previous, fn(task) {
-          Task(
-            ..task,
-            status: InProgress,
-            assignee: option.Some(assignee),
-            updated_at: time.now(),
-          )
-        })
-        |> claim_admitted(workspace, previous, assignee, _)
+        // Assignee CAS (bk-9f48): an owned task needs --force to reclaim.
+        case previous.assignee, force {
+          option.Some(owner), False ->
+            case owner == assignee {
+              True -> apply_claim(workspace, previous, assignee)
+              False ->
+                Error(
+                  "already claimed by " <> owner <> " (use --force to reclaim)",
+                )
+            }
+          _, _ -> apply_claim(workspace, previous, assignee)
+        }
       _ -> Error("task is not open: " <> id)
     }
   })
+}
+
+fn apply_claim(
+  workspace: String,
+  previous: Task,
+  assignee: String,
+) -> Result(Claimed, String) {
+  builder.update(previous, fn(task) {
+    Task(
+      ..task,
+      status: InProgress,
+      assignee: option.Some(assignee),
+      claim_lease_expires_at: lease.fresh(time.now(), lease.default_ttl_seconds),
+      updated_at: time.now(),
+    )
+  })
+  |> claim_admitted(workspace, previous, assignee, _)
 }
 
 pub fn claimed_json(claimed: Claimed) -> json.Json {

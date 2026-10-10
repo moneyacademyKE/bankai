@@ -53,7 +53,13 @@ pub fn ready_tasks(
     let now = time.now()
     gate_service.readiness_tasks(workspace, tasks, now)
     |> result.try(fn(readiness_tasks) {
-      task_view.parse(rest)
+      // bk-e0a0: ready defaults to (priority, created_at) order so priority
+      // actually steers what surfaces first; an explicit --sort still wins.
+      let spec_result = case list.contains(rest, "--sort") {
+        True -> task_view.parse(rest)
+        False -> task_view.parse(list.append(rest, ["--sort", "priority"]))
+      }
+      spec_result
       |> result.map(fn(spec) {
         case task_view.has_flag(rest, "--explain") {
           True -> {

@@ -6,10 +6,11 @@
 %%     .bankai/bankai.sock without the BEAM cold-start cost of single-shot run)
 %%   - the peer sync server/client (a running rig streams its task set over TCP)
 %%
-%% {packet, line} framing throughout: recv_line returns one line without the
-%% trailing newline; send_data callers append "\n". accept/recv_line/send_data/
-%% close_s are gen_tcp-generic (work on UNIX-domain AND TCP sockets). {ok,_}/
-%% {error,_} tuples map directly onto gleam's Result.
+%% Framing: the UNIX-socket daemon path uses {packet, line} (recv_line returns
+%% one line without the trailing newline; send_data callers append "\n"); the
+%% TCP sync path uses {packet, 4} length-prefix framing (see listen_tcp).
+%% accept/recv_line/send_data/close_s are gen_tcp-generic (work on UNIX-domain
+%% AND TCP sockets). {ok,_}/{error,_} tuples map directly onto gleam's Result.
 
 -module(bankai_socket_ffi).
 -export([
@@ -109,11 +110,14 @@ socket_exists(Path) ->
     end.
 
 %% --- G6 livesync: TCP listen/connect for peer task sync. ---
-%% Reuses accept/recv_line/send_data/close_s (gen_tcp-generic). NDJSON framing
-%% via {packet, line}. {reuseaddr, true} so a restart can rebind promptly.
+%% {packet, 4} length-prefix framing, not {packet, line}: packet-line splits
+%% lines longer than the driver line buffer into multiple packets, so a large
+%% snapshot envelope arrived truncated (OTP-version-dependent buffer sizes
+%% made this CI-visible). Length-prefix framing delivers any snapshot whole.
+%% {reuseaddr, true} so a restart can rebind promptly.
 listen_tcp(Port) ->
-    gen_tcp:listen(Port, [{packet, line}, {active, false}, {reuseaddr, true}]).
+    gen_tcp:listen(Port, [{packet, 4}, {active, false}, {reuseaddr, true}]).
 
 %% Host is a gleam String (binary); gen_tcp:connect wants a charlist hostname.
 connect_tcp(Host, Port) ->
-    gen_tcp:connect(binary_to_list(Host), Port, [{packet, line}, {active, false}]).
+    gen_tcp:connect(binary_to_list(Host), Port, [{packet, 4}, {active, false}]).

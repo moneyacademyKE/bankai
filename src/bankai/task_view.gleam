@@ -252,7 +252,13 @@ fn comparator(
   fn(a: Task, b: Task) {
     let order = case field {
       ById -> string.compare(a.id, b.id)
-      ByPriority -> compare_int_then_id(a.priority, b.priority, a.id, b.id)
+      // Priority ties break oldest-first (FIFO), matching ready_tasks_at.
+      ByPriority ->
+        case int.compare(a.priority, b.priority) {
+          order.Eq ->
+            compare_int_then_id(a.created_at, b.created_at, a.id, b.id)
+          other -> other
+        }
       ByCreated -> compare_int_then_id(a.created_at, b.created_at, a.id, b.id)
       ByUpdated -> compare_int_then_id(a.updated_at, b.updated_at, a.id, b.id)
     }

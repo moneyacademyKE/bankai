@@ -7,6 +7,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option}
+import gleam/string
 
 pub fn envelope(result: Result(json.Json, String)) -> String {
   case result {
@@ -135,5 +136,211 @@ pub fn parse_port(args: List(String), default: Int) -> Int {
       }
     [_, ..rest] -> parse_port(rest, default)
     [] -> default
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Whole-command grammars (bk-57c1): parse create/update argv into typed
+// records ONCE so the daemon and embedded paths share one grammar, and any
+// flag outside it fails loudly instead of being silently swallowed.
+// ---------------------------------------------------------------------------
+
+pub type CreateArgs {
+  CreateArgs(
+    title: String,
+    description: String,
+    labels: List(String),
+    priority: Option(String),
+    parent: Option(String),
+    kind: Option(String),
+  )
+}
+
+pub type UpdateArgs {
+  UpdateArgs(
+    id: String,
+    status: Option(String),
+    claim: Option(String),
+    force: Bool,
+    ttl: Option(String),
+    heartbeat: Bool,
+    labels: List(String),
+    remove_labels: List(String),
+    priority: Option(String),
+    fence: Option(String),
+    release: Bool,
+    reopen: Bool,
+    undefer: Bool,
+    defer_until: Option(String),
+    satisfy_gate: Bool,
+    close: Option(String),
+  )
+}
+
+fn is_flag(value: String) -> Bool {
+  string.starts_with(value, "--")
+}
+
+/// `create <title> [flags]` or `create --title <title> [flags]`.
+/// Whitelisted flags: --description --label --priority --parent --kind
+/// --due --satisfied --expires-at --ttl --actor --reason (gate/wisp).
+pub fn parse_create_args(args: List(String)) -> Result(CreateArgs, String) {
+  case args {
+    [] -> Error("create requires a title")
+    ["--title", title, ..rest] ->
+      parse_create_rest(
+        rest,
+        CreateArgs(title, "", [], option.None, option.None, option.None),
+      )
+    ["--title"] -> Error("--title requires a value")
+    [title, ..rest] ->
+      case is_flag(title) {
+        True -> Error("unknown create argument: " <> title)
+        False ->
+          parse_create_rest(
+            rest,
+            CreateArgs(title, "", [], option.None, option.None, option.None),
+          )
+      }
+  }
+}
+
+fn parse_create_rest(
+  args: List(String),
+  acc: CreateArgs,
+) -> Result(CreateArgs, String) {
+  case args {
+    [] -> Ok(acc)
+    ["--description", value, ..rest] ->
+      parse_create_rest(rest, CreateArgs(..acc, description: value))
+    ["--label", value, ..rest] ->
+      parse_create_rest(
+        rest,
+        CreateArgs(..acc, labels: list.append(acc.labels, [value])),
+      )
+    ["--priority", value, ..rest] ->
+      parse_create_rest(rest, CreateArgs(..acc, priority: option.Some(value)))
+    ["--parent", value, ..rest] ->
+      parse_create_rest(rest, CreateArgs(..acc, parent: option.Some(value)))
+    ["--kind", value, ..rest] ->
+      parse_create_rest(rest, CreateArgs(..acc, kind: option.Some(value)))
+    // Gate/wisp flags: recognized, consumed, applied by downstream handlers
+    // that still receive the raw argv.
+    ["--due", _, ..rest] -> parse_create_rest(rest, acc)
+    ["--expires-at", _, ..rest] -> parse_create_rest(rest, acc)
+    ["--ttl", _, ..rest] -> parse_create_rest(rest, acc)
+    ["--actor", _, ..rest] -> parse_create_rest(rest, acc)
+    ["--reason", _, ..rest] -> parse_create_rest(rest, acc)
+    ["--satisfied", ..rest] -> parse_create_rest(rest, acc)
+    [unknown, ..] -> Error("unknown create argument: " <> unknown)
+  }
+}
+
+/// `update <id> [status] [--claim [a]] [--label l]... [--priority n] ...`
+/// Every recognized flag composes in one call; anything else errors loudly.
+pub fn parse_update_args(args: List(String)) -> Result(UpdateArgs, String) {
+  case args {
+    [] -> Error("update requires a task id")
+    [id, ..rest] ->
+      case is_flag(id) {
+        True -> Error("update requires a task id, got flag: " <> id)
+        False ->
+          parse_update_rest(
+            rest,
+            UpdateArgs(
+              id: id,
+              status: option.None,
+              claim: option.None,
+              force: False,
+              ttl: option.None,
+              heartbeat: False,
+              labels: [],
+              remove_labels: [],
+              priority: option.None,
+              fence: option.None,
+              release: False,
+              reopen: False,
+              undefer: False,
+              defer_until: option.None,
+              satisfy_gate: False,
+              close: option.None,
+            ),
+          )
+      }
+  }
+}
+
+fn parse_update_rest(
+  args: List(String),
+  acc: UpdateArgs,
+) -> Result(UpdateArgs, String) {
+  case args {
+    [] -> Ok(acc)
+    ["--claim", value, ..rest] ->
+      case is_flag(value) {
+        True ->
+          parse_update_rest(
+            [value, ..rest],
+            UpdateArgs(..acc, claim: option.Some("agent")),
+          )
+        False ->
+          parse_update_rest(rest, UpdateArgs(..acc, claim: option.Some(value)))
+      }
+    ["--claim"] -> Ok(UpdateArgs(..acc, claim: option.Some("agent")))
+    ["--force", ..rest] ->
+      parse_update_rest(rest, UpdateArgs(..acc, force: True))
+    ["--ttl", value, ..rest] ->
+      parse_update_rest(rest, UpdateArgs(..acc, ttl: option.Some(value)))
+    ["--heartbeat", ..rest] ->
+      parse_update_rest(rest, UpdateArgs(..acc, heartbeat: True))
+    ["--label", value, ..rest] ->
+      parse_update_rest(
+        rest,
+        UpdateArgs(..acc, labels: list.append(acc.labels, [value])),
+      )
+    ["--remove-label", value, ..rest] ->
+      parse_update_rest(
+        rest,
+        UpdateArgs(
+          ..acc,
+          remove_labels: list.append(acc.remove_labels, [value]),
+        ),
+      )
+    ["--priority", value, ..rest] ->
+      parse_update_rest(rest, UpdateArgs(..acc, priority: option.Some(value)))
+    ["--fence", value, ..rest] ->
+      parse_update_rest(rest, UpdateArgs(..acc, fence: option.Some(value)))
+    ["--release", ..rest] ->
+      parse_update_rest(rest, UpdateArgs(..acc, release: True))
+    ["--reopen", ..rest] ->
+      parse_update_rest(rest, UpdateArgs(..acc, reopen: True))
+    ["--undefer", ..rest] ->
+      parse_update_rest(rest, UpdateArgs(..acc, undefer: True))
+    ["--defer-until", value, ..rest] ->
+      parse_update_rest(
+        rest,
+        UpdateArgs(..acc, defer_until: option.Some(value)),
+      )
+    ["--satisfy-gate", ..rest] ->
+      parse_update_rest(rest, UpdateArgs(..acc, satisfy_gate: True))
+    ["--close", reason, ..rest] ->
+      parse_update_rest(rest, UpdateArgs(..acc, close: option.Some(reason)))
+    // Global workspace flag other commands honor; tolerated here so bare
+    // `--claim --repo .` keeps meaning "claim as agent" (bk-616f test).
+    ["--repo", _, ..rest] -> parse_update_rest(rest, acc)
+    [word, ..rest] ->
+      case is_flag(word) {
+        True -> Error("unknown update argument: " <> word)
+        False ->
+          case acc.status {
+            option.None ->
+              parse_update_rest(
+                rest,
+                UpdateArgs(..acc, status: option.Some(word)),
+              )
+            option.Some(_) ->
+              Error("unexpected extra update argument: " <> word)
+          }
+      }
   }
 }

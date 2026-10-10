@@ -206,6 +206,75 @@ pub fn aarondb_projection_bootstrap_replay_and_checkpoint_test() {
   empty |> list.length |> should.equal(0)
 }
 
+/// Drive `count` committed change events onto a single task by cycling its
+/// status. Near-identical create titles collide in the 16-bit content-ID
+/// space at this volume (birthday bound), so backlog tests must update one
+/// task instead of creating many.
+fn drive_updates(ws: String, id: String, count: Int, status: String) -> Nil {
+  case count > 0 {
+    False -> Nil
+    True -> {
+      let _ = should.be_ok(daemon_store.update(ws, id, status))
+      let next = case status {
+        "open" -> "in_progress"
+        _ -> "open"
+      }
+      drive_updates(ws, id, count - 1, next)
+    }
+  }
+}
+
+/// Regression: daemon restart with a committed tail larger than the
+/// projection batch limit (512) must boot, not crash-loop (bk-c1da).
+pub fn aarondb_projection_bootstrap_replays_backlog_beyond_batch_limit_test() {
+  let ws = "/tmp/bankai_aarondb_backlog_boot_test"
+  reset_workspace(ws)
+  let _ = should.be_ok(daemon_store.boot(ws))
+  let created =
+    should.be_ok(
+      daemon_store.create(
+        ws,
+        "Backlog driver boot-" <> int.to_string(time.now()),
+        [],
+      ),
+    )
+  let id = id_from_json(json.to_string(created))
+  drive_updates(ws, id, 519, "in_progress")
+  let booted = should.be_ok(projections.bootstrap(ws))
+  projections.healthy(booted) |> should.be_true
+  let checkpoint =
+    should.be_ok(mnesia_store.projection_checkpoint(ws, "bankai-history"))
+  checkpoint |> should.equal(519)
+}
+
+/// Regression: a write burst larger than the batch limit between refreshes
+/// must catch up cleanly instead of failing gated reads (bk-c1da).
+pub fn aarondb_projection_catch_up_replays_burst_beyond_batch_limit_test() {
+  let ws = "/tmp/bankai_aarondb_burst_catch_up_test"
+  reset_workspace(ws)
+  let _ = should.be_ok(daemon_store.boot(ws))
+  let created =
+    should.be_ok(
+      daemon_store.create(
+        ws,
+        "Backlog driver burst-" <> int.to_string(time.now()),
+        [],
+      ),
+    )
+  let id = id_from_json(json.to_string(created))
+  let booted = should.be_ok(projections.bootstrap(ws))
+  projections.healthy(booted) |> should.be_true
+  drive_updates(ws, id, 520, "in_progress")
+  let replayed = should.be_ok(projections.catch_up(booted, ws))
+  projections.healthy(replayed) |> should.be_true
+  let checkpoint =
+    should.be_ok(mnesia_store.projection_checkpoint(
+      ws,
+      "bankai-vector-membership",
+    ))
+  checkpoint |> should.equal(520)
+}
+
 pub fn contested_claim_allows_exactly_one_winner_test() {
   wipe()
   let _ = daemon_store.boot(workspace)

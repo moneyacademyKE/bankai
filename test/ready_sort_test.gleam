@@ -1,0 +1,67 @@
+import bankai/cli
+import gleam/dynamic/decode
+import gleam/json
+import gleam/string
+import gleeunit
+import gleeunit/should
+import simplifile
+
+pub fn main() {
+  gleeunit.main()
+}
+
+fn wipe(ws: String) {
+  let _ = simplifile.create_directory_all(ws)
+  let _ = simplifile.write("", to: ws <> "/tasks.jsonl")
+  let _ = simplifile.write("", to: ws <> "/memories.jsonl")
+  Nil
+}
+
+/// bk-e0a0: `ready` orders by (priority asc, created_at asc) — priority must
+/// actually influence what surfaces first, not random hex id order.
+pub fn ready_orders_by_priority_then_age_test() {
+  let ws = "/tmp/bankai_ready_sort"
+  wipe(ws)
+  let _ = cli.run_in(ws, ["init"])
+  let _ = cli.run_in(ws, ["create", "low-old", "--priority", "4"])
+  let _ = cli.run_in(ws, ["create", "high-new", "--priority", "1"])
+  let _ = cli.run_in(ws, ["create", "mid", "--priority", "2"])
+  let out = cli.run_in(ws, ["ready"])
+  let assert Ok(_) = json.parse(out, decode.dynamic)
+  let high_pos = index_of(out, "high-new")
+  let mid_pos = index_of(out, "mid")
+  let low_pos = index_of(out, "low-old")
+  // high-new before mid before low-old, regardless of id assignment order
+  { high_pos < mid_pos } |> should.be_true
+  { mid_pos < low_pos } |> should.be_true
+}
+
+fn index_of(haystack: String, needle: String) -> Int {
+  case string.split_once(haystack, needle) {
+    Ok(#(before, _)) -> string.length(before)
+    Error(_) -> -1
+  }
+}
+
+fn extract_id(out: String) -> String {
+  let assert Ok(#(_, after)) = string.split_once(out, "\"id\":\"")
+  let assert Ok(#(id, _)) = string.split_once(after, "\"")
+  id
+}
+
+/// bk-dc4e: a future-deferred parent hides its children from `ready`.
+pub fn deferred_parent_hides_children_test() {
+  let ws = "/tmp/bankai_ready_deferred_parent"
+  wipe(ws)
+  let _ = cli.run_in(ws, ["init"])
+  let parent = cli.run_in(ws, ["create", "Parent epic"])
+  let parent_id = extract_id(parent)
+  let _ = cli.run_in(ws, ["create", "Child task", "--parent", parent_id])
+  let _ = cli.run_in(ws, ["create", "Unrelated ready"])
+  // Defer the parent far into the future (µs timestamp).
+  let future = "9999999999999999999"
+  let _ = cli.run_in(ws, ["update", parent_id, "--defer-until", future])
+  let out = cli.run_in(ws, ["ready"])
+  { string.contains(out, "Child task") == False } |> should.be_true
+  string.contains(out, "Unrelated ready") |> should.be_true
+}

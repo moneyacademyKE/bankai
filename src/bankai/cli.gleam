@@ -5,11 +5,11 @@
 //// messages, and compaction; it is never the live task-write authority.
 
 import bankai/builder
-import bankai/claimant
 import bankai/cli/maintenance
 import bankai/cli/parser
 import bankai/cli/setup
 import bankai/graph
+import bankai/lease
 import bankai/memory
 import bankai/message
 import bankai/relations
@@ -21,8 +21,8 @@ import bankai/sync_peer
 import bankai/task_view
 import bankai/time
 import bankai/types.{
-  type Task, Blocked, Blocks, Duplicates, InProgress, Open, ParentChild,
-  Relationship, Task,
+  type Task, Blocked, Blocks, Closed, Completed, Duplicates, InProgress, Open,
+  ParentChild, Relationship, Task,
 }
 import gleam/int
 import gleam/json
@@ -41,8 +41,12 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
   case argv {
     [] -> usage()
     ["init", ..] -> parser.envelope(init_cmd(workspace))
-    ["create", title, ..rest] ->
-      parser.envelope(create_cmd(workspace, tasks_path, title, rest))
+    ["create", ..rest] ->
+      case parser.parse_create_args(rest) {
+        Error(e) -> parser.envelope(Error(e))
+        Ok(parsed) ->
+          parser.envelope(create_cmd(workspace, tasks_path, parsed, rest))
+      }
     ["list", ..rest] -> parser.envelope(list_cmd(tasks_path, rest))
     ["ready", ..rest] -> parser.envelope(ready_cmd(tasks_path, rest))
     ["count", ..rest] -> parser.envelope(count_cmd(tasks_path, rest))
@@ -84,29 +88,12 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
       parser.envelope(dep_add_cmd(tasks_path, task_id, target_id, rest))
     ["dep", ..] ->
       parser.envelope(Error("usage: dep add <task-id> <target-id> [--type T]"))
-    ["update", id, "--label", label, ..rest] -> {
-      // Every --label flag applies; each add re-reads the store, so folding
-      // the sequence lands all of them (the last successful JSON wins).
-      let labels = [label, ..parser.parse_labels(rest)]
-      parser.envelope(
-        list.fold(labels, Ok(json.null()), fn(acc, l) {
-          case acc {
-            Ok(_) -> label_add_cmd(tasks_path, id, l)
-            Error(e) -> Error(e)
-          }
-        }),
-      )
-    }
-    ["update", id, "--claim", ..rest] ->
-      parser.envelope(claim_cmd(tasks_path, id, rest))
-    ["update", id, "--priority", n, ..] ->
-      parser.envelope(priority_update_cmd(tasks_path, id, n))
-    ["update", id, status, ..] ->
-      parser.envelope(update_cmd(tasks_path, id, status))
-    ["update", ..] ->
-      parser.envelope(Error(
-        "usage: update <id> <status> | --claim [a] | --label <l> | --priority N",
-      ))
+    ["update", ..rest] ->
+      case parser.parse_update_args(rest) {
+        Error(e) -> parser.envelope(Error(e))
+        Ok(parsed) -> parser.envelope(update_dispatch(tasks_path, parsed))
+      }
+    ["reclaim", ..] -> parser.envelope(reclaim_cmd(tasks_path))
     ["remember", text, ..] -> parser.envelope(remember_cmd(workspace, text))
     ["memories", ..] -> parser.envelope(memories_cmd(workspace))
     ["inspect", hash, ..] -> parser.envelope(inspect_cmd(tasks_path, hash))
@@ -160,16 +147,28 @@ fn init_cmd(workspace: String) -> Result(json.Json, String) {
 fn create_cmd(
   workspace: String,
   tasks_path: String,
-  title: String,
-  rest: List(String),
+  parsed: parser.CreateArgs,
+  _raw_rest: List(String),
 ) -> Result(json.Json, String) {
   let _ = jsonl.ensure_dir(workspace)
   let now = time.now()
-  let labels = parser.parse_labels(rest)
-  let priority = parser.parse_priority(rest)
-  let kind = parser.parse_kind(rest)
-  let description = parser.parse_description(rest)
-  case parser.parse_parent(rest) {
+  let parser.CreateArgs(
+    title,
+    description,
+    labels,
+    priority_text,
+    parent,
+    kind_text,
+  ) = parsed
+  let priority = case priority_text {
+    option.Some(p) -> parser.parse_priority(["--priority", p])
+    option.None -> 1
+  }
+  let kind = case kind_text {
+    option.Some(k) -> parser.parse_kind(["--kind", k])
+    option.None -> types.DefaultTask
+  }
+  case parent {
     option.Some(parent_id) -> {
       let index = load_store(tasks_path)
       case store.find_by_id(index, parent_id) {
@@ -195,7 +194,7 @@ fn create_cmd(
                 builder.build_full(
                   id,
                   title,
-                  "",
+                  description,
                   Open,
                   option.None,
                   priority,
@@ -418,102 +417,283 @@ fn dep_add_cmd(
   }
 }
 
-fn update_cmd(
+/// One update, one write (bk-57c1): the parsed grammar composes status,
+/// claim, labels and priority in a single task rewrite instead of per-flag
+/// arms that silently swallowed each other's args.
+fn update_dispatch(
   tasks_path: String,
-  id: String,
-  status: String,
+  args: parser.UpdateArgs,
 ) -> Result(json.Json, String) {
-  case serde.status_from_string(status) {
-    Ok(new_status) -> {
-      let index = load_store(tasks_path)
-      case store.find_by_id(index, id) {
-        Ok(task) -> {
-          let updated =
-            builder.update(task, fn(t) {
-              Task(..t, status: new_status, updated_at: time.now())
-            })
-          let index = store.put(index, updated)
-          let _ = jsonl.flush(store.list(index), to: tasks_path)
-          Ok(serde.task_to_json(updated))
-        }
-        Error(Nil) -> Error("no such task: " <> id)
+  // Heartbeat is exclusive: it refreshes a live claim's lease and combines
+  // with nothing (a fresh claim already stamps a lease).
+  case args.heartbeat {
+    True ->
+      case
+        args.status == option.None
+        && args.claim == option.None
+        && args.labels == []
+        && args.priority == option.None
+      {
+        True -> heartbeat_cmd(tasks_path, args.id, args.ttl)
+        False -> Error("--heartbeat does not combine with other update fields")
       }
-    }
-    Error(Nil) -> Error("invalid status: " <> status)
+    False -> update_dispatch_rest(tasks_path, args)
   }
 }
 
-fn claim_cmd(
+fn update_dispatch_rest(
   tasks_path: String,
-  id: String,
-  rest: List(String),
+  args: parser.UpdateArgs,
 ) -> Result(json.Json, String) {
-  let assignee = claimant.parse(rest)
-  let index = load_store(tasks_path)
-  case store.find_by_id(index, id) {
-    Ok(task) -> {
-      let updated =
-        builder.update(task, fn(t) {
-          Task(
-            ..t,
-            status: InProgress,
-            assignee: option.Some(assignee),
-            updated_at: time.now(),
-          )
-        })
-      let index = store.put(index, updated)
-      let _ = jsonl.flush(store.list(index), to: tasks_path)
-      Ok(serde.task_to_json(updated))
-    }
-    Error(Nil) -> Error("no such task: " <> id)
+  // Daemon-only lifecycle verbs fail loudly here rather than being ignored.
+  case
+    args.release
+    || args.reopen
+    || args.undefer
+    || args.satisfy_gate
+    || args.close != option.None
+    || args.fence != option.None
+    || args.remove_labels != []
+  {
+    True ->
+      Error(
+        "that update verb requires the bankai daemon (start it with `bankai serve`)",
+      )
+    False -> apply_update(tasks_path, args)
   }
 }
 
-fn label_add_cmd(
+fn apply_update(
   tasks_path: String,
-  id: String,
-  label: String,
+  args: parser.UpdateArgs,
 ) -> Result(json.Json, String) {
+  let new_status = case args.status {
+    option.None -> Ok(option.None)
+    option.Some(s) ->
+      case serde.status_from_string(s) {
+        Ok(parsed) -> Ok(option.Some(parsed))
+        Error(Nil) -> Error("invalid status: " <> s)
+      }
+  }
+  use new_status <- result.try(new_status)
+  let new_priority = case args.priority {
+    option.None -> Ok(option.None)
+    option.Some(p) ->
+      case int.parse(p) {
+        Ok(parsed) -> Ok(option.Some(parsed))
+        Error(_) -> Error("invalid priority: " <> p)
+      }
+  }
+  use new_priority <- result.try(new_priority)
+  let new_defer = case args.defer_until {
+    option.None -> Ok(option.None)
+    option.Some(d) ->
+      case int.parse(d) {
+        Ok(parsed) -> Ok(option.Some(parsed))
+        Error(_) -> Error("defer timestamp must be an integer")
+      }
+  }
+  use new_defer <- result.try(new_defer)
+  // --force is only meaningful alongside --claim.
+  use Nil <- result.try(case args.force, args.claim {
+    True, option.None -> Error("--force only applies with --claim")
+    _, _ -> Ok(Nil)
+  })
   let index = load_store(tasks_path)
-  case store.find_by_id(index, id) {
+  case store.find_by_id(index, args.id) {
+    Error(Nil) -> Error("no such task: " <> args.id)
     Ok(task) -> {
-      let updated =
-        builder.update(task, fn(t) {
-          case list.contains(t.labels, label) {
-            True -> t
-            False ->
-              Task(..t, labels: [label, ..t.labels], updated_at: time.now())
+      // Claim guards (bk-9f48): only Open/InProgress tasks are claimable,
+      // and a task owned by someone else needs --force to reclaim. Loud
+      // beats clever: a silent steal corrupts the ledger.
+      let claim_error = case args.claim {
+        option.None -> option.None
+        option.Some(new_claimant) ->
+          case task.status {
+            Open | InProgress ->
+              case task.assignee, args.force {
+                option.Some(owner), False ->
+                  case owner == new_claimant {
+                    True -> option.None
+                    False ->
+                      option.Some(
+                        "already claimed by "
+                        <> owner
+                        <> " (use --force to reclaim)",
+                      )
+                  }
+                _, _ -> option.None
+              }
+            _ -> option.Some("task is not open: " <> args.id)
           }
+      }
+      case claim_error {
+        option.Some(message) -> Error(message)
+        option.None ->
+          apply_guarded_update(
+            tasks_path,
+            index,
+            task,
+            args,
+            new_status,
+            new_priority,
+            new_defer,
+          )
+      }
+    }
+  }
+}
+
+fn apply_guarded_update(
+  tasks_path: String,
+  index: store.Store,
+  task: Task,
+  args: parser.UpdateArgs,
+  new_status: option.Option(types.TaskStatus),
+  new_priority: option.Option(Int),
+  new_defer: option.Option(Int),
+) -> Result(json.Json, String) {
+  // Idempotency: a no-op update must leave the task (and its content
+  // hash) byte-identical — no updated_at bump, matching the old
+  // per-flag handlers that returned the task unchanged.
+  let effective_status = case new_status, args.claim {
+    option.Some(s), _ -> option.Some(s)
+    // Claim implies in_progress when no explicit status was given:
+    // one claim semantic on every path (bk-9f48 groundwork).
+    option.None, option.Some(_) -> option.Some(InProgress)
+    option.None, option.None -> option.None
+  }
+  let added_labels =
+    list.filter(args.labels, fn(l) { !list.contains(task.labels, l) })
+  let changed =
+    added_labels != []
+    || case args.claim {
+      // A re-claim always renews the lease, so it always counts as a change.
+      option.None -> False
+      option.Some(_) -> True
+    }
+    || case new_priority {
+      option.None -> False
+      option.Some(p) -> task.priority != p
+    }
+    || case effective_status {
+      option.None -> False
+      option.Some(s) -> task.status != s
+    }
+    || case new_defer {
+      option.None -> False
+      option.Some(d) -> task.defer_until != option.Some(d)
+    }
+  case changed {
+    False -> Ok(serde.task_to_json(task))
+    True -> {
+      let updated =
+        builder.update(task, fn(t) {
+          let t = case added_labels {
+            [] -> t
+            new -> Task(..t, labels: list.append(new, t.labels))
+          }
+          let t = case args.claim {
+            option.None -> t
+            option.Some(assignee) ->
+              // A claim stamps a fresh lease (bk-ccbf); re-claim renews.
+              Task(
+                ..t,
+                assignee: option.Some(assignee),
+                claim_lease_expires_at: lease.fresh(
+                  time.now(),
+                  lease.ttl_from(args.ttl),
+                ),
+              )
+          }
+          let t = case new_priority {
+            option.None -> t
+            option.Some(p) -> Task(..t, priority: p)
+          }
+          let t = case effective_status {
+            option.None -> t
+            option.Some(s) -> Task(..t, status: s)
+          }
+          let t = case new_defer {
+            option.None -> t
+            option.Some(d) -> Task(..t, defer_until: option.Some(d))
+          }
+          // Terminal statuses retire the lease with the claim.
+          let t = case effective_status {
+            option.Some(Closed) | option.Some(Completed) ->
+              Task(..t, claim_lease_expires_at: option.None)
+            _ -> t
+          }
+          Task(..t, updated_at: time.now())
         })
       let index = store.put(index, updated)
       let _ = jsonl.flush(store.list(index), to: tasks_path)
       Ok(serde.task_to_json(updated))
     }
-    Error(Nil) -> Error("no such task: " <> id)
   }
 }
 
-fn priority_update_cmd(
+fn heartbeat_cmd(
   tasks_path: String,
   id: String,
-  priority_str: String,
+  ttl: option.Option(String),
 ) -> Result(json.Json, String) {
-  case int.parse(priority_str) {
-    Error(_) -> Error("invalid priority: " <> priority_str)
-    Ok(priority) -> {
-      let index = load_store(tasks_path)
-      case store.find_by_id(index, id) {
-        Ok(task) -> {
+  let index = load_store(tasks_path)
+  case store.find_by_id(index, id) {
+    Error(Nil) -> Error("no such task: " <> id)
+    Ok(task) ->
+      case task.assignee {
+        option.None -> Error("task is not claimed: " <> id)
+        option.Some(_) -> {
           let updated =
             builder.update(task, fn(t) {
-              Task(..t, priority: priority, updated_at: time.now())
+              Task(
+                ..t,
+                claim_lease_expires_at: lease.fresh(
+                  time.now(),
+                  lease.ttl_from(ttl),
+                ),
+                updated_at: time.now(),
+              )
             })
           let index = store.put(index, updated)
           let _ = jsonl.flush(store.list(index), to: tasks_path)
           Ok(serde.task_to_json(updated))
         }
-        Error(Nil) -> Error("no such task: " <> id)
       }
+  }
+}
+
+/// Free tasks whose claim lease has expired (bk-ccbf): back to open,
+/// assignee and lease cleared. Returns the reclaimed ids.
+fn reclaim_cmd(tasks_path: String) -> Result(json.Json, String) {
+  let index = load_store(tasks_path)
+  let now = time.now()
+  let expired =
+    store.current_tasks(index)
+    |> list.filter(fn(t) {
+      t.status == InProgress && lease.is_expired(t.claim_lease_expires_at, now)
+    })
+  case expired {
+    [] -> Ok(json.array([], of: json.string))
+    _ -> {
+      let expired_ids = list.map(expired, fn(t) { t.id })
+      let updated_tasks =
+        list.map(expired, fn(t) {
+          builder.update(t, fn(x) {
+            Task(
+              ..x,
+              status: Open,
+              assignee: option.None,
+              claim_lease_expires_at: option.None,
+              updated_at: now,
+            )
+          })
+        })
+      let index =
+        list.fold(updated_tasks, index, fn(acc, t) { store.put(acc, t) })
+      let _ = jsonl.flush(store.list(index), to: tasks_path)
+      Ok(json.array(expired_ids, of: json.string))
     }
   }
 }
