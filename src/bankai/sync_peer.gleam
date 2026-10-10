@@ -289,10 +289,12 @@ fn decode_signed_snapshot(
   line: String,
 ) -> Result(Snapshot, String) {
   case json.parse(from: string.trim(line), using: envelope_decoder()) {
-    Error(_) ->
+    Error(reason) ->
       Error(
-        "incompatible sync peer response: expected bankai-replica-v2 envelope, got: "
-        <> string.slice(from: string.trim(line), at_index: 0, length: 160),
+        "incompatible sync peer response: expected bankai-replica-v2 envelope, decode: "
+        <> string.inspect(reason)
+        <> ", got: "
+        <> string.slice(from: string.trim(line), at_index: 0, length: 400),
       )
     Ok(wire) -> {
       let EnvelopeWire(
