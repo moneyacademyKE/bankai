@@ -452,7 +452,6 @@ fn update_dispatch_rest(
     || args.undefer
     || args.satisfy_gate
     || args.close != option.None
-    || args.defer_until != option.None
     || args.fence != option.None
     || args.remove_labels != []
   {
@@ -486,6 +485,15 @@ fn apply_update(
       }
   }
   use new_priority <- result.try(new_priority)
+  let new_defer = case args.defer_until {
+    option.None -> Ok(option.None)
+    option.Some(d) ->
+      case int.parse(d) {
+        Ok(parsed) -> Ok(option.Some(parsed))
+        Error(_) -> Error("defer timestamp must be an integer")
+      }
+  }
+  use new_defer <- result.try(new_defer)
   // --force is only meaningful alongside --claim.
   use Nil <- result.try(case args.force, args.claim {
     True, option.None -> Error("--force only applies with --claim")
@@ -529,6 +537,7 @@ fn apply_update(
             args,
             new_status,
             new_priority,
+            new_defer,
           )
       }
     }
@@ -542,6 +551,7 @@ fn apply_guarded_update(
   args: parser.UpdateArgs,
   new_status: option.Option(types.TaskStatus),
   new_priority: option.Option(Int),
+  new_defer: option.Option(Int),
 ) -> Result(json.Json, String) {
   // Idempotency: a no-op update must leave the task (and its content
   // hash) byte-identical — no updated_at bump, matching the old
@@ -569,6 +579,10 @@ fn apply_guarded_update(
     || case effective_status {
       option.None -> False
       option.Some(s) -> task.status != s
+    }
+    || case new_defer {
+      option.None -> False
+      option.Some(d) -> task.defer_until != option.Some(d)
     }
   case changed {
     False -> Ok(serde.task_to_json(task))
@@ -599,6 +613,10 @@ fn apply_guarded_update(
           let t = case effective_status {
             option.None -> t
             option.Some(s) -> Task(..t, status: s)
+          }
+          let t = case new_defer {
+            option.None -> t
+            option.Some(d) -> Task(..t, defer_until: option.Some(d))
           }
           // Terminal statuses retire the lease with the claim.
           let t = case effective_status {

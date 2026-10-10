@@ -42,3 +42,26 @@ fn index_of(haystack: String, needle: String) -> Int {
     Error(_) -> -1
   }
 }
+
+fn extract_id(out: String) -> String {
+  let assert Ok(#(_, after)) = string.split_once(out, "\"id\":\"")
+  let assert Ok(#(id, _)) = string.split_once(after, "\"")
+  id
+}
+
+/// bk-dc4e: a future-deferred parent hides its children from `ready`.
+pub fn deferred_parent_hides_children_test() {
+  let ws = "/tmp/bankai_ready_deferred_parent"
+  wipe(ws)
+  let _ = cli.run_in(ws, ["init"])
+  let parent = cli.run_in(ws, ["create", "Parent epic"])
+  let parent_id = extract_id(parent)
+  let _ = cli.run_in(ws, ["create", "Child task", "--parent", parent_id])
+  let _ = cli.run_in(ws, ["create", "Unrelated ready"])
+  // Defer the parent far into the future (µs timestamp).
+  let future = "9999999999999999999"
+  let _ = cli.run_in(ws, ["update", parent_id, "--defer-until", future])
+  let out = cli.run_in(ws, ["ready"])
+  { string.contains(out, "Child task") == False } |> should.be_true
+  string.contains(out, "Unrelated ready") |> should.be_true
+}
