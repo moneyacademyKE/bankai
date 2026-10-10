@@ -45,7 +45,7 @@ pub fn one_spec_drives_list_count_and_blocked_test() {
         "--kind",
         "bug",
         "--priority",
-        "9",
+        "5",
         "--label",
         "api",
       ]),

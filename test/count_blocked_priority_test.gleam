@@ -75,9 +75,9 @@ pub fn update_priority_changes_field_test() {
   let task = should.be_ok(task_from_output(cli.run_in(ws, ["create", "Prio"])))
   let updated =
     should.be_ok(
-      task_from_output(cli.run_in(ws, ["update", task.id, "--priority", "9"])),
+      task_from_output(cli.run_in(ws, ["update", task.id, "--priority", "4"])),
     )
-  updated.priority |> should.equal(9)
+  updated.priority |> should.equal(4)
 }
 
 pub fn update_priority_rejects_non_integer_test() {

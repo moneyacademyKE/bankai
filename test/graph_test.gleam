@@ -178,3 +178,27 @@ pub fn resolved_and_timer_gates_satisfy_dependencies_but_are_not_ready_work_test
 pub fn waits_for_and_conditional_blocks_cycle_test() {
   graph.would_cycle([#("A", "B"), #("B", "C")], #("C", "A")) |> should.be_true
 }
+
+pub fn blocked_tasks_at_finds_dep_blocked_open_test() {
+  // round-3: an Open task with an unsatisfied Blocks dep is blocked even
+  // though its status was never set to Blocked.
+  let tasks = [
+    builder.build("A", "a", "d", Open, option.None, 1, 1, 1, [
+      Relationship("B", Blocks),
+    ]),
+    builder.build("B", "b", "d", Open, option.None, 1, 1, 1, []),
+  ]
+  let blocked_ids = graph.blocked_tasks_at(tasks, 0) |> list.map(fn(t) { t.id })
+  list.contains(blocked_ids, "A") |> should.be_true
+  list.contains(blocked_ids, "B") |> should.be_false
+}
+
+pub fn blocked_tasks_at_excludes_satisfied_and_deferred_test() {
+  let tasks = [
+    builder.build("A", "a", "d", Open, option.None, 1, 1, 1, [
+      Relationship("B", Blocks),
+    ]),
+    builder.build("B", "b", "d", Completed, option.None, 1, 1, 1, []),
+  ]
+  graph.blocked_tasks_at(tasks, 0) |> should.equal([])
+}

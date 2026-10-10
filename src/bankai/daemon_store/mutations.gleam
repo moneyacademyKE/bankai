@@ -5,6 +5,7 @@
 
 import bankai/builder
 import bankai/claimant
+import bankai/cli/parser
 import bankai/cluster
 import bankai/gates/service as gate_service
 import bankai/graph
@@ -36,7 +37,8 @@ pub fn create(
   rest: List(String),
 ) -> Result(json.Json, String) {
   let now = time.now()
-  let priority = parse_priority(rest)
+  use title <- result.try(parser.validate_title(title))
+  use priority <- result.try(parser.validate_priority(parse_priority(rest)))
   let labels = parse_labels(rest)
   let kind = parse_kind(rest)
   let description = parse_description(rest)
@@ -208,7 +210,11 @@ pub fn update_fields(
     option.None -> Ok(option.None)
     option.Some(p) ->
       case int.parse(p) {
-        Ok(parsed) -> Ok(option.Some(parsed))
+        Ok(parsed) ->
+          case parser.validate_priority(parsed) {
+            Ok(valid) -> Ok(option.Some(valid))
+            Error(message) -> Error(message)
+          }
         Error(_) -> Error("invalid priority: " <> p)
       }
   }

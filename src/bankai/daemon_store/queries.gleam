@@ -141,8 +141,10 @@ pub fn blocked_tasks(
   |> result.try(fn(tasks) {
     task_view.parse(rest)
     |> result.map(fn(spec) {
+      // round-3: compute the blocked set (unsatisfied deps), not just the
+      // Blocked status — dep-blocked open tasks were invisible before.
       task_view.envelope(
-        list.filter(tasks, fn(task) { task.status == Blocked }),
+        graph.blocked_tasks_at(tasks, time.now()),
         spec,
         time.now(),
         task_view.has_flag(rest, "--compact"),

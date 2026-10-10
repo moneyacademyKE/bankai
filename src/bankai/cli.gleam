@@ -160,10 +160,12 @@ fn create_cmd(
     parent,
     kind_text,
   ) = parsed
+  use title <- result.try(parser.validate_title(title))
   let priority = case priority_text {
     option.Some(p) -> parser.parse_priority(["--priority", p])
     option.None -> 1
   }
+  use priority <- result.try(parser.validate_priority(priority))
   let kind = case kind_text {
     option.Some(k) -> parser.parse_kind(["--kind", k])
     option.None -> types.DefaultTask
@@ -283,7 +285,7 @@ fn blocked_cmd(
   let tasks =
     load_store(tasks_path)
     |> store.current_tasks()
-    |> list.filter(fn(t) { t.status == Blocked })
+    |> graph.blocked_tasks_at(time.now())
   let tasks = filter_by_label(tasks, parser.parse_label_filter(rest))
   Ok(json.array(tasks, of: serde.task_to_json))
 }
@@ -480,7 +482,11 @@ fn apply_update(
     option.None -> Ok(option.None)
     option.Some(p) ->
       case int.parse(p) {
-        Ok(parsed) -> Ok(option.Some(parsed))
+        Ok(parsed) ->
+          case parser.validate_priority(parsed) {
+            Ok(valid) -> Ok(option.Some(valid))
+            Error(message) -> Error(message)
+          }
         Error(_) -> Error("invalid priority: " <> p)
       }
   }
