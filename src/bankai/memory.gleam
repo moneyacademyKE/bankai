@@ -100,10 +100,18 @@ pub fn remember(workspace: String, text: String) -> Result(Memory, String) {
       )
       let path = workspace <> "/memories.jsonl"
       use existing <- result.try(load(from: path))
-      let mem = new(text, time.now())
-      case flush([mem, ..existing], to: path) {
-        Ok(_) -> Ok(mem)
-        Error(_) -> Error("could not persist memories: " <> path)
+      let trimmed = string.trim(text)
+      // Idempotent remember: identical text returns the existing memory
+      // instead of appending a duplicate (bk-018b).
+      case list.find(existing, fn(m) { string.trim(m.text) == trimmed }) {
+        Ok(found) -> Ok(found)
+        Error(Nil) -> {
+          let mem = new(text, time.now())
+          case flush([mem, ..existing], to: path) {
+            Ok(_) -> Ok(mem)
+            Error(_) -> Error("could not persist memories: " <> path)
+          }
+        }
       }
     }
   }
