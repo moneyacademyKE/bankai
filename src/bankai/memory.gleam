@@ -94,7 +94,9 @@ pub fn remember(workspace: String, text: String) -> Result(Memory, String) {
     _ -> {
       use _ <- result.try(
         jsonl.ensure_dir(workspace)
-        |> result.replace_error("could not create memory workspace: " <> workspace),
+        |> result.replace_error(
+          "could not create memory workspace: " <> workspace,
+        ),
       )
       let path = workspace <> "/memories.jsonl"
       use existing <- result.try(load(from: path))
