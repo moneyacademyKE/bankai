@@ -315,17 +315,26 @@ pub fn history_cmd(
   tasks_path: String,
   id: String,
 ) -> Result(json.Json, String) {
-  let versions = store.list(load_store(tasks_path))
-  case aarondb_bridge.db_from_versions(versions) {
-    Error(e) -> Error(e)
-    Ok(db) -> {
-      let timeline = aarondb_bridge.history_timeline(db, id)
-      Ok(
-        json.array(timeline, of: fn(p) {
-          let #(at, status) = p
-          json.object([#("at", json.int(at)), #("status", json.string(status))])
-        }),
-      )
+  let index = load_store(tasks_path)
+  case store.find_by_id(index, id) {
+    Error(Nil) -> Error("no such task: " <> id)
+    Ok(_) -> {
+      let versions = store.list(index)
+      case aarondb_bridge.db_from_versions(versions) {
+        Error(e) -> Error(e)
+        Ok(db) -> {
+          let timeline = aarondb_bridge.history_timeline(db, id)
+          Ok(
+            json.array(timeline, of: fn(p) {
+              let #(at, status) = p
+              json.object([
+                #("at", json.int(at)),
+                #("status", json.string(status)),
+              ])
+            }),
+          )
+        }
+      }
     }
   }
 }
@@ -370,14 +379,22 @@ pub fn search_cmd(
       })
     Error(_) -> []
   }
-  let results = aarondb_bridge.search(list.append(task_docs, mem_docs), query)
+  let docs = list.append(task_docs, mem_docs)
+  let results = aarondb_bridge.search(docs, query)
   Ok(
     json.array(results, of: fn(r) {
       let #(kind, id, score) = r
+      // Carry the hit text so results are self-describing: memories have no
+      // id-based fetch path, so search IS the recall surface (bk-d3be).
+      let text = case list.find(docs, fn(d) { d.0 == kind && d.1 == id }) {
+        Ok(doc) -> doc.2
+        Error(Nil) -> ""
+      }
       json.object([
         #("kind", json.string(kind)),
         #("id", json.string(id)),
         #("score", json.float(score)),
+        #("text", json.string(text)),
       ])
     }),
   )
