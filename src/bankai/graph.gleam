@@ -310,6 +310,23 @@ pub fn ready_tasks_at(tasks: List(Task), now: Int) -> List(Task) {
   })
 }
 
+/// Blocked work at `now`: active tasks that cannot proceed because a blocking
+/// relation is unsatisfied, or that are explicitly status-blocked. Beads
+/// parity: `bd blocked` computes this set; filtering on `status == Blocked`
+/// alone hides every dependency-blocked task (round-3 audit).
+pub fn blocked_tasks_at(tasks: List(Task), now: Int) -> List(Task) {
+  let satisfied = satisfied_ids_at(tasks, now)
+  tasks
+  |> list.filter(fn(task) {
+    task.kind != Gate
+    && task.kind != types.Wisp
+    && is_active(task.status)
+    && !is_deferred(task, now)
+    && !ancestor_deferred_at(tasks, task, now)
+    && { task.status == Blocked || !is_ready_at(task, satisfied, now) }
+  })
+}
+
 pub fn is_deferred(task: Task, now: Int) -> Bool {
   case task.defer_until {
     option.Some(until) -> until > now

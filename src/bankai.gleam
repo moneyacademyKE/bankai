@@ -26,15 +26,19 @@ pub fn main() -> Nil {
   case args {
     // Long-running servers — block, no single-shot envelope.
     ["serve", ..] ->
-      case platform_profile.load(cli.default_workspace) {
-        Ok(profile) ->
-          case profile.mode {
-            platform_profile.Local -> socket.serve(cli.default_workspace)
-            platform_profile.Clustered ->
-              socket.serve_clustered(cli.default_workspace)
-          }
-        Error(message) -> io.println(cli.error_envelope(message))
-      }
+      // bk-07a7: any boot crash halts the VM so launchd's KeepAlive can
+      // actually respawn us — a zombie process defeats it permanently.
+      run_or_halt(fn() {
+        case platform_profile.load(cli.default_workspace) {
+          Ok(profile) ->
+            case profile.mode {
+              platform_profile.Local -> socket.serve(cli.default_workspace)
+              platform_profile.Clustered ->
+                socket.serve_clustered(cli.default_workspace)
+            }
+          Error(message) -> io.println(cli.error_envelope(message))
+        }
+      })
     ["mcp", ..] -> mcp.serve(cli.default_workspace)
     ["sync-serve", ..rest] ->
       sync_peer.serve(
@@ -106,6 +110,12 @@ fn daemon_fallback(
 
 @external(erlang, "bankai_argv_ffi", "get_args")
 fn argv() -> List(String)
+
+/// bk-07a7: run the serve entry under a crash guard that prints one plain
+/// stderr line and halts the VM — a dead daemon must be DEAD so launchd
+/// respawns it.
+@external(erlang, "bankai_boot_ffi", "run_or_halt")
+fn run_or_halt(f: fn() -> Nil) -> Nil
 
 fn daemon_request(
   method: String,

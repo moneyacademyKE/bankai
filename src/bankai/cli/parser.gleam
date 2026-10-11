@@ -344,3 +344,28 @@ fn parse_update_rest(
       }
   }
 }
+
+/// Validation bounds shared by every create/update path (daemon + embedded).
+/// Beads priorities run 0..4; bankai accepts 0..5 so existing 1-5 usage keeps
+/// working, but anything outside that is rejected loudly instead of silently
+/// skewing the ready sort (round-3 audit: priority 99 / -1 landed in store).
+pub fn validate_priority(priority: Int) -> Result(Int, String) {
+  case priority >= 0 && priority <= 5 {
+    True -> Ok(priority)
+    False ->
+      Error(
+        "invalid priority "
+        <> int.to_string(priority)
+        <> ": expected 0-5 (0 = highest)",
+      )
+  }
+}
+
+/// Titles are identity in listings and search; an empty title is a garbage
+/// ledger entry (round-3 audit: `bankai create ""` succeeded).
+pub fn validate_title(title: String) -> Result(String, String) {
+  case string.trim(title) {
+    "" -> Error("title cannot be empty")
+    trimmed -> Ok(trimmed)
+  }
+}

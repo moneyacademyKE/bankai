@@ -1,4 +1,5 @@
 import bankai/cli
+import bankai/cli/parser
 import bankai/serde
 import bankai/types
 import gleam/dynamic/decode
@@ -106,4 +107,23 @@ pub fn update_labels_and_claim_compose_test() {
   shown |> string.contains("\"a\"") |> should.be_true
   shown |> string.contains("\"b\"") |> should.be_true
   shown |> string.contains("\"c\"") |> should.be_true
+}
+
+pub fn validate_priority_rejects_out_of_range_test() {
+  parser.validate_priority(99) |> should.be_error
+  parser.validate_priority(-1) |> should.be_error
+}
+
+pub fn validate_priority_accepts_bounds_test() {
+  parser.validate_priority(0) |> should.be_ok
+  parser.validate_priority(5) |> should.be_ok
+}
+
+pub fn validate_title_rejects_empty_test() {
+  parser.validate_title("") |> should.be_error
+  parser.validate_title("   ") |> should.be_error
+}
+
+pub fn validate_title_trims_and_keeps_test() {
+  parser.validate_title("  real title  ") |> should.equal(Ok("real title"))
 }
