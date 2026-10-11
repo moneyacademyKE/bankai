@@ -239,11 +239,22 @@ pub fn update_fields(
                     case owner == new_claimant {
                       True -> option.None
                       False ->
-                        option.Some(
-                          "already claimed by "
-                          <> owner
-                          <> " (use --force to reclaim)",
-                        )
+                        // bk-2f2a: expired lease = abandoned claim;
+                        // it no longer blocks a fresh claimant.
+                        case
+                          lease.is_expired(
+                            previous.claim_lease_expires_at,
+                            time.now(),
+                          )
+                        {
+                          True -> option.None
+                          False ->
+                            option.Some(
+                              "already claimed by "
+                              <> owner
+                              <> " (use --force to reclaim)",
+                            )
+                        }
                     }
                   _, _ -> option.None
                 }
@@ -555,15 +566,24 @@ pub fn claim_record(
   |> result.try(fn(previous) {
     case previous.status {
       Open ->
-        // Assignee CAS (bk-9f48): an owned task needs --force to reclaim.
+        // Assignee CAS (bk-9f48): an owned task needs --force to reclaim,
+        // unless the lease has already expired (bk-2f2a).
         case previous.assignee, force {
           option.Some(owner), False ->
             case owner == assignee {
               True -> apply_claim(workspace, previous, assignee)
               False ->
-                Error(
-                  "already claimed by " <> owner <> " (use --force to reclaim)",
-                )
+                case
+                  lease.is_expired(previous.claim_lease_expires_at, time.now())
+                {
+                  True -> apply_claim(workspace, previous, assignee)
+                  False ->
+                    Error(
+                      "already claimed by "
+                      <> owner
+                      <> " (use --force to reclaim)",
+                    )
+                }
             }
           _, _ -> apply_claim(workspace, previous, assignee)
         }

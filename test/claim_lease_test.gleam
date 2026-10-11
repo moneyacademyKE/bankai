@@ -93,3 +93,29 @@ pub fn close_clears_lease_test() {
   let shown = cli.run_in(ws, ["show", id])
   string.contains(shown, "claim_lease_expires_at\":null") |> should.be_true
 }
+
+/// bk-2f2a: an expired lease must not block a fresh claim by someone else.
+pub fn expired_lease_allows_claim_without_force_test() {
+  let ws = "/tmp/bankai_lease_steal"
+  wipe(ws)
+  let _ = cli.run_in(ws, ["init"])
+  let created = cli.run_in(ws, ["create", "Orphaned"])
+  let id = task_id(created)
+  let _ = cli.run_in(ws, ["update", id, "--claim", "bob", "--ttl", "0"])
+  let out = cli.run_in(ws, ["update", id, "--claim", "carol"])
+  { string.contains(out, "already claimed") == False } |> should.be_true
+  let shown = cli.run_in(ws, ["show", id])
+  string.contains(shown, "\"carol\"") |> should.be_true
+}
+
+/// bk-2f2a: a LIVE lease still blocks a foreign claim without --force.
+pub fn live_lease_still_blocks_foreign_claim_test() {
+  let ws = "/tmp/bankai_lease_guard"
+  wipe(ws)
+  let _ = cli.run_in(ws, ["init"])
+  let created = cli.run_in(ws, ["create", "Guarded"])
+  let id = task_id(created)
+  let _ = cli.run_in(ws, ["update", id, "--claim", "bob"])
+  let out = cli.run_in(ws, ["update", id, "--claim", "carol"])
+  string.contains(out, "already claimed by bob") |> should.be_true
+}

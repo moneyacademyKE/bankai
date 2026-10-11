@@ -21,7 +21,7 @@ import bankai/sync_peer
 import bankai/task_view
 import bankai/time
 import bankai/types.{
-  type Task, Blocked, Blocks, Closed, Completed, Duplicates, InProgress, Open,
+  type Task, Blocks, Closed, Completed, Duplicates, InProgress, Open,
   ParentChild, Relationship, Task,
 }
 import gleam/int
@@ -522,11 +522,22 @@ fn apply_update(
                   case owner == new_claimant {
                     True -> option.None
                     False ->
-                      option.Some(
-                        "already claimed by "
-                        <> owner
-                        <> " (use --force to reclaim)",
-                      )
+                      // bk-2f2a: an expired lease no longer blocks; the
+                      // claim is effectively abandoned by a dead agent.
+                      case
+                        lease.is_expired(
+                          task.claim_lease_expires_at,
+                          time.now(),
+                        )
+                      {
+                        True -> option.None
+                        False ->
+                          option.Some(
+                            "already claimed by "
+                            <> owner
+                            <> " (use --force to reclaim)",
+                          )
+                      }
                   }
                 _, _ -> option.None
               }
