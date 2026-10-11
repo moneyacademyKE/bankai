@@ -1,5 +1,6 @@
 import bankai/cli
 import bankai/socket
+import gleam/erlang/process
 import gleam/string
 import gleeunit
 import gleeunit/should
@@ -75,4 +76,17 @@ pub fn handle_line_parse_error_test() {
   socket.handle_line(ws, "not json")
   |> string.contains("\"error\"")
   |> should.be_true
+}
+
+/// Round 4: a bound socket reports owned; a missing path does not.
+pub fn socket_owned_reports_live_daemon_test() {
+  let ws2 = "/tmp/bankai_socket_owned"
+  let _ = cli.run_in(ws2, ["init"])
+  let path = socket.socket_path(ws2)
+  socket.socket_owned(path) |> should.be_false
+  let _ = process.spawn_unlinked(fn() { socket.serve(ws2) })
+  process.sleep(2000)
+  socket.socket_owned(path) |> should.be_true
+  // A path that was never bound is not owned.
+  socket.socket_owned("/tmp/bankai_never_existed.sock") |> should.be_false
 }

@@ -734,14 +734,37 @@ fn warm_vector_projection(workspace: String) -> Nil {
   }
 }
 
+/// True when a live daemon answers on this socket path. Used to refuse
+/// hijacking a workspace another daemon owns (round-4: deleting a live
+/// socket and rebinding leaves two daemons with one ledger — split brain).
+pub fn socket_owned(path: String) -> Bool {
+  case ffi_connect(path) {
+    Ok(sock) -> {
+      ffi_close(sock)
+      True
+    }
+    Error(_) -> False
+  }
+}
+
 fn listen(workspace: String, mode: String) -> Nil {
   let path = socket_path(workspace)
-  let _ = ffi_delete_path(path)
-  case ffi_listen(path) {
-    Error(_) -> io.println_error("bankai: failed to listen on " <> path)
-    Ok(ls) -> {
-      io.println("bankai " <> mode <> " daemon listening on " <> path)
-      serve_loop(workspace, ls)
+  case socket_owned(path) {
+    True ->
+      io.println_error(
+        "bankai: another daemon already owns "
+        <> path
+        <> " — refusing to hijack it",
+      )
+    False -> {
+      let _ = ffi_delete_path(path)
+      case ffi_listen(path) {
+        Error(_) -> io.println_error("bankai: failed to listen on " <> path)
+        Ok(ls) -> {
+          io.println("bankai " <> mode <> " daemon listening on " <> path)
+          serve_loop(workspace, ls)
+        }
+      }
     }
   }
 }
