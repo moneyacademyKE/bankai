@@ -12,6 +12,7 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/json
 import gleam/list
+import gleam/result
 import gleam/string
 import gleamunison/identity
 import simplifile
@@ -88,19 +89,19 @@ pub fn memory_from_json_string(s: String) -> Result(Memory, String) {
 // separate portable JSONL domain.
 
 pub fn remember(workspace: String, text: String) -> Result(Memory, String) {
-  case jsonl.ensure_dir(workspace) {
-    Error(_) -> Error("could not create memory workspace: " <> workspace)
-    Ok(_) -> {
+  case string.trim(text) {
+    "" -> Error("memory text must not be empty")
+    _ -> {
+      use _ <- result.try(
+        jsonl.ensure_dir(workspace)
+        |> result.replace_error("could not create memory workspace: " <> workspace),
+      )
       let path = workspace <> "/memories.jsonl"
-      case load(from: path) {
-        Error(error) -> Error(error)
-        Ok(existing) -> {
-          let mem = new(text, time.now())
-          case flush([mem, ..existing], to: path) {
-            Ok(_) -> Ok(mem)
-            Error(_) -> Error("could not persist memories: " <> path)
-          }
-        }
+      use existing <- result.try(load(from: path))
+      let mem = new(text, time.now())
+      case flush([mem, ..existing], to: path) {
+        Ok(_) -> Ok(mem)
+        Error(_) -> Error("could not persist memories: " <> path)
       }
     }
   }

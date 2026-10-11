@@ -77,3 +77,12 @@ pub fn prime_without_memories_is_base_prompt_test() {
   // no memories -> base prompt, no memories section
   prime |> string.contains("Agent memories") |> should.be_false
 }
+
+pub fn remember_rejects_empty_text_test() {
+  let ws = "/tmp/bankai_memory_empty"
+  wipe(ws)
+  let _ = cli.run_in(ws, ["init"])
+  cli.run_in(ws, ["remember", ""])
+  |> string.contains("must not be empty")
+  |> should.be_true
+}
