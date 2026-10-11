@@ -315,17 +315,26 @@ pub fn history_cmd(
   tasks_path: String,
   id: String,
 ) -> Result(json.Json, String) {
-  let versions = store.list(load_store(tasks_path))
-  case aarondb_bridge.db_from_versions(versions) {
-    Error(e) -> Error(e)
-    Ok(db) -> {
-      let timeline = aarondb_bridge.history_timeline(db, id)
-      Ok(
-        json.array(timeline, of: fn(p) {
-          let #(at, status) = p
-          json.object([#("at", json.int(at)), #("status", json.string(status))])
-        }),
-      )
+  let index = load_store(tasks_path)
+  case store.find_by_id(index, id) {
+    Error(Nil) -> Error("no such task: " <> id)
+    Ok(_) -> {
+      let versions = store.list(index)
+      case aarondb_bridge.db_from_versions(versions) {
+        Error(e) -> Error(e)
+        Ok(db) -> {
+          let timeline = aarondb_bridge.history_timeline(db, id)
+          Ok(
+            json.array(timeline, of: fn(p) {
+              let #(at, status) = p
+              json.object([
+                #("at", json.int(at)),
+                #("status", json.string(status)),
+              ])
+            }),
+          )
+        }
+      }
     }
   }
 }

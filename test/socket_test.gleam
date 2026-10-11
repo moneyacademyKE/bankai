@@ -90,3 +90,15 @@ pub fn socket_owned_reports_live_daemon_test() {
   // A path that was never bound is not owned.
   socket.socket_owned("/tmp/bankai_never_existed.sock") |> should.be_false
 }
+
+/// Round 5: daemon-path history on a ghost id errors loudly,
+/// matching the embedded path's contract.
+pub fn history_ghost_id_errors_test() {
+  let ws = "/tmp/bankai_socket_history_ghost"
+  let _ = cli.run_in(ws, ["init"])
+  case socket.handle_request(ws, socket.Request("history", ["bk-ghost"])) {
+    socket.ErrorResponse(message) ->
+      message |> string.contains("no such task") |> should.be_true
+    socket.OkResponse(_) -> should.be_true(False)
+  }
+}

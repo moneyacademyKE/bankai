@@ -75,3 +75,12 @@ pub fn gc_retires_closed_tasks_test() {
   let list_out = cli.run_in(ws, ["list"])
   list_out |> string.contains("To close") |> should.be_false
 }
+
+pub fn history_unknown_id_errors_test() {
+  let ws = "/tmp/bankai_maintenance_history_ghost"
+  wipe(ws)
+  let _ = cli.run_in(ws, ["init"])
+  cli.run_in(ws, ["history", "bk-ghost"])
+  |> string.contains("no such task")
+  |> should.be_true
+}
