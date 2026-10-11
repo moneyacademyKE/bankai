@@ -379,14 +379,22 @@ pub fn search_cmd(
       })
     Error(_) -> []
   }
-  let results = aarondb_bridge.search(list.append(task_docs, mem_docs), query)
+  let docs = list.append(task_docs, mem_docs)
+  let results = aarondb_bridge.search(docs, query)
   Ok(
     json.array(results, of: fn(r) {
       let #(kind, id, score) = r
+      // Carry the hit text so results are self-describing: memories have no
+      // id-based fetch path, so search IS the recall surface (bk-d3be).
+      let text = case list.find(docs, fn(d) { d.0 == kind && d.1 == id }) {
+        Ok(doc) -> doc.2
+        Error(Nil) -> ""
+      }
       json.object([
         #("kind", json.string(kind)),
         #("id", json.string(id)),
         #("score", json.float(score)),
+        #("text", json.string(text)),
       ])
     }),
   )

@@ -251,11 +251,9 @@ pub fn search(
         #("task", task.id, task.title <> " " <> task.description)
       })
     let memory_docs = memory_docs(workspace)
-    aarondb_bridge.search(
-      list.append(task_docs, memory_docs),
-      string.join(rest, " "),
-    )
-    |> json.array(of: search_result_json)
+    let docs = list.append(task_docs, memory_docs)
+    aarondb_bridge.search(docs, string.join(rest, " "))
+    |> json.array(of: fn(result) { search_result_json(docs, result) })
   })
 }
 
@@ -488,12 +486,22 @@ fn memory_docs(workspace: String) -> List(#(String, String, String)) {
   }
 }
 
-fn search_result_json(result: #(String, String, Float)) -> json.Json {
+fn search_result_json(
+  docs: List(#(String, String, String)),
+  result: #(String, String, Float),
+) -> json.Json {
   let #(kind, id, score) = result
+  // Carry the hit text so results are self-describing: memories have no
+  // id-based fetch path, so search IS the recall surface (bk-d3be).
+  let text = case list.find(docs, fn(d) { d.0 == kind && d.1 == id }) {
+    Ok(doc) -> doc.2
+    Error(Nil) -> ""
+  }
   json.object([
     #("kind", json.string(kind)),
     #("id", json.string(id)),
     #("score", json.float(score)),
+    #("text", json.string(text)),
   ])
 }
 
