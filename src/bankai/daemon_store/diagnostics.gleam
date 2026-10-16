@@ -7,6 +7,7 @@ import aarondb/projection_index
 import bankai/cluster
 import bankai/cluster_transport
 import bankai/graph
+import bankai/metrics_view
 import bankai/mnesia_store
 import bankai/platform_profile
 import bankai/projections
@@ -63,6 +64,7 @@ pub fn doctor(workspace: String) -> Result(json.Json, String) {
           #("cluster", cluster_diag),
           #("transport", cluster_transport.status_json(transport)),
           #("recovery", json.string(recovery)),
+          #("metrics", metrics_view.snapshot()),
           #("repair", json.string("none; diagnostics are read-only")),
         ]),
       )

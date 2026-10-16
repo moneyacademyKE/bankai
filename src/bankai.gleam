@@ -40,6 +40,7 @@ pub fn main() -> Nil {
         }
       })
     ["mcp", ..] -> mcp.serve(cli.default_workspace)
+    ["llm", ..] -> io.println(cli.run_in(cli.default_workspace, args))
     ["sync-serve", ..rest] ->
       sync_peer.serve(
         cli.default_workspace,

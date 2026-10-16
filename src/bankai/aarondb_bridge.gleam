@@ -19,6 +19,7 @@ import gleam/float
 import gleam/int
 import gleam/list
 import gleam/result
+import gleamunison/rank
 
 // --- current-state loading (one entity per task id) ---
 
@@ -162,9 +163,42 @@ fn entity_id(key: String) -> fact.EntityId {
   eid
 }
 
-/// Full-text search over documents via aarondb's BM25 index. `docs` are
-/// (kind, id, text) triples; returns (kind, id, score) ranked desc, score > 0.
+/// Lexical search. Gleamunison's ranker is the path: pure data, no database,
+/// answers before any projection is warm. AaronDB BM25 is the fallback when
+/// the ranker returns nothing, so an existing index hit is never lost.
+/// `docs` are (kind, id, text); returns (kind, id, score) ranked desc.
 pub fn search(
+  docs: List(#(String, String, String)),
+  query: String,
+) -> List(#(String, String, Float)) {
+  case lexical_rank(docs, query) {
+    [] -> aarondb_search(docs, query)
+    ranked -> ranked
+  }
+}
+
+fn lexical_rank(
+  docs: List(#(String, String, String)),
+  query: String,
+) -> List(#(String, String, Float)) {
+  let ranked =
+    rank.rank(
+      query,
+      list.map(docs, fn(d) {
+        let #(_, id, text) = d
+        rank.Doc(id, rank.tokenize(text))
+      }),
+    )
+  list.filter_map(ranked, fn(pair) {
+    let #(score, id) = pair
+    case list.find(docs, fn(d) { d.1 == id }) {
+      Ok(#(kind, _, _)) -> Ok(#(kind, id, score))
+      Error(Nil) -> Error(Nil)
+    }
+  })
+}
+
+fn aarondb_search(
   docs: List(#(String, String, String)),
   query: String,
 ) -> List(#(String, String, Float)) {

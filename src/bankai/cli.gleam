@@ -5,6 +5,7 @@
 //// messages, and compaction; it is never the live task-write authority.
 
 import bankai/builder
+import bankai/cli/llm
 import bankai/cli/maintenance
 import bankai/cli/parser
 import bankai/cli/setup
@@ -61,6 +62,8 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     ["analytics", ..] -> parser.envelope(maintenance.analytics_cmd(tasks_path))
     ["search", ..rest] ->
       parser.envelope(maintenance.search_cmd(workspace, tasks_path, rest))
+    ["llm", "complete", prompt, ..] -> parser.envelope(llm.complete(prompt))
+    ["llm", ..] -> parser.envelope(Error("usage: llm complete <prompt>"))
     ["msg", "add", task_id, text, ..rest] ->
       parser.envelope(msg_add_cmd(workspace, tasks_path, task_id, text, rest))
     ["msg", "list", task_id, ..] ->

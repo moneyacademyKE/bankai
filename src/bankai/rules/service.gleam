@@ -13,6 +13,7 @@ import gleam/json
 import gleam/option.{type Option}
 import gleam/result
 import gleam/string
+import gleamunison/evidence
 import gleamunison/identity
 
 const max_source_chars = 16_384
@@ -134,6 +135,17 @@ pub fn audits(workspace: String, hash: String) -> Result(json.Json, String) {
   |> result.map(fn(entries) { json.array(entries, of: store.audit_to_json) })
 }
 
+/// Witness line for a rule run, using gleamunison's evidence kinds.
+/// The audit log stays the operational record. This is the portable fact.
+pub fn witness(outcome: String) -> String {
+  let kind = evidence.kind_name(evidence.Test)
+  let verdict = case outcome {
+    "ok" -> "pass"
+    _ -> "fail"
+  }
+  kind <> ":" <> verdict
+}
+
 fn prepare(workspace: String) -> Result(Nil, String) {
   mnesia_store.init(workspace)
   |> result.try(fn(_) { store.init(workspace) })
@@ -167,6 +179,7 @@ fn persist_outcome(
           #("hash", json.string(hash)),
           #("input_hash", json.string(input_hash)),
           #("result", json.string(value)),
+          #("evidence", json.string(witness("ok"))),
           #("audit_sequence", json.int(sequence)),
         ])
       })

@@ -21,6 +21,18 @@ fn wipe(ws: String) -> Nil {
 
 const ws = "/tmp/bankai_mcp_test"
 
+pub fn sap_repairs_fenced_tools_call_test() {
+  let line =
+    "```json\n{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"ready\",},}\n```"
+  case mcp.repair_call(line) {
+    Ok(repaired) ->
+      repaired |> string.contains("\"method\":\"tools/call\"") |> should.be_true
+    Error(reason) -> reason |> should.equal("repaired")
+  }
+  let resp = mcp.handle_message(ws, line)
+  resp |> string.contains("\"id\":7") |> should.be_true
+}
+
 pub fn initialize_responds_with_capabilities_test() {
   wipe(ws)
   let _ = cli.run_in(ws, ["init"])

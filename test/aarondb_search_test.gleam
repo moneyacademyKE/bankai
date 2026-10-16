@@ -37,3 +37,17 @@ pub fn search_no_match_returns_empty_test() {
   let docs = [#("task", "bk-1", "write the database migration")]
   aarondb_bridge.search(docs, "authentication") |> should.equal([])
 }
+
+pub fn search_lexical_ranks_without_a_database_test() {
+  let docs = [
+    #("task", "bk-retry", "retry the failed sync"),
+    #("memory", "m-1", "the daemon warmed embeddings"),
+  ]
+  let results = aarondb_bridge.search(docs, "retry")
+  let ids =
+    list.map(results, fn(r) {
+      let #(_, id, _) = r
+      id
+    })
+  ids |> should.equal(["bk-retry"])
+}

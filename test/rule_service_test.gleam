@@ -51,6 +51,20 @@ fn task_id(value: json.Json) -> String {
   }
 }
 
+pub fn evaluation_records_evidence_test() {
+  wipe()
+  let registered =
+    should.be_ok(service.register(workspace, "identity", "(lam x x)"))
+  let hash = rule_hash(registered)
+  let _ = should.be_ok(service.approve(workspace, hash))
+  let evaluated =
+    should.be_ok(service.evaluate(workspace, hash, ["--caller", "evidence"]))
+  json.to_string(evaluated)
+  |> string.contains("\"evidence\":\"test:pass\"")
+  |> should.be_true
+  service.witness("error") |> should.equal("test:fail")
+}
+
 pub fn rule_source_approval_and_audit_survive_reinitialization_test() {
   wipe()
   let registered =
