@@ -9,6 +9,7 @@
 //// string for top-level messages under a task). The CLI renders
 //// threaded lists by walking the parent chain.
 
+import bankai/serde
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/int
@@ -111,7 +112,7 @@ pub fn message_decoder() -> decode.Decoder(Message) {
   use author <- decode.field("author", decode.string)
   use text <- decode.field("text", decode.string)
   use ts <- decode.field("ts", decode.int)
-  use hash_hex <- decode.field("content_hash", decode.string)
+  use content_hash <- decode.field("content_hash", serde.content_hash_decoder())
   decode.success(Message(
     id:,
     task_id:,
@@ -119,7 +120,7 @@ pub fn message_decoder() -> decode.Decoder(Message) {
     author:,
     text:,
     ts:,
-    content_hash: identity.hash_from_bytes(identity.hex_to_bytes(hash_hex)),
+    content_hash:,
   ))
 }
 

@@ -5,6 +5,7 @@
 //// (text + created_at; content_hash excluded, just like Task). Lives in
 //// .bankai/memories.jsonl alongside tasks.jsonl.
 
+import bankai/serde
 import bankai/sync/jsonl
 import bankai/time
 import gleam/bit_array
@@ -67,12 +68,8 @@ pub fn memory_to_json_string(m: Memory) -> String {
 pub fn memory_decoder() -> decode.Decoder(Memory) {
   use text <- decode.field("text", decode.string)
   use created_at <- decode.field("created_at", decode.int)
-  use hash_hex <- decode.field("content_hash", decode.string)
-  decode.success(Memory(
-    text:,
-    created_at:,
-    content_hash: identity.hash_from_bytes(identity.hex_to_bytes(hash_hex)),
-  ))
+  use content_hash <- decode.field("content_hash", serde.content_hash_decoder())
+  decode.success(Memory(text:, created_at:, content_hash:))
 }
 
 pub fn memory_from_json_string(s: String) -> Result(Memory, String) {

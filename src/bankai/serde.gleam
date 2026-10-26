@@ -69,6 +69,15 @@ pub fn task_from_json_string(s: String) -> Result(Task, String) {
   }
 }
 
+pub fn content_hash_decoder() -> decode.Decoder(identity.Hash) {
+  use hash_hex <- decode.then(decode.string)
+  case identity.parse_ref_hex(hash_hex) {
+    Ok(identity.Ref(content_hash)) -> decode.success(content_hash)
+    Error(_) ->
+      decode.failure(identity.hash_bytes(<<>>), "64-digit hexadecimal hash")
+  }
+}
+
 pub fn task_decoder() -> decode.Decoder(Task) {
   use id <- decode.field("id", decode.string)
   use title <- decode.field("title", decode.string)
@@ -83,7 +92,7 @@ pub fn task_decoder() -> decode.Decoder(Task) {
     decode.list(of: relationship_decoder()),
   )
   use labels <- decode.field("labels", decode.list(of: decode.string))
-  use hash_hex <- decode.field("content_hash", decode.string)
+  use content_hash <- decode.field("content_hash", content_hash_decoder())
   use kind_str <- decode.optional_field("kind", "task", decode.string)
   use parent_id <- decode.optional_field(
     "parent_id",
@@ -130,7 +139,7 @@ pub fn task_decoder() -> decode.Decoder(Task) {
           updated_at: updated_at,
           relationships: relationships,
           labels: labels,
-          content_hash: identity.hash_from_bytes(identity.hex_to_bytes(hash_hex)),
+          content_hash: content_hash,
           parent_id: parent_id,
           kind: kind,
           defer_until: defer_until,
@@ -157,7 +166,7 @@ pub fn task_decoder() -> decode.Decoder(Task) {
           updated_at,
           relationships,
           labels,
-          identity.hash_from_bytes(identity.hex_to_bytes(hash_hex)),
+          content_hash,
           parent_id: parent_id,
           kind: kind,
           defer_until: defer_until,
