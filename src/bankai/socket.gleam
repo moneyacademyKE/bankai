@@ -179,6 +179,17 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
       }
     "sync_conflict_clear" ->
       daemon_result(daemon_store.conflicts_clear(workspace))
+    "sync_identity" -> daemon_result(daemon_store.sync_identity(workspace))
+    "sync_trust" ->
+      case request.params {
+        [key, ..] -> daemon_result(daemon_store.sync_trust(workspace, key))
+        _ -> ErrorResponse(message: "sync_trust requires <public-key>")
+      }
+    "sync_revoke" ->
+      case request.params {
+        [key, ..] -> daemon_result(daemon_store.sync_revoke(workspace, key))
+        _ -> ErrorResponse(message: "sync_revoke requires <public-key>")
+      }
     "journal_tail" ->
       case request.params {
         ["--after", offset_text, ..] ->

@@ -11,6 +11,7 @@ import bankai/storage/store
 import bankai/sync/conflicts
 import bankai/sync/jsonl
 import bankai/sync/merge
+import bankai/sync_peer
 import bankai/time
 import bankai/types.{Blocked, Closed, Completed, InProgress, Open}
 import bankai/vector_bridge
@@ -171,6 +172,53 @@ pub fn sync_conflicts_cmd(workspace: String) -> Result(json.Json, String) {
       ])
     })
   })
+}
+
+pub fn sync_identity_cmd(workspace: String) -> Result(json.Json, String) {
+  use key <- result.try(sync_peer.public_key(workspace))
+  Ok(
+    json.object([
+      #("workspace", json.string(workspace)),
+      #("public_key", json.string(key)),
+    ]),
+  )
+}
+
+/// Trust provisioning is explicit and operator-driven: the key printed by the
+/// peer's `sync identity` is handed to this side by hand. Replication never
+/// trusts an unknown signer on its own.
+pub fn sync_trust_cmd(
+  workspace: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  use key <- result.try(
+    list.first(rest)
+    |> result.replace_error("usage: sync trust <public-key>"),
+  )
+  use _ <- result.try(sync_peer.trust_peer(workspace, key))
+  Ok(
+    json.object([
+      #("trusted", json.string(key)),
+      #("workspace", json.string(workspace)),
+    ]),
+  )
+}
+
+pub fn sync_revoke_cmd(
+  workspace: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
+  use key <- result.try(
+    list.first(rest)
+    |> result.replace_error("usage: sync revoke <public-key>"),
+  )
+  use _ <- result.try(sync_peer.revoke_peer(workspace, key))
+  Ok(
+    json.object([
+      #("revoked", json.string(key)),
+      #("workspace", json.string(workspace)),
+    ]),
+  )
 }
 
 pub fn sync_resolve_cmd(

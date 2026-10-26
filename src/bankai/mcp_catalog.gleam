@@ -88,6 +88,18 @@ pub fn tools() -> List(json.Json) {
       "Clear all recorded replication conflicts. args: [].",
     ),
     tool(
+      "sync_identity",
+      "Print this replica's public key for provisioning a peer. args: [].",
+    ),
+    tool(
+      "sync_trust",
+      "Explicitly trust a peer replica's public key. args: [\"<public-key>\"].",
+    ),
+    tool(
+      "sync_revoke",
+      "Revoke a previously trusted replica key. args: [\"<public-key>\"].",
+    ),
+    tool(
       "journal_tail",
       "Tail committed changefeed journal events. args: [\"--after\", \"0\"].",
     ),

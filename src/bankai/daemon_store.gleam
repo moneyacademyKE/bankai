@@ -541,6 +541,35 @@ pub fn conflicts_clear(workspace: String) -> Result(json.Json, String) {
   |> result.map(fn(_) { json.string("cleared all replication conflicts") })
 }
 
+/// This replica's public key. Provisioning starts here: the operator reads it
+/// from the peer and hands it to `sync_trust` on the other side.
+pub fn sync_identity(workspace: String) -> Result(json.Json, String) {
+  sync_peer.public_key(workspace)
+  |> result.map(fn(key) {
+    json.object([
+      #("workspace", json.string(workspace)),
+      #("public_key", json.string(key)),
+    ])
+  })
+}
+
+/// Trust a peer key explicitly. Verification of a snapshot never grants trust
+/// on its own — an unknown signer is rejected until this is called.
+pub fn sync_trust(workspace: String, key: String) -> Result(json.Json, String) {
+  use _ <- result.try(sync_peer.trust_peer(workspace, key))
+  Ok(json.string("trusted replica key " <> key))
+}
+
+/// Revoke a previously trusted peer key. Revocation takes effect on the next
+/// snapshot: a revoked signer is rejected even if its signature verifies.
+pub fn sync_revoke(
+  workspace: String,
+  key: String,
+) -> Result(json.Json, String) {
+  use _ <- result.try(sync_peer.revoke_peer(workspace, key))
+  Ok(json.string("revoked replica key " <> key))
+}
+
 pub fn journal_tail(
   workspace: String,
   after_offset: Int,

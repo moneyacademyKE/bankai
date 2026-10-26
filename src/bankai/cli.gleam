@@ -114,6 +114,12 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     ["setup", agent, ..] -> parser.envelope(setup.setup_cmd(workspace, agent))
     ["compact", ..] ->
       parser.envelope(maintenance.gc_cmd(workspace, tasks_path))
+    ["sync", "identity", ..] ->
+      parser.envelope(maintenance.sync_identity_cmd(workspace))
+    ["sync", "trust", ..rest] ->
+      parser.envelope(maintenance.sync_trust_cmd(workspace, rest))
+    ["sync", "revoke", ..rest] ->
+      parser.envelope(maintenance.sync_revoke_cmd(workspace, rest))
     ["sync", "conflicts", ..] ->
       parser.envelope(maintenance.sync_conflicts_cmd(workspace))
     ["sync", "resolve", id, ..rest] ->
@@ -988,6 +994,9 @@ pub fn usage() -> String {
   <> "  sync resolve <id> --keep local|remote\n"
   <> "                                resolve a merge conflict by picking a side\n"
   <> "  sync clear                    drop all pending conflict records\n"
+  <> "  sync identity                 print this replica's public key\n"
+  <> "  sync trust <key>              trust a peer replica's public key\n"
+  <> "  sync revoke <key>             revoke a trusted replica key\n"
   <> "  sync-serve [--port N]         serve immutable history + current heads\n"
   <> "  sync-pull --host H [--port N] replicate immutable history from a peer\n"
   <> "  init                          initialize .bankai/\n"

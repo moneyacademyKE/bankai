@@ -148,6 +148,8 @@ fn required_capability(
     | "backup_prune", _
     | "sync_conflict_resolve", _
     | "sync_conflict_clear", _
+    | "sync_trust", _
+    | "sync_revoke", _
     | "export", _
     | "import", _
     | "sync", _
@@ -167,6 +169,7 @@ fn required_capability(
     | "backup_list", _
     | "backup_preview", _
     | "sync_conflicts", _
+    | "sync_identity", _
     | "journal_tail", _
     | "gate_list", _
     | "gate_show", _

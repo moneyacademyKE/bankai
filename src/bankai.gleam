@@ -219,10 +219,13 @@ fn daemon_request(
     "sync", ["resolve", id, ..rest] ->
       Ok(#("sync_conflict_resolve", [id, ..rest]))
     "sync", ["clear", ..] -> Ok(#("sync_conflict_clear", []))
+    "sync", ["identity", ..] -> Ok(#("sync_identity", []))
+    "sync", ["trust", ..rest] -> Ok(#("sync_trust", rest))
+    "sync", ["revoke", ..rest] -> Ok(#("sync_revoke", rest))
     "sync", ["--from", path, ..] -> Ok(#("sync", ["--from", path]))
     "sync", _ ->
       Error(
-        "usage: sync --from <path> | conflicts | resolve <id> --keep local|remote | clear",
+        "usage: sync --from <path> | conflicts | resolve <id> --keep local|remote | clear | identity | trust <key> | revoke <key>",
       )
     "sync-pull", rest -> Ok(#("sync_pull", rest))
     "sync_pull", rest -> Ok(#("sync_pull", rest))
