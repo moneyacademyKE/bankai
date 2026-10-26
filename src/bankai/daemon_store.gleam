@@ -519,12 +519,19 @@ pub fn conflicts_list(workspace: String) -> Result(json.Json, String) {
   })
 }
 
+/// Resolve a recorded sync conflict by keeping an explicit side. A conflict
+/// cannot be cleared without a choice: the record is the only evidence of the
+/// divergence until an authoritative head is written.
 pub fn conflicts_resolve(
   workspace: String,
   conflict_id: String,
+  keep: String,
 ) -> Result(json.Json, String) {
-  sync_peer.resolve_conflict(workspace, conflict_id)
-  |> result.map(fn(_) { json.string("resolved conflict " <> conflict_id) })
+  use side <- result.try(sync_peer.parse_side(keep))
+  sync_peer.resolve_conflict(workspace, conflict_id, side)
+  |> result.map(fn(_) {
+    json.string("resolved conflict " <> conflict_id <> " keeping " <> keep)
+  })
 }
 
 pub fn conflicts_clear(workspace: String) -> Result(json.Json, String) {

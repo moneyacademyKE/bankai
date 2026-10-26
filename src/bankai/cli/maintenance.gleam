@@ -2,7 +2,6 @@
 
 import bankai/aarondb_bridge
 import bankai/backup
-import bankai/builder
 import bankai/cli/parser
 import bankai/compact
 import bankai/memory
@@ -114,14 +113,11 @@ pub type ConflictDetail {
 /// `task=<id> local=<hash> remote=<hash>`. Legacy free-text details return
 /// Error and render raw — one payload shape, not a junk drawer.
 pub fn parse_conflict_detail(detail: String) -> Result(ConflictDetail, Nil) {
-  case string.split(detail, " ") {
-    ["task=" <> task, "local=" <> local, "remote=" <> remote] ->
-      case task == "" || local == "" || remote == "" {
-        True -> Error(Nil)
-        False -> Ok(ConflictDetail(task, local, remote))
-      }
-    _ -> Error(Nil)
-  }
+  sync_peer.parse_conflict_sides(detail)
+  |> result.map(fn(sides) {
+    ConflictDetail(task: sides.task, local: sides.local, remote: sides.remote)
+  })
+  |> result.replace_error(Nil)
 }
 
 /// Task ids that already have a pending conflict record.
@@ -189,6 +185,7 @@ pub fn sync_resolve_cmd(
   rest: List(String),
 ) -> Result(json.Json, String) {
   use keep <- result.try(parse_keep(rest))
+  use side <- result.try(sync_peer.parse_side(keep))
   use record <- result.try(find_conflict(workspace, conflict_id))
   use detail <- result.try(
     parse_conflict_detail(record.detail)
@@ -196,26 +193,19 @@ pub fn sync_resolve_cmd(
       "conflict " <> conflict_id <> " has a non-merge detail; resolve manually",
     ),
   )
-  let chosen_hex = case keep {
-    "local" -> detail.local
-    _ -> detail.remote
+  let chosen_hex = case side {
+    sync_peer.KeepLocal -> detail.local
+    sync_peer.KeepRemote -> detail.remote
   }
-  let tasks_path = workspace <> "/tasks.jsonl"
-  use chosen <- result.try(find_version_by_hex(tasks_path, chosen_hex))
-  // Promotion is an ordinary content-addressed update: stamp the chosen
-  // version as touched now so it wins the head-by-recency view. Both
-  // divergent versions remain in history — the choice is auditable.
-  let promoted =
-    builder.update(chosen, fn(t) { types.Task(..t, updated_at: time.now()) })
-  let existing = load_all_versions(tasks_path)
-  let _ = jsonl.flush(list.append(existing, [promoted]), to: tasks_path)
-  use _ <- result.try(sync_peer.resolve_conflict(workspace, conflict_id))
+  // Resolution writes the chosen side as the authoritative head in Mnesia and
+  // refreshes the JSONL export, so both views agree after the record is gone.
+  use _ <- result.try(sync_peer.resolve_conflict(workspace, conflict_id, side))
   Ok(
     json.object([
       #("resolved", json.string(conflict_id)),
       #("task", json.string(detail.task)),
       #("kept", json.string(keep)),
-      #("new_head", json.string(store.hash_key(promoted.content_hash))),
+      #("chosen", json.string(chosen_hex)),
     ]),
   )
 }
@@ -237,22 +227,6 @@ fn find_conflict(
     |> list.find(fn(r) { r.id == conflict_id })
     |> result.replace_error("unknown conflict: " <> conflict_id)
   })
-}
-
-fn find_version_by_hex(
-  tasks_path: String,
-  hex: String,
-) -> Result(types.Task, String) {
-  load_all_versions(tasks_path)
-  |> list.find(fn(t) { store.hash_key(t.content_hash) == hex })
-  |> result.replace_error("chosen version not found in history")
-}
-
-fn load_all_versions(tasks_path: String) -> List(types.Task) {
-  case jsonl.load(from: tasks_path) {
-    Ok(tasks) -> tasks
-    Error(_) -> []
-  }
 }
 
 pub fn sync_clear_cmd(workspace: String) -> Result(json.Json, String) {

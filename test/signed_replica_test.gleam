@@ -4,6 +4,7 @@ import bankai/serde
 import bankai/storage/store
 import bankai/sync_peer
 import gleam/list
+import gleam/result
 import gleam/string
 import gleeunit
 import gleeunit/should
@@ -51,6 +52,9 @@ pub fn trusted_signed_snapshot_round_trips_once_test() {
   |> string.contains("Signed remote work")
   |> should.be_true
 
+  // Replay protection now fires on consumption, not on decode: the frame is
+  // marked applied only after the import lands, then the same frame is refused.
+  let _ = should.be_ok(sync_peer.mark_applied(receiver, snapshot.signature))
   sync_peer.decode_signed_snapshot_for_test(receiver, frame)
   |> should.be_error
   |> string.contains("replayed")
@@ -96,11 +100,22 @@ pub fn untrusted_tampered_wrong_domain_and_revoked_frames_are_rejected_test() {
 pub fn conflict_recording_and_resolution_lifecycle_test() {
   let ws = "/tmp/bankai_conflict_test"
   reset(ws)
+  let _ = should.be_ok(daemon_store.boot(ws))
+  let _ = should.be_ok(daemon_store.create(ws, "Conflicted task", []))
+  let created = case mnesia_store.current_store(ws) {
+    Ok(index) ->
+      case store.current_tasks(index) |> list.first {
+        Ok(task) -> task
+        Error(_) -> panic as "conflicted task missing"
+      }
+    Error(_) -> panic as "conflicted workspace missing"
+  }
+  let local_hex = store.hash_key(created.content_hash)
   let _ =
     should.be_ok(sync_peer.record_conflict(
       ws,
       "peer-key-1",
-      "head collision on bk-100",
+      "task=" <> created.id <> " local=" <> local_hex <> " remote=deadbeef",
     ))
   let _ =
     should.be_ok(sync_peer.record_conflict(
@@ -112,15 +127,48 @@ pub fn conflict_recording_and_resolution_lifecycle_test() {
   let conflicts = should.be_ok(sync_peer.list_conflicts(ws))
   conflicts |> list.length |> should.equal(2)
 
-  let first = case conflicts {
-    [c, ..] -> c
-    _ -> panic as "expected at least one conflict"
-  }
-  first.detail |> string.contains("bk-") |> should.be_true
+  let merge =
+    should.be_ok(
+      list.find(conflicts, fn(c) {
+        sync_peer.parse_conflict_sides(c.detail) |> result.is_ok
+      }),
+    )
+  let free_form =
+    should.be_ok(
+      list.find(conflicts, fn(c) {
+        sync_peer.parse_conflict_sides(c.detail) |> result.is_error
+      }),
+    )
+  merge.detail |> string.contains("bk-") |> should.be_true
 
-  let _ = should.be_ok(sync_peer.resolve_conflict(ws, first.id))
-  let remaining = should.be_ok(sync_peer.list_conflicts(ws))
-  remaining |> list.length |> should.equal(1)
+  // Free-form conflicts are not merge conflicts: resolving one would destroy
+  // the only record of an unresolved divergence.
+  sync_peer.resolve_conflict(ws, free_form.id, sync_peer.KeepLocal)
+  |> should.be_error
+  sync_peer.list_conflicts(ws)
+  |> should.be_ok
+  |> list.length
+  |> should.equal(2)
+
+  // The merge conflict resolves only with an explicit side, and that side
+  // becomes the authoritative head.
+  let _ =
+    should.be_ok(sync_peer.resolve_conflict(ws, merge.id, sync_peer.KeepLocal))
+  sync_peer.list_conflicts(ws)
+  |> should.be_ok
+  |> list.length
+  |> should.equal(1)
+
+  // The chosen side is now the head; promotion creates a new version, so the
+  // original chosen version stays addressable in history.
+  mnesia_store.get_current(ws, created.id)
+  |> should.be_ok
+  |> fn(task) { task.id }
+  |> should.equal(created.id)
+  mnesia_store.version_store(ws)
+  |> should.be_ok
+  |> fn(versions) { store.get_by_hex(versions, local_hex) }
+  |> should.be_ok
 
   let _ = should.be_ok(sync_peer.clear_conflicts(ws))
   let cleared = should.be_ok(sync_peer.list_conflicts(ws))

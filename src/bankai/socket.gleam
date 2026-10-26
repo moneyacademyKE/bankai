@@ -166,9 +166,16 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
     "sync_conflicts" -> daemon_result(daemon_store.conflicts_list(workspace))
     "sync_conflict_resolve" ->
       case request.params {
-        [id, ..] -> daemon_result(daemon_store.conflicts_resolve(workspace, id))
+        [id, "--keep", side, ..] ->
+          daemon_result(daemon_store.conflicts_resolve(workspace, id, side))
+        [_id, ..] ->
+          ErrorResponse(
+            message: "sync_conflict_resolve requires <conflict-id> --keep local|remote",
+          )
         _ ->
-          ErrorResponse(message: "sync_conflict_resolve requires <conflict-id>")
+          ErrorResponse(
+            message: "sync_conflict_resolve requires <conflict-id> --keep local|remote",
+          )
       }
     "sync_conflict_clear" ->
       daemon_result(daemon_store.conflicts_clear(workspace))

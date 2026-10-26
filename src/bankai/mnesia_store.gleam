@@ -219,24 +219,20 @@ fn validated_rows(
 
 fn version_rows(index: store.Store) -> List(#(String, String, String)) {
   store.list(index)
-  |> list.map(fn(task) {
-    #(
-      task.id,
-      identity.hash_to_debug_string(task.content_hash),
-      serde.task_to_json_string(task),
-    )
-  })
+  |> list.map(row)
 }
 
 fn current_rows(index: store.Store) -> List(#(String, String, String)) {
   store.current_tasks(index)
-  |> list.map(fn(task) {
-    #(
-      task.id,
-      identity.hash_to_debug_string(task.content_hash),
-      serde.task_to_json_string(task),
-    )
-  })
+  |> list.map(row)
+}
+
+fn row(task: Task) -> #(String, String, String) {
+  #(
+    task.id,
+    identity.hash_to_debug_string(task.content_hash),
+    serde.task_to_json_string(task),
+  )
 }
 
 /// Authoritative restore: the supplied store becomes both the immutable version
@@ -250,6 +246,24 @@ pub fn restore_snapshot(
   |> result.try(fn(_) {
     validated_rows(incoming)
     |> result.try(fn(rows) { ffi_restore_snapshot(workspace, rows.0, rows.1) })
+  })
+}
+
+/// Write one newly created version and replace the active head set atomically.
+/// Conflict resolution uses this: promotion creates a version (the chosen
+/// content stamped as touched now), so the new row and the new heads must land
+/// in one boundary.
+pub fn promote_version(
+  workspace: String,
+  promoted: Task,
+  heads: store.Store,
+) -> Result(Nil, String) {
+  use new_row <- result.try(ast_bridge.validate(promoted) |> result.map(row))
+  heads
+  |> store.list()
+  |> list.try_map(ast_bridge.validate)
+  |> result.try(fn(valid_heads) {
+    ffi_restore_snapshot(workspace, [new_row], list.map(valid_heads, row))
   })
 }
 
