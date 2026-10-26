@@ -73,12 +73,35 @@ mark_applied(Workspace, Signature64) ->
         _ -> {error, <<"invalid replica signature encoding">>}
     end.
 
+%% A rejected pull is retryable by design, so the same fork is recorded again
+%% on every retry. Identity is the fork itself — task, local head, remote head —
+%% not the record id or the timestamp: one divergence is one record, and a
+%% record that already names the same three sides is not appended again. Detail
+%% that is not a merge conflict has no identity and always appends, so
+%% free-form diagnostics keep their full history.
 record_conflict(Workspace, Author64, Detail) ->
     ensure_identity_dir(Workspace),
     Path = conflict_path(Workspace),
     Entry = {erlang:system_time(nanosecond), Author64, Detail},
     Existing = read_terms(Path),
-    atomic_write(Path, term_to_binary([Entry | Existing])).
+    Identity = conflict_identity(Detail),
+    case Identity =/= unknown andalso
+         lists:any(fun({_, _, Seen}) -> conflict_identity(Seen) =:= Identity end, Existing) of
+        true -> {ok, nil};
+        false -> atomic_write(Path, term_to_binary([Entry | Existing]))
+    end.
+
+conflict_identity(Detail) ->
+    Fields = maps:from_list([
+        case binary:split(Token, <<"=">>) of
+            [Key, Value] when Value =/= <<>> -> {Key, Value};
+            _ -> {Token, <<>>}
+        end
+     || Token <- binary:split(Detail, <<" ">>, [global])]),
+    case {maps:find(<<"task">>, Fields), maps:find(<<"local">>, Fields), maps:find(<<"remote">>, Fields)} of
+        {{ok, Task}, {ok, Local}, {ok, Remote}} -> {Task, Local, Remote};
+        _ -> unknown
+    end.
 
 list_conflicts(Workspace) ->
     Path = conflict_path(Workspace),
