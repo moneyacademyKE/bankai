@@ -7,6 +7,7 @@ import bankai/serde
 import bankai/storage/store
 import bankai/sync/merge
 import bankai/types.{type Task, Wisp}
+import bankai/version_graph
 import gleam/list
 import gleam/option.{type Option}
 import gleam/result
@@ -91,6 +92,18 @@ fn ffi_import_snapshot(
   workspace: String,
   versions: List(#(String, String, String)),
   current: List(#(String, String, String)),
+  advance: List(String),
+) -> Result(Nil, String)
+
+@external(erlang, "bankai_mnesia_ffi", "ancestry_rows")
+fn ffi_ancestry_rows(
+  workspace: String,
+) -> Result(version_graph.Ancestry, String)
+
+@external(erlang, "bankai_mnesia_ffi", "put_ancestry")
+fn ffi_put_ancestry(
+  workspace: String,
+  rows: version_graph.Ancestry,
 ) -> Result(Nil, String)
 
 @external(erlang, "bankai_mnesia_ffi", "restore_snapshot")
@@ -157,42 +170,116 @@ pub fn import_legacy_if_needed(
 
 /// Import a portable JSONL snapshot. It validates every record before crossing
 /// the FFI, unions versions by hash, and refuses same-ID head divergence rather
-/// than silently choosing a winner.
+/// A replica import decided but not yet written: immutable version rows, every
+/// remote head, the ids whose local head is causally behind (the only ones
+/// allowed to replace an existing head), the ancestry learned from the peer,
+/// and any genuine fork that must not be auto-resolved.
+pub type ImportPlan {
+  ImportPlan(
+    versions: List(#(String, String, String)),
+    heads: List(#(String, String, String)),
+    advances: List(String),
+    ancestry: version_graph.Ancestry,
+    conflicts: List(merge.Conflict),
+  )
+}
+
+/// Every causal parent link this workspace knows (child hash -> parents).
+pub fn ancestry(workspace: String) -> Result(version_graph.Ancestry, String) {
+  ffi_ancestry_rows(workspace)
+}
+
+/// Classify a replica snapshot against local heads WITHOUT writing anything.
+/// A remote head the local head causally precedes is a fast-forward; a remote
+/// head the local head descends from is stale and changes nothing; only a real
+/// fork is reported as a conflict. Pure decision, no mutation.
+pub fn plan_import(
+  workspace: String,
+  versions: store.Store,
+  heads: List(Task),
+  incoming_ancestry: version_graph.Ancestry,
+) -> Result(ImportPlan, String) {
+  use rows <- result.try(validated_rows(versions))
+  use valid_heads <- result.try(list.try_map(heads, ast_bridge.validate))
+  use local <- result.try(current_store(workspace))
+  use known <- result.try(ancestry(workspace))
+  let graph = version_graph.graph(list.append(known, incoming_ancestry))
+  let local_heads = store.current_tasks(local)
+  let classified =
+    valid_heads
+    |> list.filter_map(fn(remote) {
+      case
+        list.find(local_heads, fn(local_head) { local_head.id == remote.id })
+      {
+        Error(Nil) -> Error(Nil)
+        Ok(local_head) -> {
+          let local_hash = store.hash_key(local_head.content_hash)
+          let remote_hash = store.hash_key(remote.content_hash)
+          Ok(#(
+            remote,
+            version_graph.classify(graph, local_hash, remote_hash),
+            merge.Conflict(
+              id: remote.id,
+              local_hash: local_hash,
+              remote_hash: remote_hash,
+            ),
+          ))
+        }
+      }
+    })
+  Ok(ImportPlan(
+    versions: rows.0,
+    heads: list.map(valid_heads, row),
+    advances: classified
+      |> list.filter(fn(pair) { pair.1 == version_graph.FastForward })
+      |> list.map(fn(pair) { pair.0.id }),
+    ancestry: incoming_ancestry,
+    conflicts: classified
+      |> list.filter(fn(pair) { pair.1 == version_graph.Divergent })
+      |> list.map(fn(pair) { pair.2 }),
+  ))
+}
+
+/// Write a decided import. Ancestry is merged first because it is monotone:
+/// extra links without their version rows are inert, while a fast-forward
+/// written without its links could never be classified again.
+pub fn apply_import(
+  workspace: String,
+  plan: ImportPlan,
+) -> Result(Nil, String) {
+  use _ <- result.try(ffi_put_ancestry(workspace, plan.ancestry))
+  ffi_import_snapshot(workspace, plan.versions, plan.heads, plan.advances)
+}
+
+/// Persist only the immutable version rows and ancestry of a decided import.
+/// Versions are facts, heads are decisions: a rejected fork still stores the
+/// peer's bytes so `sync-resolve --keep remote` has a version to promote.
+pub fn apply_versions(
+  workspace: String,
+  plan: ImportPlan,
+) -> Result(Nil, String) {
+  use _ <- result.try(ffi_put_ancestry(workspace, plan.ancestry))
+  ffi_import_snapshot(workspace, plan.versions, [], [])
+}
+
+/// Import a replica snapshot, refusing a genuine fork rather than choosing a
+/// winner. Ancestry rows the peer did not send (legacy peers) leave heads
+/// unclassifiable, which stays conservative: same-id divergence is rejected.
 pub fn import_replica_snapshot(
   workspace: String,
   versions: store.Store,
   heads: List(Task),
 ) -> Result(Nil, String) {
-  validated_rows(versions)
-  |> result.try(fn(rows) {
-    heads
-    |> list.try_map(ast_bridge.validate)
-    |> result.try(fn(valid_heads) {
-      current_store(workspace)
-      |> result.try(fn(local) {
-        let conflicts =
-          merge.merge(store.current_tasks(local), valid_heads).conflicts
-        case list.is_empty(conflicts) {
-          True ->
-            ffi_import_snapshot(
-              workspace,
-              rows.0,
-              valid_heads
-                |> list.map(fn(task) {
-                  #(
-                    task.id,
-                    identity.hash_to_debug_string(task.content_hash),
-                    serde.task_to_json_string(task),
-                  )
-                }),
-            )
-          False ->
-            Error(
-              "import rejected: divergent task heads require reconciliation",
-            )
-        }
-      })
-    })
+  plan_import(workspace, versions, heads, [])
+  |> result.try(fn(plan) {
+    case plan.conflicts {
+      [] -> apply_import(workspace, plan)
+      _ ->
+        apply_versions(workspace, plan)
+        |> result.try(fn(_) {
+          Error("import rejected: divergent task heads require reconciliation")
+        })
+    }
   })
 }
 

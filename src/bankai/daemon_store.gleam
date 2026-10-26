@@ -18,6 +18,7 @@ import bankai/projections
 import bankai/rules/service as rule_service
 import bankai/storage/store
 import bankai/sync/jsonl
+import bankai/sync/merge
 import bankai/sync_peer
 import bankai/task_lifecycle
 import bankai/time
@@ -708,17 +709,36 @@ pub fn pull_peer(
 ) -> Result(json.Json, String) {
   sync_peer.fetch(host, port, workspace)
   |> result.try(fn(snapshot) {
-    mnesia_store.import_replica_snapshot(
+    use plan <- result.try(mnesia_store.plan_import(
       workspace,
       store.from_list(snapshot.versions),
       snapshot.heads,
-    )
-    |> result.try(fn(imported) {
-      // Replay token is consumed only once the import is durable: a rejected
-      // pull stays retryable instead of being eaten as an already-applied frame.
-      sync_peer.mark_applied(workspace, snapshot.signature)
-      |> result.replace(imported)
+      snapshot.ancestry,
+    ))
+    // A genuine fork is audited, never silently resolved: record each
+    // conflicting task so `sync-resolve --keep local|remote` can settle it.
+    let _ =
+      list.each(plan.conflicts, fn(conflict) {
+        sync_peer.record_conflict(
+          workspace,
+          "sync",
+          merge.conflict_detail(conflict),
+        )
+      })
+    use imported <- result.try(case plan.conflicts {
+      [] -> mnesia_store.apply_import(workspace, plan)
+      _ ->
+        // Store the peer's immutable versions so a `--keep remote` resolution
+        // has bytes to promote, but never advance a head on a real fork.
+        mnesia_store.apply_versions(workspace, plan)
+        |> result.try(fn(_) {
+          Error("import rejected: divergent task heads require reconciliation")
+        })
     })
+    // Replay token is consumed only once the import is durable: a rejected
+    // pull stays retryable instead of being eaten as an already-applied frame.
+    sync_peer.mark_applied(workspace, snapshot.signature)
+    |> result.replace(imported)
   })
   |> result.map(fn(_) {
     json.string(

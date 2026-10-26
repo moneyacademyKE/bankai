@@ -12,6 +12,7 @@ import bankai/storage/store
 import bankai/sync/jsonl
 import bankai/time
 import bankai/types
+import bankai/version_graph
 import gleam/dict
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -34,6 +35,10 @@ pub type Snapshot {
   Snapshot(
     versions: List(types.Task),
     heads: List(types.Task),
+    /// Causal parent links the sender knows: child hash -> parent hashes.
+    /// Content hashes cannot express order, so ancestry must travel with the
+    /// snapshot or the receiver cannot tell a fast-forward from a fork.
+    ancestry: version_graph.Ancestry,
     author: String,
     signature: String,
   )
@@ -223,30 +228,49 @@ fn snapshot_payload(workspace: String) -> Result(#(String, Int), String) {
   mnesia_store.projection_snapshot_rows(workspace)
   |> result.try(fn(pair) {
     let #(offset, heads) = pair
-    mnesia_store.version_store(workspace)
-    |> result.map(fn(versions) {
-      #(
-        json.to_string(
-          json.object([
-            #("protocol", json.string(payload_protocol)),
-            #("source_offset", json.int(offset)),
-            #(
-              "versions",
-              json.array(
-                versions |> store.list() |> without_wisps(),
-                of: serde.task_to_json,
-              ),
+    use versions <- result.try(mnesia_store.version_store(workspace))
+    use ancestry <- result.try(mnesia_store.ancestry(workspace))
+    Ok(#(
+      json.to_string(
+        json.object([
+          #("protocol", json.string(payload_protocol)),
+          #("source_offset", json.int(offset)),
+          #(
+            "versions",
+            json.array(
+              versions |> store.list() |> without_wisps(),
+              of: serde.task_to_json,
             ),
-            #(
-              "heads",
-              json.array(heads |> without_wisps(), of: serde.task_to_json),
-            ),
-          ]),
-        ),
-        offset,
-      )
-    })
+          ),
+          #(
+            "heads",
+            json.array(heads |> without_wisps(), of: serde.task_to_json),
+          ),
+          #("ancestry", ancestry_json(ancestry)),
+        ]),
+      ),
+      offset,
+    ))
   })
+}
+
+/// Ancestry rides along as an optional payload field: a peer that does not
+/// understand it ignores it, and a snapshot from such a peer decodes with no
+/// links (which keeps classification conservative, never optimistic).
+fn ancestry_json(ancestry: version_graph.Ancestry) -> json.Json {
+  json.array(ancestry, fn(link) {
+    let #(hash, parents) = link
+    json.object([
+      #("hash", json.string(hash)),
+      #("parents", json.array(parents, of: json.string)),
+    ])
+  })
+}
+
+fn ancestry_link_decoder() -> decode.Decoder(#(String, List(String))) {
+  use hash <- decode.field("hash", decode.string)
+  use parents <- decode.field("parents", decode.list(of: decode.string))
+  decode.success(#(hash, parents))
 }
 
 fn without_wisps(tasks: List(types.Task)) -> List(types.Task) {
@@ -376,12 +400,29 @@ fn snapshot_decoder() -> decode.Decoder(Snapshot) {
     decode.list(of: serde.task_decoder()),
   )
   use heads <- decode.field("heads", decode.list(of: serde.task_decoder()))
+  use ancestry <- decode.optional_field(
+    "ancestry",
+    [],
+    decode.list(of: ancestry_link_decoder()),
+  )
   case advertised_protocol == payload_protocol {
     True ->
-      decode.success(Snapshot(versions:, heads:, author: "", signature: ""))
+      decode.success(Snapshot(
+        versions:,
+        heads:,
+        ancestry:,
+        author: "",
+        signature: "",
+      ))
     False ->
       decode.failure(
-        Snapshot(versions: [], heads: [], author: "", signature: ""),
+        Snapshot(
+          versions: [],
+          heads: [],
+          ancestry: [],
+          author: "",
+          signature: "",
+        ),
         payload_protocol,
       )
   }

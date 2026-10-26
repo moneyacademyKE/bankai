@@ -142,13 +142,7 @@ pub fn record_merge_conflicts(
   conflicts
   |> list.filter(fn(c) { !list.contains(pending, c.id) })
   |> list.map(fn(c) {
-    let detail =
-      "task="
-      <> c.id
-      <> " local="
-      <> c.local_hash
-      <> " remote="
-      <> c.remote_hash
+    let detail = merge.conflict_detail(c)
     let _ = sync_peer.record_conflict(workspace, "sync", detail)
     c.id
   })

@@ -27,6 +27,17 @@ pub fn merge(local: List(Task), remote: List(Task)) -> MergeResult {
   MergeResult(merged, conflicts)
 }
 
+/// Canonical conflict detail line. Recording and resolving share this exact
+/// shape, so a durable conflict record is always machine-resolvable.
+pub fn conflict_detail(conflict: Conflict) -> String {
+  "task="
+  <> conflict.id
+  <> " local="
+  <> conflict.local_hash
+  <> " remote="
+  <> conflict.remote_hash
+}
+
 /// True when both sides have the same set of hashes (no divergence at all).
 pub fn clean_merge(local: List(Task), remote: List(Task)) -> Bool {
   let conflicts = id_conflicts(index_by_id(local), index_by_id(remote))

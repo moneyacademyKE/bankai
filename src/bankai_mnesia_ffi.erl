@@ -2,9 +2,9 @@
 -export([init/1, reset_workspace/1, current_json/1, versions_json/1, snapshot_json/1,
          projection_snapshot_rows/1, get_current/2, put_new/5, compare_and_put/6,
          compare_and_put_committed/7, replace_many/3, replace_many_idempotent/4,
-         idempotent_result/3, import_if_needed/3, import_snapshot/3,
+         idempotent_result/3, import_if_needed/3, import_snapshot/3, import_snapshot/4,
          replace_current_snapshot/2, restore_snapshot/3, projection_checkpoint/2,
-         set_projection_checkpoint/3]).
+         set_projection_checkpoint/3, ancestry_rows/1, put_ancestry/2]).
 
 %% Versioned table names are intentional. The abandoned v1 schema keyed records
 %% by workspace alone, which could retain only one task per workspace. Leaving
@@ -13,6 +13,10 @@
 -define(CURRENT, bankai_current_v2).
 -define(VERSIONS, bankai_versions_v2).
 -define(META, bankai_meta_v2).
+%% Causal parent links: child version hash -> the hashes it was produced from.
+%% Content hashes identify bytes, not position in history, so without these a
+%% receiver cannot tell a fast-forward from a genuine fork.
+-define(ANCESTRY, bankai_ancestry_v1).
 
 init(_Workspace) ->
     case mnesia:system_info(is_running) of
@@ -32,8 +36,9 @@ init(_Workspace) ->
     ensure_table(?CURRENT, [key, workspace, id, hash, json]),
     ensure_table(?VERSIONS, [key, workspace, hash, json]),
     ensure_table(?META, [key, workspace, name, value]),
+    ensure_table(?ANCESTRY, [key, workspace, hash, parents]),
     bankai_changefeed_ffi:init(),
-    case mnesia:wait_for_tables([?CURRENT, ?VERSIONS, ?META], 5000) of
+    case mnesia:wait_for_tables([?CURRENT, ?VERSIONS, ?META, ?ANCESTRY], 5000) of
         ok -> {ok, nil};
         {timeout, Bad} -> {error, iolist_to_binary(io_lib:format("mnesia table timeout: ~p", [Bad]))}
     end.
@@ -44,6 +49,7 @@ reset_workspace(Workspace) -> transaction(fun() ->
     delete_workspace_rows(?CURRENT, Workspace),
     delete_workspace_rows(?VERSIONS, Workspace),
     delete_workspace_rows(?META, Workspace),
+    delete_workspace_rows(?ANCESTRY, Workspace),
     bankai_changefeed_ffi:reset_workspace(Workspace),
     {ok, nil}
 end).
@@ -174,7 +180,51 @@ write_version_and_current(Workspace, Id, Hash, Json) ->
         [] -> mnesia:write({?VERSIONS, VersionKey, Workspace, Hash, Json});
         _ -> ok
     end,
+    %% The head this write replaces is the new version's causal parent. Reading
+    %% it inside the same transaction is what makes the link trustworthy: a
+    %% concurrent writer either wins the lock first (and becomes the parent) or
+    %% fails the CAS, so no link can point at a version we never held.
+    Parent = case mnesia:read(?CURRENT, {Workspace, Id}, write) of
+        [{?CURRENT, _, Workspace, Id, PrevHash, _}] when PrevHash =/= Hash -> PrevHash;
+        _ -> none
+    end,
+    write_ancestry(Workspace, Hash, Parent),
     mnesia:write({?CURRENT, {Workspace, Id}, Workspace, Id, Hash, Json}).
+
+%% Ancestry is append-only: a hash may acquire parents from more than one
+%% writer, so links union instead of replacing each other.
+write_ancestry(_Workspace, _Hash, none) -> ok;
+write_ancestry(Workspace, Hash, Parent) ->
+    Key = {Workspace, Hash},
+    Existing = case mnesia:read(?ANCESTRY, Key, write) of
+        [{?ANCESTRY, Key, Workspace, Hash, Parents}] -> Parents;
+        [] -> []
+    end,
+    case lists:member(Parent, Existing) of
+        true -> ok;
+        false ->
+            mnesia:write({?ANCESTRY, Key, Workspace, Hash, [Parent | Existing]})
+    end.
+
+%% Every causal link this workspace knows. Shipped with a replica snapshot so
+%% the receiver can classify heads it never produced.
+ancestry_rows(Workspace) -> transaction(fun() ->
+    Rows = mnesia:match_object({?ANCESTRY, '_', Workspace, '_', '_'}),
+    {ok, [{Hash, Parents} || {?ANCESTRY, _, _, Hash, Parents} <- Rows]}
+end).
+
+%% Merge links learned from a peer. Never overwrites local knowledge: ancestry
+%% is monotone, and a link that exists on either side is true.
+put_ancestry(_Workspace, []) -> {ok, nil};
+put_ancestry(Workspace, Rows) -> transaction(fun() ->
+    lists:foreach(fun({Hash, Parents}) ->
+        write_ancestry_many(Workspace, Hash, Parents)
+    end, Rows),
+    {ok, nil}
+end).
+
+write_ancestry_many(Workspace, Hash, Parents) ->
+    lists:foreach(fun(Parent) -> write_ancestry(Workspace, Hash, Parent) end, Parents).
 
 %% Atomically compare-and-swap a planned set of current heads. Each row is
 %% {Id, ExpectedHash, NewHash, Json}; validate all heads before writing any row.
@@ -245,10 +295,16 @@ validate_replacements(Workspace, [{Id, ExpectedHash, _Hash, _Json} | Rest]) ->
         [] -> {error, <<"no such task: ", Id/binary>>}
     end.
 
-%% Import is deliberately a union of immutable versions. The Gleam boundary
-%% validates the whole snapshot and rejects divergent heads before this
-%% transaction begins. Existing heads win; missing IDs get the incoming head.
-import_snapshot(Workspace, Versions, Current) -> transaction(fun() ->
+%% Import is a union of immutable versions plus an explicit set of heads the
+%% caller has classified as fast-forwards. The Gleam boundary validates the
+%% whole snapshot and rejects divergent heads before this transaction begins:
+%% a head listed in `Advance` is one the local head causally precedes, so the
+%% remote row replaces it. Every other existing head wins; missing IDs get the
+%% incoming head.
+import_snapshot(Workspace, Versions, Current) ->
+    import_snapshot(Workspace, Versions, Current, []).
+
+import_snapshot(Workspace, Versions, Current, Advance) -> transaction(fun() ->
     lists:foreach(fun({_Id, Hash, Json}) ->
         VersionKey = {Workspace, Hash},
         case mnesia:read(?VERSIONS, VersionKey, write) of
@@ -256,16 +312,31 @@ import_snapshot(Workspace, Versions, Current) -> transaction(fun() ->
             _ -> ok
         end
     end, Versions),
-    Missing = lists:filter(fun({Id, _Hash, _Json}) ->
-        mnesia:read(?CURRENT, {Workspace, Id}, write) =:= []
+    {Advancing, Others} = lists:partition(fun({Id, _Hash, _Json}) ->
+        lists:member(Id, Advance)
     end, Current),
+    %% A head the caller did not classify as a fast-forward only unions in when
+    %% the receiver has never held that id: an existing head always wins, so a
+    %% stale snapshot can never roll a local descendant backwards.
+    Fresh = lists:filter(fun({Id, _Hash, _Json}) ->
+        mnesia:read(?CURRENT, {Workspace, Id}, write) =:= []
+    end, Others),
+    {Replaced, Absent} = lists:partition(fun({Id, _Hash, _Json}) ->
+        mnesia:read(?CURRENT, {Workspace, Id}, write) =/= []
+    end, Advancing),
     lists:foreach(fun({Id, Hash, Json}) ->
         mnesia:write({?CURRENT, {Workspace, Id}, Workspace, Id, Hash, Json})
-    end, Missing),
-    case Missing of
-        [] -> ok;
+    end, Fresh ++ Absent),
+    lists:foreach(fun({Id, Hash, Json}) ->
+        write_version_and_current(Workspace, Id, Hash, Json)
+    end, Replaced),
+    Added = Fresh ++ Absent,
+    case {Added, Replaced} of
+        {[], []} -> ok;
         _ -> record_change(Workspace, <<"import">>, [
-            {Id, <<"none">>, Hash} || {Id, Hash, _Json} <- Missing
+            {Id, <<"none">>, Hash} || {Id, Hash, _Json} <- Added
+        ] ++ [
+            {Id, <<"fast-forward">>, Hash} || {Id, Hash, _Json} <- Replaced
         ])
     end,
     {ok, nil}
