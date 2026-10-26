@@ -4,6 +4,7 @@
 import bankai/ast_bridge
 import bankai/gate_wisp/store as lifecycle_store
 import bankai/serde
+import bankai/storage/authority
 import bankai/storage/store
 import bankai/sync/merge
 import bankai/types.{type Task, Wisp}
@@ -106,13 +107,6 @@ fn ffi_put_ancestry(
   rows: version_graph.Ancestry,
 ) -> Result(Nil, String)
 
-@external(erlang, "bankai_mnesia_ffi", "restore_snapshot")
-fn ffi_restore_snapshot(
-  workspace: String,
-  versions: List(#(String, String, String)),
-  current: List(#(String, String, String)),
-) -> Result(Nil, String)
-
 @external(erlang, "bankai_mnesia_ffi", "replace_current_snapshot")
 fn ffi_replace_current_snapshot(
   workspace: String,
@@ -164,7 +158,7 @@ pub fn import_legacy_if_needed(
   workspace: String,
   legacy: store.Store,
 ) -> Result(Nil, String) {
-  validated_rows(legacy)
+  authority.validated_rows(legacy)
   |> result.try(fn(rows) { ffi_import_if_needed(workspace, rows.0, rows.1) })
 }
 
@@ -199,7 +193,7 @@ pub fn plan_import(
   heads: List(Task),
   incoming_ancestry: version_graph.Ancestry,
 ) -> Result(ImportPlan, String) {
-  use rows <- result.try(validated_rows(versions))
+  use rows <- result.try(authority.validated_rows(versions))
   use valid_heads <- result.try(list.try_map(heads, ast_bridge.validate))
   use local <- result.try(current_store(workspace))
   use known <- result.try(ancestry(workspace))
@@ -229,7 +223,7 @@ pub fn plan_import(
     })
   Ok(ImportPlan(
     versions: rows.0,
-    heads: list.map(valid_heads, row),
+    heads: list.map(valid_heads, authority.row),
     advances: classified
       |> list.filter(fn(pair) { pair.1 == version_graph.FastForward })
       |> list.map(fn(pair) { pair.0.id }),
@@ -293,67 +287,6 @@ pub fn import_snapshot(
   import_replica_snapshot(workspace, incoming, store.current_tasks(incoming))
 }
 
-fn validated_rows(
-  index: store.Store,
-) -> Result(
-  #(List(#(String, String, String)), List(#(String, String, String))),
-  String,
-) {
-  store.list(index)
-  |> list.try_map(ast_bridge.validate)
-  |> result.map(fn(_) { #(version_rows(index), current_rows(index)) })
-}
-
-fn version_rows(index: store.Store) -> List(#(String, String, String)) {
-  store.list(index)
-  |> list.map(row)
-}
-
-fn current_rows(index: store.Store) -> List(#(String, String, String)) {
-  store.current_tasks(index)
-  |> list.map(row)
-}
-
-fn row(task: Task) -> #(String, String, String) {
-  #(
-    task.id,
-    identity.hash_to_debug_string(task.content_hash),
-    serde.task_to_json_string(task),
-  )
-}
-
-/// Authoritative restore: the supplied store becomes both the immutable version
-/// history and the live head set, atomically. Used by backup restore, where the
-/// backup is the declared truth rather than a peer proposing a merge.
-pub fn restore_snapshot(
-  workspace: String,
-  incoming: store.Store,
-) -> Result(Nil, String) {
-  init(workspace)
-  |> result.try(fn(_) {
-    validated_rows(incoming)
-    |> result.try(fn(rows) { ffi_restore_snapshot(workspace, rows.0, rows.1) })
-  })
-}
-
-/// Write one newly created version and replace the active head set atomically.
-/// Conflict resolution uses this: promotion creates a version (the chosen
-/// content stamped as touched now), so the new row and the new heads must land
-/// in one boundary.
-pub fn promote_version(
-  workspace: String,
-  promoted: Task,
-  heads: store.Store,
-) -> Result(Nil, String) {
-  use new_row <- result.try(ast_bridge.validate(promoted) |> result.map(row))
-  heads
-  |> store.list()
-  |> list.try_map(ast_bridge.validate)
-  |> result.try(fn(valid_heads) {
-    ffi_restore_snapshot(workspace, [new_row], list.map(valid_heads, row))
-  })
-}
-
 /// Replace active heads after an explicit archival operation while retaining
 /// all immutable versions for inspect/history. Inputs are validated before FFI.
 pub fn replace_current_snapshot(
@@ -368,7 +301,7 @@ pub fn replace_current_snapshot(
       workspace,
       valid
         |> store.from_list()
-        |> current_rows(),
+        |> authority.current_rows(),
     )
   })
 }

@@ -2,6 +2,7 @@ import bankai/daemon_store
 import bankai/mnesia_store
 import bankai/serde
 import bankai/storage/store
+import bankai/sync/conflicts
 import bankai/sync_peer
 import gleam/list
 import gleam/result
@@ -112,40 +113,40 @@ pub fn conflict_recording_and_resolution_lifecycle_test() {
   }
   let local_hex = store.hash_key(created.content_hash)
   let _ =
-    should.be_ok(sync_peer.record_conflict(
+    should.be_ok(conflicts.record_conflict(
       ws,
       "peer-key-1",
       "task=" <> created.id <> " local=" <> local_hex <> " remote=deadbeef",
     ))
   let _ =
-    should.be_ok(sync_peer.record_conflict(
+    should.be_ok(conflicts.record_conflict(
       ws,
       "peer-key-2",
       "schema mismatch on bk-200",
     ))
 
-  let conflicts = should.be_ok(sync_peer.list_conflicts(ws))
+  let conflicts = should.be_ok(conflicts.list_conflicts(ws))
   conflicts |> list.length |> should.equal(2)
 
   let merge =
     should.be_ok(
       list.find(conflicts, fn(c) {
-        sync_peer.parse_conflict_sides(c.detail) |> result.is_ok
+        conflicts.parse_conflict_sides(c.detail) |> result.is_ok
       }),
     )
   let free_form =
     should.be_ok(
       list.find(conflicts, fn(c) {
-        sync_peer.parse_conflict_sides(c.detail) |> result.is_error
+        conflicts.parse_conflict_sides(c.detail) |> result.is_error
       }),
     )
   merge.detail |> string.contains("bk-") |> should.be_true
 
   // Free-form conflicts are not merge conflicts: resolving one would destroy
   // the only record of an unresolved divergence.
-  sync_peer.resolve_conflict(ws, free_form.id, sync_peer.KeepLocal)
+  conflicts.resolve_conflict(ws, free_form.id, conflicts.KeepLocal)
   |> should.be_error
-  sync_peer.list_conflicts(ws)
+  conflicts.list_conflicts(ws)
   |> should.be_ok
   |> list.length
   |> should.equal(2)
@@ -153,8 +154,8 @@ pub fn conflict_recording_and_resolution_lifecycle_test() {
   // The merge conflict resolves only with an explicit side, and that side
   // becomes the authoritative head.
   let _ =
-    should.be_ok(sync_peer.resolve_conflict(ws, merge.id, sync_peer.KeepLocal))
-  sync_peer.list_conflicts(ws)
+    should.be_ok(conflicts.resolve_conflict(ws, merge.id, conflicts.KeepLocal))
+  conflicts.list_conflicts(ws)
   |> should.be_ok
   |> list.length
   |> should.equal(1)
@@ -170,7 +171,7 @@ pub fn conflict_recording_and_resolution_lifecycle_test() {
   |> fn(versions) { store.get_by_hex(versions, local_hex) }
   |> should.be_ok
 
-  let _ = should.be_ok(sync_peer.clear_conflicts(ws))
-  let cleared = should.be_ok(sync_peer.list_conflicts(ws))
+  let _ = should.be_ok(conflicts.clear_conflicts(ws))
+  let cleared = should.be_ok(conflicts.list_conflicts(ws))
   cleared |> list.length |> should.equal(0)
 }

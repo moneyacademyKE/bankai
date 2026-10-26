@@ -15,6 +15,7 @@ import bankai/backup
 import bankai/daemon_store
 import bankai/mnesia_store
 import bankai/storage/store
+import bankai/sync/conflicts
 import bankai/sync_peer
 import bankai/types
 import gleam/erlang/process
@@ -189,14 +190,14 @@ pub fn resolving_a_conflict_without_a_side_keeps_the_record_test() {
   let ws = "/tmp/bankai_causal_conflict_side"
   wipe(ws)
   let detail = "task=bk-9001 local=aaaa remote=bbbb"
-  let _ = should.be_ok(sync_peer.record_conflict(ws, "sync", detail))
-  let conflicts = should.be_ok(sync_peer.list_conflicts(ws))
+  let _ = should.be_ok(conflicts.record_conflict(ws, "sync", detail))
+  let conflicts = should.be_ok(conflicts.list_conflicts(ws))
   let assert Ok(record) = list.first(conflicts)
 
   daemon_store.conflicts_resolve(ws, record.id, "")
   |> should.be_error
 
-  sync_peer.list_conflicts(ws)
+  conflicts.list_conflicts(ws)
   |> should.be_ok
   |> list.length
   |> should.equal(1)
@@ -207,14 +208,14 @@ pub fn resolving_a_conflict_without_a_side_keeps_the_record_test() {
 pub fn resolving_a_non_merge_conflict_keeps_the_record_test() {
   let ws = "/tmp/bankai_causal_conflict_legacy"
   wipe(ws)
-  let _ = should.be_ok(sync_peer.record_conflict(ws, "peer", "schema mismatch"))
-  let conflicts = should.be_ok(sync_peer.list_conflicts(ws))
+  let _ = should.be_ok(conflicts.record_conflict(ws, "peer", "schema mismatch"))
+  let conflicts = should.be_ok(conflicts.list_conflicts(ws))
   let assert Ok(record) = list.first(conflicts)
 
   daemon_store.conflicts_resolve(ws, record.id, "local")
   |> should.be_error
 
-  sync_peer.list_conflicts(ws)
+  conflicts.list_conflicts(ws)
   |> should.be_ok
   |> list.length
   |> should.equal(1)
@@ -311,7 +312,7 @@ pub fn pull_peer_records_conflict_for_unrelated_descendants_test() {
   daemon_store.pull_peer(local, "localhost", 17_814)
   |> should.be_error
 
-  let conflicts = should.be_ok(sync_peer.list_conflicts(local))
+  let conflicts = should.be_ok(conflicts.list_conflicts(local))
   conflicts
   |> list.any(fn(record) { string.contains(record.detail, remote_id) })
   |> should.be_true

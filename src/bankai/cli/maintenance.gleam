@@ -8,9 +8,9 @@ import bankai/memory
 import bankai/mnesia_store
 import bankai/serde
 import bankai/storage/store
+import bankai/sync/conflicts
 import bankai/sync/jsonl
 import bankai/sync/merge
-import bankai/sync_peer
 import bankai/time
 import bankai/types.{Blocked, Closed, Completed, InProgress, Open}
 import bankai/vector_bridge
@@ -113,7 +113,7 @@ pub type ConflictDetail {
 /// `task=<id> local=<hash> remote=<hash>`. Legacy free-text details return
 /// Error and render raw — one payload shape, not a junk drawer.
 pub fn parse_conflict_detail(detail: String) -> Result(ConflictDetail, Nil) {
-  sync_peer.parse_conflict_sides(detail)
+  conflicts.parse_conflict_sides(detail)
   |> result.map(fn(sides) {
     ConflictDetail(task: sides.task, local: sides.local, remote: sides.remote)
   })
@@ -122,7 +122,7 @@ pub fn parse_conflict_detail(detail: String) -> Result(ConflictDetail, Nil) {
 
 /// Task ids that already have a pending conflict record.
 pub fn pending_conflict_tasks(workspace: String) -> List(String) {
-  case sync_peer.list_conflicts(workspace) {
+  case conflicts.list_conflicts(workspace) {
     Ok(records) ->
       records
       |> list.filter_map(fn(r) {
@@ -143,13 +143,13 @@ pub fn record_merge_conflicts(
   |> list.filter(fn(c) { !list.contains(pending, c.id) })
   |> list.map(fn(c) {
     let detail = merge.conflict_detail(c)
-    let _ = sync_peer.record_conflict(workspace, "sync", detail)
+    let _ = conflicts.record_conflict(workspace, "sync", detail)
     c.id
   })
 }
 
 pub fn sync_conflicts_cmd(workspace: String) -> Result(json.Json, String) {
-  sync_peer.list_conflicts(workspace)
+  conflicts.list_conflicts(workspace)
   |> result.map(fn(conflicts) {
     json.array(conflicts, fn(c) {
       let parsed =
@@ -179,7 +179,7 @@ pub fn sync_resolve_cmd(
   rest: List(String),
 ) -> Result(json.Json, String) {
   use keep <- result.try(parse_keep(rest))
-  use side <- result.try(sync_peer.parse_side(keep))
+  use side <- result.try(conflicts.parse_side(keep))
   use record <- result.try(find_conflict(workspace, conflict_id))
   use detail <- result.try(
     parse_conflict_detail(record.detail)
@@ -188,12 +188,12 @@ pub fn sync_resolve_cmd(
     ),
   )
   let chosen_hex = case side {
-    sync_peer.KeepLocal -> detail.local
-    sync_peer.KeepRemote -> detail.remote
+    conflicts.KeepLocal -> detail.local
+    conflicts.KeepRemote -> detail.remote
   }
   // Resolution writes the chosen side as the authoritative head in Mnesia and
   // refreshes the JSONL export, so both views agree after the record is gone.
-  use _ <- result.try(sync_peer.resolve_conflict(workspace, conflict_id, side))
+  use _ <- result.try(conflicts.resolve_conflict(workspace, conflict_id, side))
   Ok(
     json.object([
       #("resolved", json.string(conflict_id)),
@@ -214,8 +214,8 @@ fn parse_keep(rest: List(String)) -> Result(String, String) {
 fn find_conflict(
   workspace: String,
   conflict_id: String,
-) -> Result(sync_peer.ConflictRecord, String) {
-  sync_peer.list_conflicts(workspace)
+) -> Result(conflicts.ConflictRecord, String) {
+  conflicts.list_conflicts(workspace)
   |> result.try(fn(records) {
     records
     |> list.find(fn(r) { r.id == conflict_id })
@@ -224,7 +224,7 @@ fn find_conflict(
 }
 
 pub fn sync_clear_cmd(workspace: String) -> Result(json.Json, String) {
-  sync_peer.clear_conflicts(workspace)
+  conflicts.clear_conflicts(workspace)
   |> result.map(fn(_) { json.string("cleared all replication conflicts") })
 }
 

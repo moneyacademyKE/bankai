@@ -7,8 +7,8 @@ import bankai/builder
 import bankai/cli
 import bankai/serde
 import bankai/storage/store
+import bankai/sync/conflicts
 import bankai/sync/jsonl
-import bankai/sync_peer
 import bankai/types.{type Task, Open}
 import gleam/list
 import gleam/option
@@ -71,7 +71,7 @@ pub fn conflicting_sync_records_structured_conflict_test() {
   let remote = "/tmp/bankai_conflict_ux_remote.jsonl"
   let _ = setup_conflict(ws, remote)
 
-  let conflicts = should.be_ok(sync_peer.list_conflicts(ws))
+  let conflicts = should.be_ok(conflicts.list_conflicts(ws))
   should.equal(list.length(conflicts), 1)
 
   let assert Ok(record) = list.first(conflicts)
@@ -101,7 +101,7 @@ pub fn resync_does_not_duplicate_pending_conflict_test() {
   let _ = cli.run_in(ws, ["sync", "--from", remote])
   let _ = cli.run_in(ws, ["sync", "--from", remote])
 
-  let conflicts = should.be_ok(sync_peer.list_conflicts(ws))
+  let conflicts = should.be_ok(conflicts.list_conflicts(ws))
   should.equal(list.length(conflicts), 1)
 }
 
@@ -114,7 +114,7 @@ pub fn clean_sync_records_nothing_test() {
   let _ = jsonl.flush([task_v1()], to: remote)
   let _ = cli.run_in(ws, ["sync", "--from", remote])
 
-  let conflicts = should.be_ok(sync_peer.list_conflicts(ws))
+  let conflicts = should.be_ok(conflicts.list_conflicts(ws))
   should.equal(list.length(conflicts), 0)
 }
 
@@ -136,7 +136,7 @@ pub fn conflicts_listing_renders_legacy_detail_test() {
   let ws = "/tmp/bankai_conflict_ux_legacy_ws"
   wipe(ws)
   let _ =
-    sync_peer.record_conflict(ws, "upstream-rig", "snapshot gap at clock 42")
+    conflicts.record_conflict(ws, "upstream-rig", "snapshot gap at clock 42")
 
   let out = cli.run_in(ws, ["sync", "conflicts"])
   out |> string.contains("snapshot gap at clock 42") |> should.be_true
@@ -185,7 +185,7 @@ fn head_title(ws: String) -> String {
 }
 
 fn first_conflict_id(ws: String) -> String {
-  let assert Ok(records) = sync_peer.list_conflicts(ws)
+  let assert Ok(records) = conflicts.list_conflicts(ws)
   let assert Ok(first) = list.first(records)
   first.id
 }
@@ -200,7 +200,7 @@ pub fn resolve_keep_remote_promotes_remote_version_test() {
   out |> string.contains("\"kept\":\"remote\"") |> should.be_true
   head_title(ws) |> should.equal("Divergent title")
 
-  let conflicts = should.be_ok(sync_peer.list_conflicts(ws))
+  let conflicts = should.be_ok(conflicts.list_conflicts(ws))
   should.equal(list.length(conflicts), 0)
 }
 
@@ -240,7 +240,7 @@ pub fn resolve_legacy_detail_errors_cleanly_test() {
   let ws = "/tmp/bankai_conflict_ux_resolve_legacy_ws"
   wipe(ws)
   let _ =
-    sync_peer.record_conflict(ws, "upstream-rig", "snapshot gap at clock 42")
+    conflicts.record_conflict(ws, "upstream-rig", "snapshot gap at clock 42")
   let id = first_conflict_id(ws)
 
   let out = cli.run_in(ws, ["sync", "resolve", id, "--keep", "local"])

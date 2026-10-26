@@ -17,6 +17,7 @@ import bankai/molecules/service as molecule_service
 import bankai/projections
 import bankai/rules/service as rule_service
 import bankai/storage/store
+import bankai/sync/conflicts
 import bankai/sync/jsonl
 import bankai/sync/merge
 import bankai/sync_peer
@@ -507,7 +508,7 @@ pub fn backup_prune(workspace: String, keep: Int) -> Result(json.Json, String) {
 }
 
 pub fn conflicts_list(workspace: String) -> Result(json.Json, String) {
-  sync_peer.list_conflicts(workspace)
+  conflicts.list_conflicts(workspace)
   |> result.map(fn(conflicts) {
     json.array(conflicts, fn(c) {
       json.object([
@@ -528,15 +529,15 @@ pub fn conflicts_resolve(
   conflict_id: String,
   keep: String,
 ) -> Result(json.Json, String) {
-  use side <- result.try(sync_peer.parse_side(keep))
-  sync_peer.resolve_conflict(workspace, conflict_id, side)
+  use side <- result.try(conflicts.parse_side(keep))
+  conflicts.resolve_conflict(workspace, conflict_id, side)
   |> result.map(fn(_) {
     json.string("resolved conflict " <> conflict_id <> " keeping " <> keep)
   })
 }
 
 pub fn conflicts_clear(workspace: String) -> Result(json.Json, String) {
-  sync_peer.clear_conflicts(workspace)
+  conflicts.clear_conflicts(workspace)
   |> result.map(fn(_) { json.string("cleared all replication conflicts") })
 }
 
@@ -719,7 +720,7 @@ pub fn pull_peer(
     // conflicting task so `sync-resolve --keep local|remote` can settle it.
     let _ =
       list.each(plan.conflicts, fn(conflict) {
-        sync_peer.record_conflict(
+        conflicts.record_conflict(
           workspace,
           "sync",
           merge.conflict_detail(conflict),

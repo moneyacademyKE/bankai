@@ -1,6 +1,6 @@
 //// Safe catalog, validation, preview, and restore operations for task backups.
 
-import bankai/mnesia_store
+import bankai/storage/authority
 import bankai/storage/store
 import bankai/sync/jsonl
 import bankai/types.{type Task, Blocked, InProgress, Open}
@@ -150,7 +150,7 @@ pub fn restore(workspace: String, path: String) -> Result(Nil, String) {
   case simplifile.create_directory_all(workspace) {
     Error(_) -> Error("could not create restore workspace: " <> workspace)
     Ok(Nil) ->
-      mnesia_store.restore_snapshot(workspace, store.from_list(tasks))
+      authority.restore_snapshot(workspace, store.from_list(tasks))
       |> result.try(fn(_) {
         case jsonl.flush(tasks, to: workspace <> "/tasks.jsonl") {
           Ok(Nil) -> Ok(Nil)
