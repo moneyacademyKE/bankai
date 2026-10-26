@@ -5,6 +5,7 @@
 
 import bankai/builder
 import bankai/cli
+import bankai/mnesia_store
 import bankai/serde
 import bankai/storage/store
 import bankai/sync/conflicts
@@ -27,6 +28,10 @@ fn wipe(ws: String) -> Nil {
   // Cross-run isolation: pending conflict records from a previous test run
   // must not leak into this one.
   let _ = simplifile.delete(ws <> "/identity/conflicts.term")
+  // The same applies to the authoritative store. Resolution now refuses a head
+  // that is neither side of the recorded fork, so a promoted head left behind
+  // by an earlier run would make every resolve look like a moved task.
+  let _ = mnesia_store.reset_workspace_for_test(ws)
   Nil
 }
 

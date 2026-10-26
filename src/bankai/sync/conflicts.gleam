@@ -151,12 +151,17 @@ pub fn resolve_conflict(
         builder.update(chosen, fn(task) {
           types.Task(..task, updated_at: time.now())
         })
-      use _ <- result.try(authority.promote_version(
-        workspace,
-        promoted,
-        [sides.local, sides.remote],
-        sides.local,
-      ))
+      // The live head must still be one of the two sides the record names. If
+      // the task moved on (or was deleted) since the fork was recorded, the
+      // promotion is refused and the record survives for a fresh decision.
+      use _ <- result.try(
+        authority.promote_version(
+          workspace,
+          promoted,
+          [sides.local, sides.remote],
+          [sides.local, sides.remote],
+        ),
+      )
       use _ <- result.try(refresh_export(workspace))
       ffi_resolve_conflict(workspace, conflict_id)
     }

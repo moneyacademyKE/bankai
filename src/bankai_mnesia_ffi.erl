@@ -393,18 +393,21 @@ end).
 %% pair sync again. Exactly one current row is written: a promotion must never
 %% touch a head it was not asked about.
 %%
-%% Expected is the head the conflict was recorded against. Comparing it under
-%% the write lock is what stops a resolution from silently discarding an edit
-%% that landed after the fork was recorded, and from resurrecting a task that
-%% was deleted in the meantime: a stale record is refused before anything is
-%% written, so the operator re-resolves against the new state instead.
+%% Expected is the set of heads the conflict was recorded against — the two
+%% sides of the fork, either of which may legitimately be live. Checking it
+%% under the write lock is what stops a resolution from silently discarding an
+%% edit that landed after the fork was recorded, and from resurrecting a task
+%% that was deleted in the meantime: a head that is neither side is refused
+%% before anything is written, so the operator re-resolves against the new
+%% state instead.
 promote_row(Workspace, Id, Hash, Json, Parents, Expected) -> transaction(fun() ->
     Key = {Workspace, Id},
     case mnesia:read(?CURRENT, Key, write) of
-        [{?CURRENT, Key, Workspace, Id, Expected, _}] -> promote_writes(
-            Workspace, Id, Hash, Json, Parents, Expected);
-        [{?CURRENT, Key, Workspace, Id, _Actual, _}] ->
-            {error, <<"task changed since the conflict was recorded: ", Id/binary>>};
+        [{?CURRENT, Key, Workspace, Id, Actual, _}] ->
+            case lists:member(Actual, Expected) of
+                true -> promote_writes(Workspace, Id, Hash, Json, Parents, Actual);
+                false -> {error, <<"task changed since the conflict was recorded: ", Id/binary>>}
+            end;
         [] ->
             {error, <<"task deleted since the conflict was recorded: ", Id/binary>>}
     end

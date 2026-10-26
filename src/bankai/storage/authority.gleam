@@ -31,7 +31,7 @@ fn ffi_promote_row(
   hash: String,
   json: String,
   parents: List(String),
-  expected: String,
+  expected: List(String),
 ) -> Result(Nil, String)
 
 pub fn validated_rows(
@@ -89,15 +89,17 @@ pub fn restore_snapshot(
 /// `parents` are the version hashes this promotion was chosen from (the fork's
 /// two sides). The promoted hash itself is never its own parent.
 ///
-/// `expected` is the head the conflict was recorded against. If the task moved
-/// or disappeared since then the promotion is refused rather than applied on
-/// stale evidence — a resolution must never overwrite newer work or bring a
+/// `expected` is the set of heads the conflict was recorded against — the two
+/// sides of the fork, either of which may legitimately be live. A head that is
+/// neither side (or no head at all) means the task moved or was deleted since
+/// the record was written, and the promotion is refused rather than applied on
+/// stale evidence: a resolution must never overwrite newer work or bring a
 /// deleted task back.
 pub fn promote_version(
   workspace: String,
   promoted: Task,
   parents: List(String),
-  expected: String,
+  expected: List(String),
 ) -> Result(Nil, String) {
   use new_row <- result.try(ast_bridge.validate(promoted) |> result.map(row))
   ffi_promote_row(workspace, new_row.0, new_row.1, new_row.2, parents, expected)
