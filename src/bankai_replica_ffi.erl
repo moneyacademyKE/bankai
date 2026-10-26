@@ -96,6 +96,7 @@ list_conflicts(Workspace) ->
     {ok, iolist_to_binary([<<"[">>, join_raw_json(JsonItems), <<"]">>])}.
 
 resolve_conflict(Workspace, ConflictId) ->
+    ensure_identity_dir(Workspace),
     Path = conflict_path(Workspace),
     Entries = read_terms(Path),
     Filtered = lists:filter(fun({Ts, _Author, _Detail}) ->
@@ -104,6 +105,7 @@ resolve_conflict(Workspace, ConflictId) ->
     atomic_write(Path, term_to_binary(Filtered)).
 
 clear_conflicts(Workspace) ->
+    ensure_identity_dir(Workspace),
     Path = conflict_path(Workspace),
     atomic_write(Path, term_to_binary([])).
 

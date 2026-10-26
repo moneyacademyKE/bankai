@@ -204,6 +204,28 @@ fn daemon_request(
       )
     "cluster-status", _ -> Ok(#("cluster_status", []))
     "cluster_status", _ -> Ok(#("cluster_status", []))
+    // Backup subcommands are distinct daemon methods. Without these routes the
+    // params fall through to the plain `backup` method, which ignores them — so
+    // `backup restore <path>` silently took a backup instead of restoring.
+    "backup", ["restore", path, ..] -> Ok(#("backup_restore", [path]))
+    "backup", ["preview", path, ..] -> Ok(#("backup_preview", [path]))
+    "backup", ["list", ..] -> Ok(#("backup_list", []))
+    "backup", ["prune", ..rest] -> Ok(#("backup_prune", rest))
+    "backup", _ -> Ok(#("backup", []))
+    // The same trap one layer over: `sync` is a family of daemon methods, and
+    // unrouted params reach the JSONL-reconcile handler, which rejects them.
+    // Conflict listing/resolution/clearing and peer pull must name their method.
+    "sync", ["conflicts", ..] -> Ok(#("sync_conflicts", []))
+    "sync", ["resolve", id, ..rest] ->
+      Ok(#("sync_conflict_resolve", [id, ..rest]))
+    "sync", ["clear", ..] -> Ok(#("sync_conflict_clear", []))
+    "sync", ["--from", path, ..] -> Ok(#("sync", ["--from", path]))
+    "sync", _ ->
+      Error(
+        "usage: sync --from <path> | conflicts | resolve <id> --keep local|remote | clear",
+      )
+    "sync-pull", rest -> Ok(#("sync_pull", rest))
+    "sync_pull", rest -> Ok(#("sync_pull", rest))
     // `gc` is the README-documented alias of daemon-side `compact`.
     "gc", _ -> Ok(#("compact", []))
     _, _ -> Ok(#(method, params))
