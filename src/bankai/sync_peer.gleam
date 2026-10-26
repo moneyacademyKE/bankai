@@ -27,7 +27,12 @@ const payload_protocol = "bankai-replica-payload-v1"
 const replica_domain = "bankai-replica-v2"
 
 pub type Snapshot {
-  Snapshot(versions: List(types.Task), heads: List(types.Task), author: String)
+  Snapshot(
+    versions: List(types.Task),
+    heads: List(types.Task),
+    author: String,
+    signature: String,
+  )
 }
 
 type EnvelopeWire {
@@ -319,9 +324,8 @@ fn decode_signed_snapshot(
             signature,
           )
           |> result.try(decode_payload)
-          |> result.try(fn(snapshot) {
-            ffi_mark_applied(workspace, signature)
-            |> result.map(fn(_) { Snapshot(..snapshot, author:) })
+          |> result.map(fn(snapshot) {
+            Snapshot(..snapshot, author:, signature:)
           })
       }
     }
@@ -369,13 +373,25 @@ fn snapshot_decoder() -> decode.Decoder(Snapshot) {
   )
   use heads <- decode.field("heads", decode.list(of: serde.task_decoder()))
   case advertised_protocol == payload_protocol {
-    True -> decode.success(Snapshot(versions:, heads:, author: ""))
+    True ->
+      decode.success(Snapshot(versions:, heads:, author: "", signature: ""))
     False ->
       decode.failure(
-        Snapshot(versions: [], heads: [], author: ""),
+        Snapshot(versions: [], heads: [], author: "", signature: ""),
         payload_protocol,
       )
   }
+}
+
+/// Consume a verified envelope's replay token. Callers must invoke this only
+/// after the snapshot has been durably imported: a rejected import leaves the
+/// token unconsumed, so the same frame can be retried once the operator has
+/// cleared the obstacle.
+pub fn mark_applied(
+  workspace: String,
+  signature: String,
+) -> Result(Nil, String) {
+  ffi_mark_applied(workspace, signature)
 }
 
 /// Domain conflicts are never silently imported. The conflict record is a

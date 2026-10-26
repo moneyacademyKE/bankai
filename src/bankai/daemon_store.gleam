@@ -706,6 +706,12 @@ pub fn pull_peer(
       store.from_list(snapshot.versions),
       snapshot.heads,
     )
+    |> result.try(fn(imported) {
+      // Replay token is consumed only once the import is durable: a rejected
+      // pull stays retryable instead of being eaten as an already-applied frame.
+      sync_peer.mark_applied(workspace, snapshot.signature)
+      |> result.replace(imported)
+    })
   })
   |> result.map(fn(_) {
     json.string(
