@@ -3,7 +3,7 @@
          projection_snapshot_rows/1, get_current/2, put_new/5, compare_and_put/6,
          compare_and_put_committed/7, replace_many/3, replace_many_idempotent/4,
          idempotent_result/3, import_if_needed/3, import_snapshot/3,
-         replace_current_snapshot/2, projection_checkpoint/2,
+         replace_current_snapshot/2, restore_snapshot/3, projection_checkpoint/2,
          set_projection_checkpoint/3]).
 
 %% Versioned table names are intentional. The abandoned v1 schema keyed records
@@ -283,6 +283,32 @@ replace_current_snapshot(Workspace, Current) -> transaction(fun() ->
         true -> ok;
         false -> record_change(Workspace, <<"compact">>, [
             {Id, <<"snapshot">>, Hash} || {Id, Hash, _Json} <- Current
+        ])
+    end,
+    {ok, nil}
+end).
+
+%% Authoritative restore from a validated backup. Unlike import_snapshot this
+%% does NOT preserve existing heads: the backup is the declared truth, so the
+%% live current rows are replaced inside the same transaction that writes the
+%% immutable version rows. One atomic boundary, no half-restored workspace.
+restore_snapshot(Workspace, Versions, Current) -> transaction(fun() ->
+    Existing = mnesia:match_object({?CURRENT, '_', Workspace, '_', '_', '_'}),
+    delete_workspace_rows(?CURRENT, Workspace),
+    lists:foreach(fun({_Id, Hash, Json}) ->
+        VersionKey = {Workspace, Hash},
+        case mnesia:read(?VERSIONS, VersionKey, write) of
+            [] -> mnesia:write({?VERSIONS, VersionKey, Workspace, Hash, Json});
+            _ -> ok
+        end
+    end, Versions),
+    lists:foreach(fun({Id, Hash, Json}) ->
+        mnesia:write({?CURRENT, {Workspace, Id}, Workspace, Id, Hash, Json})
+    end, Current),
+    case (Existing == []) andalso (Current == []) of
+        true -> ok;
+        false -> record_change(Workspace, <<"restore">>, [
+            {Id, <<"backup">>, Hash} || {Id, Hash, _Json} <- Current
         ])
     end,
     {ok, nil}

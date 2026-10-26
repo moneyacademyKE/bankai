@@ -93,6 +93,13 @@ fn ffi_import_snapshot(
   current: List(#(String, String, String)),
 ) -> Result(Nil, String)
 
+@external(erlang, "bankai_mnesia_ffi", "restore_snapshot")
+fn ffi_restore_snapshot(
+  workspace: String,
+  versions: List(#(String, String, String)),
+  current: List(#(String, String, String)),
+) -> Result(Nil, String)
+
 @external(erlang, "bankai_mnesia_ffi", "replace_current_snapshot")
 fn ffi_replace_current_snapshot(
   workspace: String,
@@ -229,6 +236,20 @@ fn current_rows(index: store.Store) -> List(#(String, String, String)) {
       identity.hash_to_debug_string(task.content_hash),
       serde.task_to_json_string(task),
     )
+  })
+}
+
+/// Authoritative restore: the supplied store becomes both the immutable version
+/// history and the live head set, atomically. Used by backup restore, where the
+/// backup is the declared truth rather than a peer proposing a merge.
+pub fn restore_snapshot(
+  workspace: String,
+  incoming: store.Store,
+) -> Result(Nil, String) {
+  init(workspace)
+  |> result.try(fn(_) {
+    validated_rows(incoming)
+    |> result.try(fn(rows) { ffi_restore_snapshot(workspace, rows.0, rows.1) })
   })
 }
 

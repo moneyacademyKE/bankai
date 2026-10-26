@@ -1,5 +1,7 @@
 //// Safe catalog, validation, preview, and restore operations for task backups.
 
+import bankai/mnesia_store
+import bankai/storage/store
 import bankai/sync/jsonl
 import bankai/types.{type Task, Blocked, InProgress, Open}
 import gleam/dict
@@ -141,15 +143,20 @@ pub fn divergence_detail(
 }
 
 /// Restore a validated backup. Validation happens before any target write.
+/// Both authorities are restored: Mnesia (the live task state) and the JSONL
+/// export, so a reader of either agrees with the other afterwards.
 pub fn restore(workspace: String, path: String) -> Result(Nil, String) {
   use tasks <- result.try(validate(path))
   case simplifile.create_directory_all(workspace) {
     Error(_) -> Error("could not create restore workspace: " <> workspace)
     Ok(Nil) ->
-      case jsonl.flush(tasks, to: workspace <> "/tasks.jsonl") {
-        Ok(Nil) -> Ok(Nil)
-        Error(_) -> Error("could not replace task store")
-      }
+      mnesia_store.restore_snapshot(workspace, store.from_list(tasks))
+      |> result.try(fn(_) {
+        case jsonl.flush(tasks, to: workspace <> "/tasks.jsonl") {
+          Ok(Nil) -> Ok(Nil)
+          Error(_) -> Error("could not replace task store")
+        }
+      })
   }
 }
 
