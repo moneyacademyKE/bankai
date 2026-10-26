@@ -97,14 +97,37 @@ it is never a half-applied projection.
 This is deliberately *not* `import_snapshot`: import preserves existing heads, restore
 replaces them, because the backup is the declared truth.
 
-### 6. Resolution requires an explicit side
+### 6. Resolution requires an explicit side, against the heads the fork named
 
 `sync resolve <conflict-id> --keep local|remote` is mandatory across the CLI, the daemon
-socket and MCP. The chosen side is promoted through `mnesia_store.promote_version/3`
-(atomically: new version row + new current row), the export is refreshed from the version
-store, and the conflict record is deleted **last** — a crash mid-resolution leaves a
-resolvable record, never an orphaned head change. Free-form or legacy conflict details that
-do not parse as `task=<id> local=<hash> remote=<hash>` are rejected, not guessed at.
+socket and MCP. Resolution is one Mnesia transaction (`promote_row/6`) that:
+
+1. reads the live current head under the write lock;
+2. refuses unless that head is **one of the two sides** the conflict record names;
+3. writes the promoted version row, its ancestry link, and the new current row together,
+   touching no other task's head;
+4. refreshes the export from the version store, then deletes the conflict record **last**.
+
+The expected set is the *pair*, not a single hash, because either side may legitimately be
+live: a merge can leave the remote head in place, so a `--keep local` resolution against a
+remote-live head is a normal choice, not staleness. A head that is neither side — or no head
+at all — means the task moved on or was deleted after the record was written. That is
+refused with `task changed since the conflict was recorded`, the record survives for a fresh
+decision, and a deleted task is never resurrected by a stale resolution. Free-form or legacy
+conflict details that do not parse as `task=<id> local=<hash> remote=<hash>` are rejected,
+not guessed at.
+
+The promotion records its **parents**: both side hashes become ancestry of the promoted hash
+in that same transaction. This is what makes a resolution converge rather than merely
+succeed. A promoted head with no edges is invisible to classification, so the next pull from
+the peer compares two nodes with no path between them and reports `divergent task heads
+require reconciliation` forever — the same fork re-surfacing after every resolution, which
+is exactly the defect this decision closes. With the link, the peer sees the promoted head
+as a descendant of both sides and fast-forwards.
+
+Only the promoted row is written. Resolution must never replace the workspace's head set:
+an unrelated task written between the fork and the resolution is not part of the decision and
+must survive it untouched.
 
 ### 7. The daemon routes each verb to its own method
 
@@ -116,6 +139,22 @@ the JSONL-reconcile handler, which used to answer a different question than the 
 Conflict resolution and clearing also ensure the identity directory before writing, so the
 first `sync clear` on a workspace that never generated an identity succeeds instead of
 failing with `enoent`.
+
+Replica trust is reachable the same way: `sync_identity`, `sync_trust <public-key>` and
+`sync_revoke <public-key>` are first-class daemon methods with their own CLI verbs, MCP
+tools and `service_auth` allowlist entries. A peer is trusted only by explicit provisioning
+of its key — there is no trust-on-first-use path, because a key that arrives over the
+channel it is meant to authenticate proves nothing about who sent it.
+
+### 8. One conflict record per fork, keyed by the fork
+
+A rejected pull is retryable by design, so the same divergence was appended to the conflict
+log on every attempt: three retries of one fork produced three records naming the same task
+and the same two heads, and the operator saw a list of "conflicts" that were one conflict.
+`record_conflict` now derives identity from the fork itself — `(task, local, remote)` — and
+does not append a record whose three sides are already present. The log stays append-only:
+nothing is rewritten or removed, and the record id is never the dedupe key, so distinct
+forks and free-form diagnostics keep their full history.
 
 ## Consequences
 
@@ -146,7 +185,12 @@ failing with `enoent`.
 - `test/causal_sync_gaps_test.gleam` — 10 regression tests covering all five defects
   (replay-token consumption, retry after rejection, fast-forward, stale, divergent, restore,
   conflict-side requirement, and two pins that must not regress).
-- Full suite: `BANKAI_EMBED_BACKEND=term-hash make test` → 328 passed, 0 failures.
+- `test/causal_resolution_test.gleam` — 7 regression tests for the resolution defects:
+  ancestry written at promotion (both convergence directions), stale-head refusal, deleted
+  task not resurrected, promotion not replacing the head set, and duplicate fork records.
+- `test/sync_conflict_ux_test.gleam` — resolution through the CLI for both sides, plus
+  workspace reset so authoritative-store state cannot leak between runs.
+- Full suite: `BANKAI_EMBED_BACKEND=term-hash make test` → 335 passed, 0 failures.
 - `gleam format --check src test` and `git diff --check` clean.
 - Live CLI against a rebuilt escript and a real daemon: `backup restore` of a 2-task
   workspace returned to 1 task (the pre-backup one); `sync conflicts` → `{"ok":[]}`;
