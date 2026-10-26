@@ -151,12 +151,12 @@ pub fn resolve_conflict(
         builder.update(chosen, fn(task) {
           types.Task(..task, updated_at: time.now())
         })
-      use _ <- result.try(
-        authority.promote_version(workspace, promoted, [
-          sides.local,
-          sides.remote,
-        ]),
-      )
+      use _ <- result.try(authority.promote_version(
+        workspace,
+        promoted,
+        [sides.local, sides.remote],
+        sides.local,
+      ))
       use _ <- result.try(refresh_export(workspace))
       ffi_resolve_conflict(workspace, conflict_id)
     }

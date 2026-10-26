@@ -222,7 +222,13 @@ pub fn promotion_does_not_delete_a_concurrently_written_head_test() {
     ast_bridge.rehash(
       types.Task(..alpha_task, updated_at: alpha_task.updated_at + 1),
     )
-  let _ = should.be_ok(authority.promote_version(ws, promoted, []))
+  let _ =
+    should.be_ok(authority.promote_version(
+      ws,
+      promoted,
+      [],
+      head_hash(ws, alpha),
+    ))
 
   let titles =
     should.be_ok(mnesia_store.current_store(ws))
