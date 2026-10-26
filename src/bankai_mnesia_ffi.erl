@@ -3,8 +3,9 @@
          projection_snapshot_rows/1, get_current/2, put_new/5, compare_and_put/6,
          compare_and_put_committed/7, replace_many/3, replace_many_idempotent/4,
          idempotent_result/3, import_if_needed/3, import_snapshot/3, import_snapshot/4,
-         replace_current_snapshot/2, restore_snapshot/3, projection_checkpoint/2,
-         set_projection_checkpoint/3, ancestry_rows/1, put_ancestry/2]).
+         replace_current_snapshot/2, restore_snapshot/3, promote_row/5,
+         projection_checkpoint/2, set_projection_checkpoint/3, ancestry_rows/1,
+         put_ancestry/2]).
 
 %% Versioned table names are intentional. The abandoned v1 schema keyed records
 %% by workspace alone, which could retain only one task per workspace. Leaving
@@ -382,6 +383,28 @@ restore_snapshot(Workspace, Versions, Current) -> transaction(fun() ->
             {Id, <<"backup">>, Hash} || {Id, Hash, _Json} <- Current
         ])
     end,
+    {ok, nil}
+end).
+
+%% Promote one explicitly chosen side to the authoritative head after a conflict
+%% resolution. The promoted version is a new node linked to BOTH sides of the
+%% fork, so a peer still holding either side classifies it as a descendant
+%% (stale) instead of a fresh divergence — that link is what lets a resolved
+%% pair sync again. Exactly one current row is written: a promotion must never
+%% touch a head it was not asked about.
+promote_row(Workspace, Id, Hash, Json, Parents) -> transaction(fun() ->
+    VersionKey = {Workspace, Hash},
+    case mnesia:read(?VERSIONS, VersionKey, write) of
+        [] -> mnesia:write({?VERSIONS, VersionKey, Workspace, Hash, Json});
+        _ -> ok
+    end,
+    Prev = case mnesia:read(?CURRENT, {Workspace, Id}, write) of
+        [{?CURRENT, _, Workspace, Id, PrevHash, _}] -> PrevHash;
+        [] -> <<"none">>
+    end,
+    write_ancestry_many(Workspace, Hash, [P || P <- Parents, P =/= Hash]),
+    mnesia:write({?CURRENT, {Workspace, Id}, Workspace, Id, Hash, Json}),
+    record_change(Workspace, <<"promote">>, [{Id, Prev, Hash}]),
     {ok, nil}
 end).
 

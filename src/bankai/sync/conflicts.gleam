@@ -127,7 +127,6 @@ pub fn resolve_conflict(
     KeepRemote -> sides.remote
   }
   use versions <- result.try(authoritative_versions(workspace))
-  use current <- result.try(mnesia_store.current_store(workspace))
   use chosen <- result.try(
     store.get_by_hex(versions, chosen_hex)
     |> result.replace_error(
@@ -145,21 +144,19 @@ pub fn resolve_conflict(
     True -> {
       // Promotion is a real content-addressed event: the chosen content is
       // stamped as touched now so it wins the head-by-recency view both
-      // authorities derive. Both divergent versions stay in history.
+      // authorities derive. Both divergent versions stay in history and both
+      // become parents of the promoted hash, so the fork is closed rather than
+      // re-detected on the next pull.
       let promoted =
         builder.update(chosen, fn(task) {
           types.Task(..task, updated_at: time.now())
         })
-      let heads =
-        current
-        |> store.current_tasks
-        |> list.filter(fn(task) { task.id != sides.task })
-        |> list.append([promoted])
-      use _ <- result.try(authority.promote_version(
-        workspace,
-        promoted,
-        store.from_list(heads),
-      ))
+      use _ <- result.try(
+        authority.promote_version(workspace, promoted, [
+          sides.local,
+          sides.remote,
+        ]),
+      )
       use _ <- result.try(refresh_export(workspace))
       ffi_resolve_conflict(workspace, conflict_id)
     }

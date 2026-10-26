@@ -24,6 +24,15 @@ fn ffi_restore_snapshot(
   current: List(#(String, String, String)),
 ) -> Result(Nil, String)
 
+@external(erlang, "bankai_mnesia_ffi", "promote_row")
+fn ffi_promote_row(
+  workspace: String,
+  id: String,
+  hash: String,
+  json: String,
+  parents: List(String),
+) -> Result(Nil, String)
+
 pub fn validated_rows(
   index: store.Store,
 ) -> Result(
@@ -67,20 +76,22 @@ pub fn restore_snapshot(
   })
 }
 
-/// Write one newly created version and replace the active head set atomically.
-/// Conflict resolution uses this: promotion creates a version (the chosen
-/// content stamped as touched now), so the new row and the new heads must land
-/// in one boundary.
+/// Write one newly created version, link it to the versions it was chosen from,
+/// and make it the head of exactly that task — atomically.
+///
+/// Conflict resolution uses this. The ancestry links are the load-bearing part:
+/// a promoted hash is otherwise a node with no edges, so a peer still holding
+/// either side of the fork sees a fresh divergence instead of a descendant and
+/// refuses to sync again. Linking the promoted version to both sides makes the
+/// resolution converge.
+///
+/// `parents` are the version hashes this promotion was chosen from (the fork's
+/// two sides). The promoted hash itself is never its own parent.
 pub fn promote_version(
   workspace: String,
   promoted: Task,
-  heads: store.Store,
+  parents: List(String),
 ) -> Result(Nil, String) {
   use new_row <- result.try(ast_bridge.validate(promoted) |> result.map(row))
-  heads
-  |> store.list()
-  |> list.try_map(ast_bridge.validate)
-  |> result.try(fn(valid_heads) {
-    ffi_restore_snapshot(workspace, [new_row], list.map(valid_heads, row))
-  })
+  ffi_promote_row(workspace, new_row.0, new_row.1, new_row.2, parents)
 }
