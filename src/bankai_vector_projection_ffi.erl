@@ -1,5 +1,5 @@
 -module(bankai_vector_projection_ffi).
--export([search/6, exact_search/6, status/1, reset_workspace/1, warm/3]).
+-export([search/6, exact_search/6, status/1, reset_workspace/1, warm/3, warm_with_deadline/4]).
 
 %% A daemon-local, non-authoritative HNSW projection. A cache row is backed by
 %% AaronDB's projection_index lifecycle record: a replacement corpus first enters
@@ -39,14 +39,57 @@ reset_workspace(Workspace) ->
 %% the long-lived acceptor process. An ETS table dies with its owner; created
 %% lazily inside a per-connection handler it is destroyed when the handler
 %% exits, silently discarding the HNSW graph between requests.
+%%
+%% bk-86b0: the build runs in a separate worker under a hard deadline. With
+%% the semantic backend the per-insert greedy_search cost is quadratic and
+%% used to wedge boot before the socket was ever bound; now the acceptor
+%% waits at most TimeoutMs, then kills the worker and returns {error, ...}
+%% so serve can print the skip notice and LISTEN with text-search degraded.
 warm(Workspace, Offset, Documents) ->
+    warm_with_deadline(Workspace, Offset, Documents, warm_deadline_ms()).
+
+warm_with_deadline(Workspace, Offset, Documents, TimeoutMs) ->
+    %% Create the cache table in the ACCEPTOR, not the worker: an ETS table
+    %% dies with its owner, and the worker always exits (normally or killed).
+    ensure_table(),
+    Parent = self(),
+    Worker = erlang:spawn(fun() ->
+        warm_worker(Parent, Workspace, Offset, Documents)
+    end),
+    receive
+        {Worker, ok, Count} -> {ok, Count};
+        {Worker, error, Message} -> {error, Message}
+    after max(0, TimeoutMs) ->
+        %% Untrappable kill — a wedged greedy_search cannot swallow it. The
+        %% worker holds no locks and the cache row is only inserted at the
+        %% end of a successful rebuild, so a kill mid-build leaves the
+        %% previous projection intact and the table reusable.
+        exit(Worker, kill),
+        {error, iolist_to_binary(io_lib:format(
+            "vector projection warm timed out after ~pms; continuing with text search",
+            [TimeoutMs]))}
+    end.
+
+warm_worker(Parent, Workspace, Offset, Documents) ->
     try
         {_Index, _Meta} = ensure_projection(Workspace, Offset, Documents),
-        {ok, length(Documents)}
+        Parent ! {self(), ok, length(Documents)}
     catch
         Class:Reason ->
-            {error, iolist_to_binary(io_lib:format(
+            Parent ! {self(), error, iolist_to_binary(io_lib:format(
                 "vector projection warm failure (~p): ~p", [Class, Reason]))}
+    end.
+
+%% Boot-warm deadline: BANKAI_VECTOR_WARM_TIMEOUT_MS, default 30s. Read at
+%% call time (never cached) so tests and operators can retune a live node.
+warm_deadline_ms() ->
+    case os:getenv("BANKAI_VECTOR_WARM_TIMEOUT_MS") of
+        false -> 30000;
+        Raw ->
+            case string:to_integer(Raw) of
+                {Int, []} when Int >= 0 -> Int;
+                _ -> 30000
+            end
     end.
 
 query(_Workspace, _Offset, _Documents, Query, _Threshold, Limit, _Search)
