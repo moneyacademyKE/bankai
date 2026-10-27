@@ -2,6 +2,7 @@
 
 import bankai/cli
 import bankai/mcp
+import bankai/version
 import gleam/string
 import gleeunit
 import gleeunit/should
@@ -44,7 +45,9 @@ pub fn initialize_responds_with_capabilities_test() {
   resp |> string.contains("\"protocolVersion\"") |> should.be_true
   resp |> string.contains("\"tools\"") |> should.be_true
   resp |> string.contains("\"id\":1") |> should.be_true
-  resp |> string.contains("\"version\":\"0.2.0\"") |> should.be_true
+  resp
+  |> string.contains("\"version\":\"" <> version.current <> "\"")
+  |> should.be_true
 }
 
 pub fn tools_list_advertises_bankai_commands_test() {

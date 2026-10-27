@@ -7,8 +7,11 @@ pub fn main() {
 }
 
 pub fn version_string_test() {
+  // bk-e85d: wiring test only — the VALUE is guarded against gleam.toml
+  // by version_flag_test.version_constant_matches_gleam_toml_test, so a
+  // literal here would just be a second, staler copy of the same fact.
   bankai.version_string()
-  |> should.equal("0.2.0")
+  |> should.equal(bankai.version)
 }
 
 pub fn standalone_sync_reads_are_not_mutations_test() {

@@ -47,6 +47,9 @@ pub fn main() -> Nil {
         sync_peer.parse_port(rest, sync_peer.default_port),
       )
     [] -> io.println(cli.usage())
+    // bk-e85d: client-side version probe — handled before dispatch so it
+    // answers identically whether or not a daemon is listening.
+    ["--version"] | ["-v"] -> io.println(cli.version_output())
     [method, ..params] -> {
       // Mutation is daemon-only. Falling back to JSONL here would reinstate the
       // lost-update race that Mnesia is meant to remove.

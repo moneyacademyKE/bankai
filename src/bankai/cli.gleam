@@ -26,6 +26,7 @@ import bankai/types.{
   type Task, Blocks, Closed, Completed, Duplicates, InProgress, Open,
   ParentChild, Relationship, Task,
 }
+import bankai/version
 import gleam/int
 import gleam/json
 import gleam/list
@@ -35,6 +36,15 @@ import gleam/string
 import simplifile
 
 pub const default_workspace = ".bankai"
+
+/// bk-e85d: machine-readable version envelope for --version/-v, so
+/// deployments are verifiable from the binary itself. Mirrors the
+/// single-shot envelope contract ({"ok": ...}) used by every other
+/// client-facing command; the drift guard lives in
+/// test/version_flag_test.gleam.
+pub fn version_output() -> String {
+  parser.envelope(Ok(json.object([#("version", json.string(version.current))])))
+}
 
 /// Run a command against a workspace. Output is always a JSON envelope:
 /// {"ok": <json>} or {"error": "<msg>"}. No-args prints plain help.
@@ -944,6 +954,7 @@ fn filter_by_label(tasks: List(Task), label: Option(String)) -> List(Task) {
 pub fn usage() -> String {
   "bankai — content-addressed task memory\n\n"
   <> "usage: bankai <command> [args]\n\n"
+  <> "  --version, -v                 print the version (JSON envelope)\n"
   <> "  create <title> [--label L].. [--parent <id>] [--priority N]\n"
   <> "                                create a task / subtask\n"
   <> "  show <id>                     print a task by id (JSON)\n"

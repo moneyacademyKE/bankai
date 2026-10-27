@@ -2,4 +2,4 @@
 ////
 //// Keep runtime protocols (CLI and MCP) aligned with `gleam.toml`.
 
-pub const current = "0.2.0"
+pub const current = "0.4.0"
