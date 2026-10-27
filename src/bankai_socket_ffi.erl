@@ -94,8 +94,21 @@ connect(Path) ->
 %% Bounded recv for CLIENTS: {error, timeout} after Timeout ms instead of an
 %% infinite block. The daemon accept loop keeps unbounded recv_line (idle
 %% connections must stay open).
+%%
+%% bk-06d1 root cause (fixed): this once returned gen_tcp's raw tuples, and
+%% gen_tcp in {packet, line} mode can deliver data as an Erlang LIST, not a
+%% binary. Gleam string concatenation (acc <> chunk) compiles to BINARY
+%% concatenation — a list operand is a badarg, which flipped
+%% service_auth_test to a raw crash in full-suite runs (reproduced
+%% 2026-10-27: crash lands exactly on the acc <> chunk line). BUG-07 taught
+%% this for recv_line; the bounded variant must normalize identically:
+%% strip_eol + iolist_to_binary, same clean-line contract.
 recv_line_t(Socket, Timeout) ->
-    gen_tcp:recv(Socket, 0, Timeout).
+    case gen_tcp:recv(Socket, 0, Timeout) of
+        {ok, Data} when is_binary(Data) -> {ok, strip_eol(Data)};
+        {ok, Data} -> {ok, strip_eol(iolist_to_binary(Data))};
+        Err -> Err
+    end.
 
 %% Idempotently remove a socket/path file. Always returns nil (gleam Nil).
 delete_path(Path) ->

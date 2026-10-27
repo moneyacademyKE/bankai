@@ -698,13 +698,25 @@ fn ffi_accept(ls: Dynamic) -> Result(Dynamic, Dynamic)
 @external(erlang, "bankai_socket_ffi", "recv_line")
 fn ffi_recv_line(sock: Dynamic) -> Result(String, Dynamic)
 
-/// Client-side bounded recv DESIGNED but NOT WIRED: a controlled experiment
-/// showed enabling `bankai_socket_ffi:recv_line_t/2` from here flips
-/// service_auth_test to a raw Badarg in full-suite runs (root cause not
-/// found — FFI-level try/catch on connect/send/recv never fired). The Erlang
-/// function stays exported for the follow-up bead; wire it as
-/// `@external(erlang, "bankai_socket_ffi", "recv_line_t")` with (Dynamic,
-/// Int) -> Result(String, Dynamic) and swap it into recv_full_response.
+/// Client-side bounded recv, WIRED (bk-06d1): {error, timeout} after
+/// Timeout ms instead of an infinite block when the daemon stalls —
+/// "daemon did not reply within 30s" is now a true statement. The daemon
+/// accept loop keeps unbounded recv_line (idle connections must stay open).
+///
+/// The historical full-suite Badarg is fixed at the FFI layer:
+/// gen_tcp can deliver {packet, line} data as an Erlang list, and Gleam's
+/// <> compiles to binary concatenation — a list operand crashed. The FFI
+/// now normalizes (strip_eol + iolist_to_binary), matching recv_line.
+@external(erlang, "bankai_socket_ffi", "recv_line_t")
+fn ffi_recv_line_t(sock: Dynamic, timeout: Int) -> Result(String, Dynamic)
+
+/// Client-side bounded recv, historically designed but left unwired: a
+/// controlled experiment flipping `recv_line_t/2` on produced a raw Badarg
+/// in full-suite service_auth runs; root cause found 2026-10-27 (bk-06d1) —
+/// gen_tcp delivered {packet, line} data as an Erlang list and Gleam's `<>`
+/// (binary concatenation) crashed on it. Fixed by normalizing in the FFI
+/// (same strip_eol + iolist_to_binary contract as recv_line); see
+/// ffi_recv_line_t below.
 @external(erlang, "bankai_socket_ffi", "send_data")
 fn ffi_send(sock: Dynamic, data: String) -> Result(Dynamic, Dynamic)
 
@@ -865,11 +877,11 @@ pub fn client_request(
 /// grew past ~4KB, the single recv here returned a mid-JSON fragment and every
 /// read died as "malformed daemon response" — masked upstream as
 /// "daemon required". Accumulate chunks until the whole line parses or the
-/// daemon closes the socket. Accumulate chunks until the whole line parses
-/// or the daemon closes the socket. (Bounded recv is designed but NOT wired
-/// — see the ffi_recv_line_t note above.)
+/// daemon closes the socket. Bounded: each chunk wait is capped at 30s
+/// (recv_line_t), so a stalled daemon yields "daemon did not reply within
+/// 30s" instead of hanging the client forever.
 fn recv_full_response(sock: Dynamic, acc: String) -> Result(String, Dynamic) {
-  case ffi_recv_line(sock) {
+  case ffi_recv_line_t(sock, 30_000) {
     Ok(chunk) -> {
       let line = acc <> chunk
       case extract_result(line) {
