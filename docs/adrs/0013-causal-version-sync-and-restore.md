@@ -156,6 +156,50 @@ does not append a record whose three sides are already present. The log stays ap
 nothing is rewritten or removed, and the record id is never the dedupe key, so distinct
 forks and free-form diagnostics keep their full history.
 
+### 9. Signer trust is a lifecycle policy, not two membership lists
+
+`identity/trusted.term` now stores `{bankai_trust_policy_v1, Active, Revoked}`: each
+active entry carries a raw Ed25519 public key and a nanosecond `[since, until)` validity
+window, while revocation is an explicit tombstone. `bankai/sync/trust.gleam` converts that
+storage into `gleamunison/trust.TrustPolicy` and calls `key_admits`, preserving the library's
+named refusals (`unknown_signer`, `key_not_yet_valid`, `key_expired`, `key_revoked`). The
+signer id is the canonical Base64 public key already used by the envelope's `author` field.
+Gleamunison's HMAC evidence admission is not involved; AaronDB remains the Ed25519
+signature verifier for both replica frames and gate facts.
+
+Legacy flat trusted/revoked files are migrated on read: trusted keys retain effectively
+unbounded validity and a legacy revocation takes precedence over a legacy active entry.
+The first policy write persists the migrated representation in `trusted.term`; subsequent
+reads ignore the legacy lists. Malformed storage fails closed rather than silently becoming
+an empty revocation policy.
+
+Verification admits the signer at the receiver's wall-clock `time.now()` before checking
+its signature. The envelope `logical_clock` is a changefeed offset, not a timestamp. This
+means expiry is a **receipt-time policy**: it does not prove when a valid signature was
+created, because the current envelope carries no wall-clock issuance timestamp. Historical
+admission would require a separate signed issuance-time contract, not a comparison against
+the changefeed offset.
+
+`sync trust <key> [--expires-at NS]` retains unbounded trust by default and accepts an
+optional exclusive expiry. `sync rotate <old> <new> [--overlap NS] [--expires-at NS]` is
+one policy transition followed by one write: the old key must be active now, the new key
+starts now, and the old key expires at the earlier of its existing expiry and the requested
+overlap. A zero overlap switches immediately. Distinct old/new keys and nonnegative overlap
+are required. `sync revoke` replaces an active entry with a tombstone; a deliberate trust
+upsert may later re-admit it, but replication never grants trust implicitly. A key has one
+policy state, matching `key_admits`: rotating to an already-provisioned new key replaces its
+previous window. Rotation changes local admission only; the peer must provision its new key
+separately, and zero-overlap rotation intentionally fails closed for a peer still using the
+old key.
+
+The same policy governs gate-fact issuers at the fact's evaluation time, so an expired key
+cannot remain valid through the other shared-identity consumer. Gate-fact expiry and key
+expiry remain separate facts. The new verbs are routed through the daemon, socket, CLI,
+MCP and `service_auth`; CLI and socket share `bankai/sync/trust_args.gleam` rather than
+maintaining separate flag grammars. Standalone `sync identity` and `sync conflicts` may
+fall back to the embedded read path when no daemon is listening; trust, revoke and rotate
+remain daemon-only mutations.
+
 ## Consequences
 
 ### Positive
@@ -185,13 +229,23 @@ forks and free-form diagnostics keep their full history.
 - `test/causal_sync_gaps_test.gleam` — 10 regression tests covering all five defects
   (replay-token consumption, retry after rejection, fast-forward, stale, divergent, restore,
   conflict-side requirement, and two pins that must not regress).
-- `test/causal_resolution_test.gleam` — 7 regression tests for the resolution defects:
+- `test/causal_resolution_test.gleam` — 8 regression tests for the resolution defects:
   ancestry written at promotion (both convergence directions), stale-head refusal, deleted
-  task not resurrected, promotion not replacing the head set, and duplicate fork records.
+  task not resurrected, promotion not replacing the head set, duplicate fork records, and
+  live daemon rotation between two real replica identities.
+- `test/trust_policy_test.gleam` — 12 deterministic lifecycle and migration tests, including
+  expiry boundaries, rotation overlap, re-admission and legacy revocation precedence.
+- `test/signed_replica_test.gleam` and `test/gate_facts_test.gleam` — valid signatures
+  refused by expired/revoked keys; gate-fact expiry remains independent of key expiry.
 - `test/sync_conflict_ux_test.gleam` — resolution through the CLI for both sides, plus
   workspace reset so authoritative-store state cannot leak between runs.
-- Full suite: `BANKAI_EMBED_BACKEND=term-hash make test` → 335 passed, 0 failures.
+- `test/bankai_test.gleam` — standalone sync identity/conflict reads are not classified as
+  mutations; trust, revoke and rotate remain daemon-gated.
+- Full suite: `BANKAI_EMBED_BACKEND=term-hash make test` → 354 passed, 0 failures.
 - `gleam format --check src test` and `git diff --check` clean.
+- Rebuilt escript in an isolated working directory: `sync identity` returned a public key,
+  `sync conflicts` returned `{"ok":[]}`, and `sync trust` without a daemon refused instead
+  of mutating policy.
 - Live CLI against a rebuilt escript and a real daemon: `backup restore` of a 2-task
   workspace returned to 1 task (the pre-backup one); `sync conflicts` → `{"ok":[]}`;
   `sync resolve <id>` without a side → the `--keep` usage error; `sync resolve <id> --keep

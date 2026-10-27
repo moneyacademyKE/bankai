@@ -20,6 +20,7 @@ import bankai/storage/store
 import bankai/sync/conflicts
 import bankai/sync/jsonl
 import bankai/sync/merge
+import bankai/sync/trust as sync_trust
 import bankai/sync_peer
 import bankai/task_lifecycle
 import bankai/time
@@ -556,8 +557,26 @@ pub fn sync_identity(workspace: String) -> Result(json.Json, String) {
 /// Trust a peer key explicitly. Verification of a snapshot never grants trust
 /// on its own — an unknown signer is rejected until this is called.
 pub fn sync_trust(workspace: String, key: String) -> Result(json.Json, String) {
-  use _ <- result.try(sync_peer.trust_peer(workspace, key))
-  Ok(json.string("trusted replica key " <> key))
+  sync_trust_for(workspace, key, sync_trust.no_expiry)
+}
+
+pub fn sync_trust_for(
+  workspace: String,
+  key: String,
+  expires_at: Int,
+) -> Result(json.Json, String) {
+  use Nil <- result.try(sync_trust.trust_workspace_key_for(
+    workspace,
+    key,
+    0,
+    expires_at,
+  ))
+  Ok(
+    json.object([
+      #("trusted", json.string(key)),
+      #("expires_at", json.int(expires_at)),
+    ]),
+  )
 }
 
 /// Revoke a previously trusted peer key. Revocation takes effect on the next
@@ -566,8 +585,32 @@ pub fn sync_revoke(
   workspace: String,
   key: String,
 ) -> Result(json.Json, String) {
-  use _ <- result.try(sync_peer.revoke_peer(workspace, key))
+  use Nil <- result.try(sync_peer.revoke_peer(workspace, key))
   Ok(json.string("revoked replica key " <> key))
+}
+
+pub fn sync_rotate(
+  workspace: String,
+  old_id: String,
+  new_id: String,
+  overlap: Int,
+  expires_at: Int,
+) -> Result(json.Json, String) {
+  use Nil <- result.try(sync_trust.rotate_workspace_keys(
+    workspace,
+    old_id,
+    new_id,
+    overlap,
+    expires_at,
+  ))
+  Ok(
+    json.object([
+      #("rotated_from", json.string(old_id)),
+      #("trusted", json.string(new_id)),
+      #("overlap", json.int(overlap)),
+      #("expires_at", json.int(expires_at)),
+    ]),
+  )
 }
 
 pub fn journal_tail(

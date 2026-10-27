@@ -3,6 +3,7 @@
 //// This module only authenticates and validates a fact. Persisting it and
 //// marking its signature as seen belong to the caller's transaction.
 
+import bankai/sync/trust as sync_trust
 import gleam/dynamic/decode
 import gleam/json
 import gleam/result
@@ -43,24 +44,6 @@ pub type Fact {
 @external(erlang, "bankai_gate_facts_ffi", "public_key")
 fn ffi_public_key(workspace: String) -> Result(String, String)
 
-@external(erlang, "bankai_gate_facts_ffi", "trust_issuer")
-fn ffi_trust_issuer(
-  workspace: String,
-  public_key: String,
-) -> Result(Nil, String)
-
-@external(erlang, "bankai_gate_facts_ffi", "revoke_issuer")
-fn ffi_revoke_issuer(
-  workspace: String,
-  public_key: String,
-) -> Result(Nil, String)
-
-@external(erlang, "bankai_gate_facts_ffi", "issuer_status")
-fn ffi_issuer_status(
-  workspace: String,
-  public_key: String,
-) -> Result(#(Bool, Bool), String)
-
 @external(erlang, "bankai_gate_facts_ffi", "sign")
 fn ffi_sign(
   workspace: String,
@@ -98,24 +81,24 @@ pub fn trust_issuer(
   receiver_workspace: String,
   issuer: String,
 ) -> Result(Nil, String) {
-  ffi_trust_issuer(receiver_workspace, issuer)
+  sync_trust.trust_workspace_key(receiver_workspace, issuer)
 }
 
-/// Add an issuer's Ed25519 public key to the receiver workspace's revocation
-/// store. Revocation takes precedence if a key is present in both stores.
+/// Replace an issuer's active window with an explicit revocation tombstone.
 pub fn revoke_issuer(
   receiver_workspace: String,
   issuer: String,
 ) -> Result(Nil, String) {
-  ffi_revoke_issuer(receiver_workspace, issuer)
+  sync_trust.revoke_workspace_key(receiver_workspace, issuer)
 }
 
-/// Read explicit local trust/revocation state without attempting verification.
+/// Read current policy admissibility at the caller's evaluation timestamp.
 pub fn issuer_status(
   receiver_workspace: String,
   issuer: String,
+  now: Int,
 ) -> Result(#(Bool, Bool), String) {
-  ffi_issuer_status(receiver_workspace, issuer)
+  sync_trust.workspace_key_status_at(receiver_workspace, issuer, now)
 }
 
 /// Sign all gate-fact fields with the workspace's persistent Ed25519 identity.
@@ -154,6 +137,11 @@ pub fn verify(
   let Wire(domain, gate_id, state, observed_at, expires_at, author, signature) =
     wire
 
+  use Nil <- result.try(sync_trust.admit_workspace_key_at(
+    receiver_workspace,
+    author,
+    now,
+  ))
   case
     ffi_verify(
       receiver_workspace,

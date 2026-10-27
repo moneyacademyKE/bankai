@@ -30,7 +30,7 @@ pub fn readiness_tasks(
           task.id,
           now,
         ))
-        use active <- result.try(active_facts(workspace, stored))
+        use active <- result.try(active_facts(workspace, stored, now))
         Ok(case gleam_list.is_empty(active) {
           True -> task
           False -> Task(..task, gate_satisfied: True)
@@ -254,7 +254,7 @@ fn gate_summary(
     gate.id,
     now,
   ))
-  use active_facts <- result.try(active_facts(workspace, stored_facts))
+  use active_facts <- result.try(active_facts(workspace, stored_facts, now))
   let state = policy.state(gate, !gleam_list.is_empty(active_facts), now)
   Ok(
     json.object([
@@ -282,17 +282,18 @@ fn evaluate(
     gate.id,
     now,
   ))
-  use active <- result.try(active_facts(workspace, stored_facts))
+  use active <- result.try(active_facts(workspace, stored_facts, now))
   Ok(policy.evaluate(gate, tasks, !gleam_list.is_empty(active), now))
 }
 
 fn active_facts(
   workspace: String,
   stored_facts: List(lifecycle_store.StoredFact),
+  now: Int,
 ) -> Result(List(lifecycle_store.StoredFact), String) {
   stored_facts
   |> gleam_list.try_map(fn(stored: lifecycle_store.StoredFact) {
-    facts.issuer_status(workspace, stored.issuer)
+    facts.issuer_status(workspace, stored.issuer, now)
     |> result.map(fn(status) {
       let #(trusted, revoked) = status
       #(stored, trusted && !revoked)

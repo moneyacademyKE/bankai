@@ -93,11 +93,15 @@ pub fn tools() -> List(json.Json) {
     ),
     tool(
       "sync_trust",
-      "Explicitly trust a peer replica's public key. args: [\"<public-key>\"].",
+      "Explicitly trust a peer key. args: [\"<public-key>\", \"--expires-at\", \"NS\"].",
     ),
     tool(
       "sync_revoke",
       "Revoke a previously trusted replica key. args: [\"<public-key>\"].",
+    ),
+    tool(
+      "sync_rotate",
+      "Rotate replica trust. args: [\"<old-key>\", \"<new-key>\", \"--overlap\", \"NS\", \"--expires-at\", \"NS\"].",
     ),
     tool(
       "journal_tail",

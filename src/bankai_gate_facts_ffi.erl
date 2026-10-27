@@ -1,6 +1,5 @@
 -module(bankai_gate_facts_ffi).
--export([public_key/1, trust_issuer/2, revoke_issuer/2, sign/5, verify/11,
-         issuer_status/2, reset_for_test/1]).
+-export([public_key/1, sign/5, verify/11, reset_for_test/1]).
 
 %% Gate facts reuse Bankai's workspace identity and trust material. Their
 %% envelope domain is intentionally independent from every other signed Bankai
@@ -15,33 +14,6 @@ public_key(Workspace) when is_binary(Workspace) ->
     end);
 public_key(_Workspace) ->
     {error, <<"invalid gate fact workspace">>}.
-
-trust_issuer(Workspace, Public64)
-  when is_binary(Workspace), is_binary(Public64) ->
-    with_decoded_public(Public64, fun(Public) ->
-        update_key_file(Workspace, trust_path(Workspace),
-                        fun(Keys) -> add_unique(Keys, Public) end)
-    end);
-trust_issuer(_Workspace, _Public64) ->
-    {error, <<"invalid gate fact issuer">>}.
-
-revoke_issuer(Workspace, Public64)
-  when is_binary(Workspace), is_binary(Public64) ->
-    with_decoded_public(Public64, fun(Public) ->
-        update_key_file(Workspace, revoked_path(Workspace),
-                        fun(Keys) -> add_unique(Keys, Public) end)
-    end);
-revoke_issuer(_Workspace, _Public64) ->
-    {error, <<"invalid gate fact issuer">>}.
-
-issuer_status(Workspace, Public64)
-  when is_binary(Workspace), is_binary(Public64) ->
-    with_decoded_public(Public64, fun(Public) ->
-        {ok, {lists:member(Public, read_key_file(trust_path(Workspace))),
-              lists:member(Public, read_key_file(revoked_path(Workspace)))}}
-    end);
-issuer_status(_Workspace, _Public64) ->
-    {error, <<"invalid gate fact issuer">>}.
 
 sign(Workspace, GateId, satisfied, ObservedAt, ExpiresAt)
   when is_binary(Workspace), is_binary(GateId),
@@ -87,23 +59,15 @@ reset_for_test(Workspace) when is_binary(Workspace) ->
 reset_for_test(_Workspace) ->
     {error, <<"invalid gate fact workspace">>}.
 
-verify_decoded(Workspace, Domain, GateId, State, ObservedAt, ExpiresAt,
+verify_decoded(_Workspace, Domain, GateId, State, ObservedAt, ExpiresAt,
                Author, Author64, Signature, Signature64, ExpectedGateId,
                ExpectedIssuer, Now) ->
     case preliminary_check(Domain, GateId, State, ObservedAt, ExpiresAt,
                            Author, ExpectedGateId, ExpectedIssuer, Now) of
         ok ->
-            case revoked(Workspace, Author) of
-                true -> {error, <<"revoked gate fact issuer">>};
-                false ->
-                    case trusted(Workspace, Author) of
-                        false -> {error, <<"unknown gate fact issuer">>};
-                        true ->
-                            verify_signature(GateId, State, ObservedAt,
-                                             ExpiresAt, Author, Author64,
-                                             Signature, Signature64)
-                    end
-            end;
+            verify_signature(GateId, State, ObservedAt,
+                             ExpiresAt, Author, Author64,
+                             Signature, Signature64);
         Error -> Error
     end.
 
@@ -203,18 +167,6 @@ create_seed(Path) ->
         Error -> Error
     end.
 
-trusted(Workspace, Public) ->
-    lists:member(Public, read_key_file(trust_path(Workspace))).
-
-revoked(Workspace, Public) ->
-    lists:member(Public, read_key_file(revoked_path(Workspace))).
-
-with_decoded_public(Public64, Fun) ->
-    case decode_public(Public64) of
-        {ok, Public} -> Fun(Public);
-        _ -> {error, <<"invalid Ed25519 public key">>}
-    end.
-
 decode_public(Value) ->
     case decode64(Value) of
         {ok, Public} when byte_size(Public) =:= 32 -> {ok, Public};
@@ -238,33 +190,6 @@ decode64(Value) when is_binary(Value) ->
     end;
 decode64(_Value) ->
     {error, invalid_base64}.
-
-update_key_file(Workspace, Path, Update) ->
-    case ensure_identity_dir(Workspace) of
-        ok ->
-            Existing = read_key_file(Path),
-            atomic_write(Path, term_to_binary(Update(Existing), [deterministic]));
-        {error, Reason} -> {error, file_error(Reason)}
-    end.
-
-read_key_file(Path) ->
-    case file:read_file(Path) of
-        {ok, Data} ->
-            try
-                Value = binary_to_term(Data, [safe]),
-                case is_list(Value) andalso lists:all(fun is_binary/1, Value) of
-                    true -> Value;
-                    false -> []
-                end
-            catch error:_ -> [] end;
-        _ -> []
-    end.
-
-add_unique(Keys, Key) ->
-    case lists:member(Key, Keys) of
-        true -> Keys;
-        false -> [Key | Keys]
-    end.
 
 ensure_identity_dir(Workspace) ->
     filelib:ensure_dir(filename:join(

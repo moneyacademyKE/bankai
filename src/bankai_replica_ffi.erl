@@ -1,6 +1,6 @@
 -module(bankai_replica_ffi).
--export([public_key/1, trust_peer/2, revoke_peer/2, sign_snapshot/4,
-         verify_snapshot/7, mark_applied/2, record_conflict/3,
+-export([public_key/1, read_trust_policy/1, write_trust_policy/3,
+         sign_snapshot/4, verify_snapshot/7, mark_applied/2, record_conflict/3,
          list_conflicts/1, resolve_conflict/2, clear_conflicts/1,
          reset_identity_for_test/1, adversarial_envelope_checks_for_test/0]).
 
@@ -14,18 +14,6 @@
 public_key(Workspace) ->
     with_seed(Workspace, fun(Seed) ->
         {ok, base64:encode(aarondb@envelope:public_key(Seed))}
-    end).
-
-trust_peer(Workspace, Public64) ->
-    ensure_identity_dir(Workspace),
-    with_decoded_public(Public64, fun(Public) ->
-        update_key_file(trust_path(Workspace), fun(Keys) -> add_unique(Keys, Public) end)
-    end).
-
-revoke_peer(Workspace, Public64) ->
-    ensure_identity_dir(Workspace),
-    with_decoded_public(Public64, fun(Public) ->
-        update_key_file(revoked_path(Workspace), fun(Keys) -> add_unique(Keys, Public) end)
     end).
 
 sign_snapshot(Workspace, Payload, Parents64, Clock) when Clock >= 0 ->
@@ -50,18 +38,13 @@ sign_snapshot(Workspace, Payload, Parents64, Clock) when Clock >= 0 ->
 sign_snapshot(_Workspace, _Payload, _Parents, _Clock) ->
     {error, <<"replica logical clock must be non-negative">>}.
 
+%% Raw cryptography only: sync_peer admits the author through the Gleam trust
+%% policy BEFORE calling this function. Never use this as an admission shortcut.
 verify_snapshot(Workspace, Payload64, Author64, Parents64, Clock, Epoch, Signature64)
   when Clock >= 0, Epoch > 0 ->
     case {decode64(Payload64), decode64(Author64), decode_parents(Parents64), decode64(Signature64)} of
         {{ok, Payload}, {ok, Author}, {ok, Parents}, {ok, Signature}} ->
-            case trusted(Workspace, Author) of
-                false -> {error, <<"unknown replica author">>};
-                true ->
-                    case revoked(Workspace, Author) of
-                        true -> {error, <<"revoked replica author">>};
-                        false -> verify_envelope(Workspace, Payload, Author, Parents, Clock, Epoch, Signature)
-                    end
-            end;
+            verify_envelope(Workspace, Payload, Author, Parents, Clock, Epoch, Signature);
         _ -> {error, <<"invalid replica envelope encoding">>}
     end;
 verify_snapshot(_Workspace, _Payload64, _Author64, _Parents64, _Clock, _Epoch, _Signature64) ->
@@ -196,15 +179,113 @@ seed(Workspace) ->
         {error, Reason} -> {error, file_error(Reason)}
     end.
 
-trusted(Workspace, Public) -> lists:member(Public, read_key_file(trust_path(Workspace))).
-revoked(Workspace, Public) -> lists:member(Public, read_key_file(revoked_path(Workspace))).
-seen(Workspace, Signature) -> lists:member(Signature, read_key_file(seen_path(Workspace))).
-
-with_decoded_public(Public64, Fun) ->
-    case decode64(Public64) of
-        {ok, Public} when byte_size(Public) =:= 32 -> Fun(Public);
-        _ -> {error, <<"invalid Ed25519 public key">>}
+read_trust_policy(Workspace) ->
+    case ensure_identity_dir(Workspace) of
+        ok -> read_trust_policy_file(trust_path(Workspace), revoked_path(Workspace));
+        {error, Reason} -> {error, file_error(Reason)}
     end.
+
+read_trust_policy_file(TrustPath, RevokedPath) ->
+    case file:read_file(TrustPath) of
+        {ok, Data} ->
+            try binary_to_term(Data, [safe]) of
+                {bankai_trust_policy_v1, Active, Revoked} ->
+                    case valid_active(Active) andalso valid_public_keys(Revoked) of
+                        true -> {ok, {encode_active(Active), encode_public_keys(Revoked)}};
+                        false -> {error, <<"invalid trust policy storage">>}
+                    end;
+                Legacy when is_list(Legacy) ->
+                    case valid_public_keys(Legacy) of
+                        true -> read_legacy_policy(Legacy, RevokedPath);
+                        false -> {error, <<"invalid trust policy storage">>}
+                    end;
+                _ -> {error, <<"invalid trust policy storage">>}
+            catch error:_ -> {error, <<"invalid trust policy storage">>}
+            end;
+        {error, enoent} -> read_legacy_policy([], RevokedPath);
+        {error, Reason} -> {error, file_error(Reason)}
+    end.
+
+read_legacy_policy(Trusted, RevokedPath) ->
+    case read_legacy_keys(RevokedPath) of
+        {ok, Revoked} ->
+            Active = [{Public, 0, 9223372036854775807} || Public <- Trusted],
+            {ok, {encode_active(Active), encode_public_keys(Revoked)}};
+        Error -> Error
+    end.
+
+read_legacy_keys(Path) ->
+    case file:read_file(Path) of
+        {ok, Data} ->
+            try binary_to_term(Data, [safe]) of
+                Value ->
+                    case valid_public_keys(Value) of
+                        true -> {ok, Value};
+                        false -> {error, <<"invalid legacy trust storage">>}
+                    end
+            catch error:_ -> {error, <<"invalid legacy trust storage">>}
+            end;
+        {error, enoent} -> {ok, []};
+        {error, Reason} -> {error, file_error(Reason)}
+    end.
+
+write_trust_policy(Workspace, Active64, Revoked64) ->
+    case ensure_identity_dir(Workspace) of
+        ok ->
+            case {decode_active(Active64), decode_public_keys(Revoked64)} of
+                {{ok, Active}, {ok, Revoked}} ->
+                    atomic_write(trust_path(Workspace), term_to_binary(
+                        {bankai_trust_policy_v1, Active, Revoked}, [deterministic]));
+                {{error, Reason}, _} -> {error, Reason};
+                {_, {error, Reason}} -> {error, Reason}
+            end;
+        {error, Reason} -> {error, file_error(Reason)}
+    end.
+
+decode_active(Entries) -> decode_active(Entries, []).
+decode_active([], Acc) -> {ok, lists:reverse(Acc)};
+decode_active([{Public64, Since, Until} | Rest], Acc)
+  when is_integer(Since), is_integer(Until), Since >= 0, Until > Since ->
+    case decode64(Public64) of
+        {ok, Public} when byte_size(Public) =:= 32 ->
+            decode_active(Rest, [{Public, Since, Until} | Acc]);
+        _ -> {error, <<"invalid Ed25519 public key">>}
+    end;
+decode_active(_, _) -> {error, <<"invalid trust policy entries">>}.
+
+decode_public_keys(Keys) -> decode_public_keys(Keys, []).
+decode_public_keys([], Acc) -> {ok, lists:reverse(Acc)};
+decode_public_keys([Public64 | Rest], Acc) ->
+    case decode64(Public64) of
+        {ok, Public} when byte_size(Public) =:= 32 ->
+            decode_public_keys(Rest, [Public | Acc]);
+        _ -> {error, <<"invalid Ed25519 public key">>}
+    end;
+decode_public_keys(_, _) -> {error, <<"invalid trust policy entries">>}.
+
+valid_active(Active) when is_list(Active) ->
+    lists:all(fun(Entry) ->
+        case Entry of
+            {Public, Since, Until} ->
+                is_binary(Public) andalso byte_size(Public) =:= 32 andalso
+                is_integer(Since) andalso is_integer(Until) andalso
+                Since >= 0 andalso Until > Since;
+            _ -> false
+        end
+    end, Active);
+valid_active(_) -> false.
+
+valid_public_keys(Keys) when is_list(Keys) ->
+    lists:all(fun(Public) ->
+        is_binary(Public) andalso byte_size(Public) =:= 32
+    end, Keys);
+valid_public_keys(_) -> false.
+
+encode_active(Active) ->
+    [{base64:encode(Public), Since, Until} || {Public, Since, Until} <- Active].
+encode_public_keys(Keys) -> [base64:encode(Public) || Public <- Keys].
+
+seen(Workspace, Signature) -> lists:member(Signature, read_key_file(seen_path(Workspace))).
 
 decode_parents(Parents64) ->
     lists:foldr(fun(Encoded, Acc) ->

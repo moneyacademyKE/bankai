@@ -3,6 +3,7 @@ import bankai/mnesia_store
 import bankai/serde
 import bankai/storage/store
 import bankai/sync/conflicts
+import bankai/sync/trust as sync_trust
 import bankai/sync_peer
 import gleam/list
 import gleam/result
@@ -96,6 +97,48 @@ pub fn untrusted_tampered_wrong_domain_and_revoked_frames_are_rejected_test() {
   let _ = should.be_ok(sync_peer.revoke_peer(receiver, sender_key))
   // The FFI verifier performs the revocation gate before envelope parsing;
   // the end-to-end transport path exercises it in the next signed exchange.
+}
+
+pub fn expired_and_revoked_keys_reject_valid_signed_frames_test() {
+  let sender = "/tmp/bankai_signed_policy_sender"
+  let receiver = "/tmp/bankai_signed_policy_receiver"
+  let now = 1_000_000_000_000_000_000
+  reset(sender)
+  reset(receiver)
+  let _ = should.be_ok(daemon_store.boot(sender))
+  let _ = should.be_ok(daemon_store.create(sender, "Policy-bound work", []))
+  let sender_key = should.be_ok(sync_peer.public_key(sender))
+  let _ =
+    should.be_ok(sync_trust.trust_workspace_key_for(
+      receiver,
+      sender_key,
+      now - 100,
+      now,
+    ))
+  let frame = should.be_ok(sync_peer.signed_snapshot_for_test(sender))
+
+  sync_peer.decode_signed_snapshot_at_for_test(receiver, frame, now - 1)
+  |> should.be_ok
+  sync_peer.decode_signed_snapshot_at_for_test(receiver, frame, now)
+  |> should.be_error
+  |> string.contains("key_expired")
+  |> should.be_true
+
+  let _ =
+    should.be_ok(sync_trust.trust_workspace_key_for(
+      receiver,
+      sender_key,
+      now,
+      now + 100,
+    ))
+  sync_peer.decode_signed_snapshot_at_for_test(receiver, frame, now)
+  |> should.be_ok
+
+  let _ = should.be_ok(sync_peer.revoke_peer(receiver, sender_key))
+  sync_peer.decode_signed_snapshot_at_for_test(receiver, frame, now)
+  |> should.be_error
+  |> string.contains("key_revoked")
+  |> should.be_true
 }
 
 pub fn conflict_recording_and_resolution_lifecycle_test() {

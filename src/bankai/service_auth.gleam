@@ -150,6 +150,7 @@ fn required_capability(
     | "sync_conflict_clear", _
     | "sync_trust", _
     | "sync_revoke", _
+    | "sync_rotate", _
     | "export", _
     | "import", _
     | "sync", _

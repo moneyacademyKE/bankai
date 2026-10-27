@@ -9,6 +9,7 @@ import bankai/cli/llm
 import bankai/cli/maintenance
 import bankai/cli/parser
 import bankai/cli/setup
+import bankai/cli/sync as sync_cli
 import bankai/graph
 import bankai/lease
 import bankai/memory
@@ -115,11 +116,13 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     ["compact", ..] ->
       parser.envelope(maintenance.gc_cmd(workspace, tasks_path))
     ["sync", "identity", ..] ->
-      parser.envelope(maintenance.sync_identity_cmd(workspace))
+      parser.envelope(sync_cli.sync_identity_cmd(workspace))
     ["sync", "trust", ..rest] ->
-      parser.envelope(maintenance.sync_trust_cmd(workspace, rest))
+      parser.envelope(sync_cli.sync_trust_cmd(workspace, rest))
     ["sync", "revoke", ..rest] ->
-      parser.envelope(maintenance.sync_revoke_cmd(workspace, rest))
+      parser.envelope(sync_cli.sync_revoke_cmd(workspace, rest))
+    ["sync", "rotate", ..rest] ->
+      parser.envelope(sync_cli.sync_rotate_cmd(workspace, rest))
     ["sync", "conflicts", ..] ->
       parser.envelope(maintenance.sync_conflicts_cmd(workspace))
     ["sync", "resolve", id, ..rest] ->
@@ -995,8 +998,11 @@ pub fn usage() -> String {
   <> "                                resolve a merge conflict by picking a side\n"
   <> "  sync clear                    drop all pending conflict records\n"
   <> "  sync identity                 print this replica's public key\n"
-  <> "  sync trust <key>              trust a peer replica's public key\n"
+  <> "  sync trust <key> [--expires-at NS]\n"
+  <> "                                trust a peer key, optionally until NS\n"
   <> "  sync revoke <key>             revoke a trusted replica key\n"
+  <> "  sync rotate <old> <new> [--overlap NS] [--expires-at NS]\n"
+  <> "                                rotate trust with a bounded overlap\n"
   <> "  sync-serve [--port N]         serve immutable history + current heads\n"
   <> "  sync-pull --host H [--port N] replicate immutable history from a peer\n"
   <> "  init                          initialize .bankai/\n"

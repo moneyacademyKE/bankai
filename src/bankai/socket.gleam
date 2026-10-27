@@ -12,6 +12,7 @@ import bankai/rules/service as rule_service
 import bankai/service_auth
 import bankai/service_protocol
 import bankai/sync/jsonl
+import bankai/sync/trust_args
 import bankai/wisps/service as wisp_service
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -182,13 +183,41 @@ pub fn handle_request(workspace: String, request: Request) -> Response {
     "sync_identity" -> daemon_result(daemon_store.sync_identity(workspace))
     "sync_trust" ->
       case request.params {
-        [key, ..] -> daemon_result(daemon_store.sync_trust(workspace, key))
+        [key, ..rest] ->
+          case trust_args.expiry_args(rest) {
+            Ok(expires_at) ->
+              daemon_result(daemon_store.sync_trust_for(
+                workspace,
+                key,
+                expires_at,
+              ))
+            Error(message) -> ErrorResponse(message)
+          }
         _ -> ErrorResponse(message: "sync_trust requires <public-key>")
       }
     "sync_revoke" ->
       case request.params {
         [key, ..] -> daemon_result(daemon_store.sync_revoke(workspace, key))
         _ -> ErrorResponse(message: "sync_revoke requires <public-key>")
+      }
+    "sync_rotate" ->
+      case request.params {
+        [old_id, new_id, ..rest] ->
+          case trust_args.rotation_args(rest) {
+            Ok(#(overlap, expires_at)) ->
+              daemon_result(daemon_store.sync_rotate(
+                workspace,
+                old_id,
+                new_id,
+                overlap,
+                expires_at,
+              ))
+            Error(message) -> ErrorResponse(message)
+          }
+        _ ->
+          ErrorResponse(
+            message: "sync_rotate requires <old-key> <new-key> [--overlap NS] [--expires-at NS]",
+          )
       }
     "journal_tail" ->
       case request.params {

@@ -222,10 +222,11 @@ fn daemon_request(
     "sync", ["identity", ..] -> Ok(#("sync_identity", []))
     "sync", ["trust", ..rest] -> Ok(#("sync_trust", rest))
     "sync", ["revoke", ..rest] -> Ok(#("sync_revoke", rest))
+    "sync", ["rotate", ..rest] -> Ok(#("sync_rotate", rest))
     "sync", ["--from", path, ..] -> Ok(#("sync", ["--from", path]))
     "sync", _ ->
       Error(
-        "usage: sync --from <path> | conflicts | resolve <id> --keep local|remote | clear | identity | trust <key> | revoke <key>",
+        "usage: sync --from <path> | conflicts | resolve <id> --keep local|remote | clear | identity | trust <key> [--expires-at NS] | revoke <key> | rotate <old> <new> [--overlap NS] [--expires-at NS]",
       )
     "sync-pull", rest -> Ok(#("sync_pull", rest))
     "sync_pull", rest -> Ok(#("sync_pull", rest))
@@ -266,8 +267,10 @@ fn is_task_operation(method: String, params: List(String)) -> Bool {
   }
 }
 
-fn is_mutation(method: String, params: List(String)) -> Bool {
+pub fn is_mutation(method: String, params: List(String)) -> Bool {
   case method, params {
+    "sync", ["identity", ..] -> False
+    "sync", ["conflicts", ..] -> False
     "backup", _ -> True
     "export", _ -> True
     "import", _ -> True

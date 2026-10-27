@@ -331,3 +331,72 @@ pub fn daemon_exposes_replica_identity_and_trust_test() {
 fn fake_hash() -> String {
   string.repeat("ab", 32)
 }
+
+pub fn daemon_rotates_trust_and_sync_pull_uses_the_new_key_test() {
+  let old_remote = "/tmp/bankai_res_rotate_old"
+  let new_remote = "/tmp/bankai_res_rotate_new"
+  let local = "/tmp/bankai_res_rotate_local"
+  wipe(old_remote)
+  wipe(new_remote)
+  wipe(local)
+  let _ = should.be_ok(daemon_store.boot(old_remote))
+  let _ = should.be_ok(daemon_store.boot(new_remote))
+  let _ = should.be_ok(daemon_store.boot(local))
+  let _ = should.be_ok(daemon_store.create(old_remote, "Old key work", []))
+  let _ = should.be_ok(daemon_store.create(new_remote, "New key work", []))
+
+  let old_key = should.be_ok(sync_peer.public_key(old_remote))
+  let new_key = should.be_ok(sync_peer.public_key(new_remote))
+  case socket.handle_request(local, socket.Request("sync_trust", [old_key])) {
+    socket.OkResponse(_) -> Nil
+    socket.ErrorResponse(message) -> panic as message
+  }
+  serve_peer(old_remote, 17_825)
+  case
+    socket.handle_request(
+      local,
+      socket.Request("sync_pull", ["--host", "localhost", "--port", "17825"]),
+    )
+  {
+    socket.OkResponse(_) -> Nil
+    socket.ErrorResponse(message) -> panic as message
+  }
+
+  serve_peer(new_remote, 17_826)
+  case
+    socket.handle_request(
+      local,
+      socket.Request("sync_rotate", [old_key, new_key, "--overlap", "0"]),
+    )
+  {
+    socket.OkResponse(value) ->
+      string.contains(value, new_key) |> should.be_true
+    socket.ErrorResponse(message) -> panic as message
+  }
+
+  case
+    socket.handle_request(
+      local,
+      socket.Request("sync_pull", ["--host", "localhost", "--port", "17825"]),
+    )
+  {
+    socket.OkResponse(_) -> should.fail()
+    socket.ErrorResponse(message) ->
+      string.contains(message, "key_expired") |> should.be_true
+  }
+  case
+    socket.handle_request(
+      local,
+      socket.Request("sync_pull", ["--host", "localhost", "--port", "17826"]),
+    )
+  {
+    socket.OkResponse(_) -> Nil
+    socket.ErrorResponse(message) -> panic as message
+  }
+
+  should.be_ok(mnesia_store.current_store(local))
+  |> store.current_tasks
+  |> list.map(fn(task) { task.title })
+  |> list.contains("New key work")
+  |> should.be_true
+}

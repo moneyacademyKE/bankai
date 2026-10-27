@@ -8,6 +8,8 @@
 import bankai/mnesia_store
 import bankai/serde
 import bankai/storage/store
+import bankai/sync/trust as sync_trust
+import bankai/time
 import bankai/types
 import bankai/version_graph
 import gleam/dynamic.{type Dynamic}
@@ -54,12 +56,6 @@ type EnvelopeWire {
 
 @external(erlang, "bankai_replica_ffi", "public_key")
 fn ffi_public_key(workspace: String) -> Result(String, String)
-
-@external(erlang, "bankai_replica_ffi", "trust_peer")
-fn ffi_trust_peer(workspace: String, public_key: String) -> Result(Nil, String)
-
-@external(erlang, "bankai_replica_ffi", "revoke_peer")
-fn ffi_revoke_peer(workspace: String, public_key: String) -> Result(Nil, String)
 
 @external(erlang, "bankai_replica_ffi", "sign_snapshot")
 fn ffi_sign_snapshot(
@@ -125,14 +121,14 @@ pub fn trust_peer(
   workspace: String,
   public_key: String,
 ) -> Result(Nil, String) {
-  ffi_trust_peer(workspace, public_key)
+  sync_trust.trust_workspace_key(workspace, public_key)
 }
 
 pub fn revoke_peer(
   workspace: String,
   public_key: String,
 ) -> Result(Nil, String) {
-  ffi_revoke_peer(workspace, public_key)
+  sync_trust.revoke_workspace_key(workspace, public_key)
 }
 
 pub fn parse_port(args: List(String), default: Int) -> Int {
@@ -270,6 +266,15 @@ pub fn decode_signed_snapshot_for_test(
   decode_signed_snapshot(workspace, line)
 }
 
+/// Deterministic policy tests inject wall-clock nanoseconds at this boundary.
+pub fn decode_signed_snapshot_at_for_test(
+  workspace: String,
+  line: String,
+  now: Int,
+) -> Result(Snapshot, String) {
+  decode_signed_snapshot_at(workspace, line, now)
+}
+
 pub fn fetch(
   host: String,
   port: Int,
@@ -298,6 +303,14 @@ fn decode_signed_snapshot(
   workspace: String,
   line: String,
 ) -> Result(Snapshot, String) {
+  decode_signed_snapshot_at(workspace, line, time.now())
+}
+
+fn decode_signed_snapshot_at(
+  workspace: String,
+  line: String,
+  now: Int,
+) -> Result(Snapshot, String) {
   case json.parse(from: string.trim(line), using: envelope_decoder()) {
     Error(reason) ->
       Error(
@@ -318,7 +331,12 @@ fn decode_signed_snapshot(
       ) = wire
       case domain == replica_domain {
         False -> Error("replica envelope rejected: wrong Bankai domain")
-        True ->
+        True -> {
+          use Nil <- result.try(sync_trust.admit_workspace_key_at(
+            workspace,
+            author,
+            now,
+          ))
           ffi_verify_snapshot(
             workspace,
             payload,
@@ -332,6 +350,7 @@ fn decode_signed_snapshot(
           |> result.map(fn(snapshot) {
             Snapshot(..snapshot, author:, signature:)
           })
+        }
       }
     }
   }

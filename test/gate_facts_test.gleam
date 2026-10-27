@@ -3,6 +3,7 @@ import bankai/gate_wisp/store as lifecycle_store
 import bankai/gates/facts
 import bankai/gates/service as gates
 import bankai/mnesia_store
+import bankai/sync/trust as sync_trust
 import bankai/time
 import gleam/json
 import gleam/list
@@ -256,5 +257,23 @@ pub fn revoked_issuer_is_rejected_test() {
   facts.verify(receiver, wire, gate_id, issuer, valid_now)
   |> should.be_error
   |> string.contains("revoked")
+  |> should.be_true
+}
+
+pub fn issuer_key_expiry_is_independent_of_fact_expiry_test() {
+  let #(receiver, issuer, wire) = trusted_wire("issuer_expiry")
+  let _ =
+    should.be_ok(sync_trust.trust_workspace_key_for(
+      receiver,
+      issuer,
+      valid_now - 100,
+      valid_now,
+    ))
+
+  facts.verify(receiver, wire, gate_id, issuer, valid_now - 1)
+  |> should.be_ok
+  facts.verify(receiver, wire, gate_id, issuer, valid_now)
+  |> should.be_error
+  |> string.contains("key_expired")
   |> should.be_true
 }

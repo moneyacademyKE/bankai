@@ -153,6 +153,7 @@ fn is_advertised_tool(name: String) -> Bool {
     | "sync_identity"
     | "sync_trust"
     | "sync_revoke"
+    | "sync_rotate"
     | "journal_tail"
     | "molecule_register"
     | "molecule_list"
@@ -193,6 +194,7 @@ fn daemon_request(name: String, args: List(String)) -> #(String, List(String)) {
     "sync_identity" -> #("sync_identity", args)
     "sync_trust" -> #("sync_trust", args)
     "sync_revoke" -> #("sync_revoke", args)
+    "sync_rotate" -> #("sync_rotate", args)
     "journal_tail" -> #("journal_tail", args)
     "rule_register" -> #("rule_register", args)
     "rule_list" -> #("rule_list", args)
@@ -278,6 +280,7 @@ fn is_task_operation(name: String) -> Bool {
     | "sync_identity"
     | "sync_trust"
     | "sync_revoke"
+    | "sync_rotate"
     | "journal_tail"
     | "remember"
     | "memories"
