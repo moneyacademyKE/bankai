@@ -30,7 +30,7 @@ pub fn admit_key(
   signer_id: String,
   now: Int,
 ) -> Result(Nil, String) {
-  trust.key_admits(policy, signer_id, now)
+  trust.keys_admit(keys(policy), signer_id, now)
   |> result.map(fn(_) { Nil })
   |> result.map_error(trust.refusal_name)
 }
@@ -81,7 +81,7 @@ pub fn rotate(
           Error("sync rotation requires overlap >= 0 and new expiry > now")
         True -> {
           use old_key <- result.try(
-            trust.key_admits(policy, old_id, now)
+            trust.keys_admit(keys(policy), old_id, now)
             |> result.map_error(trust.refusal_name),
           )
           case old_key.state {
@@ -109,15 +109,24 @@ pub fn rotate(
   }
 }
 
+fn keys(policy: TrustPolicy) -> List(trust.TrustedKey) {
+  // 3.26.0: TrustPolicy carries keys only in RequireKeys; FixturesOnly
+  // admits nothing in Bankai (fail closed).
+  case policy {
+    trust.RequireKeys(ks, _) -> ks
+    trust.FixturesOnly -> []
+  }
+}
+
 fn without_signer(
   policy: TrustPolicy,
   signer_id: String,
 ) -> List(trust.TrustedKey) {
-  list.filter(policy.keys, fn(key) { key.signer.id != signer_id })
+  list.filter(keys(policy), fn(key) { key.signer.id != signer_id })
 }
 
 fn signer(signer_id: String) -> evidence.Signer {
-  // key_admits uses only the stable id. Replica and gate signatures are Ed25519
+  // keys_admit uses only the stable id. Replica and gate signatures are Ed25519
   // and never pass through gleamunison's HMAC evidence admission function.
   evidence.signer(signer_id, <<>>)
 }
@@ -142,7 +151,7 @@ pub fn load(workspace: String) -> Result(TrustPolicy, String) {
 
 fn save(workspace: String, policy: TrustPolicy) -> Result(Nil, String) {
   let #(active, revoked) =
-    list.fold(policy.keys, #([], []), fn(acc, key) {
+    list.fold(keys(policy), #([], []), fn(acc, key) {
       let #(active, revoked) = acc
       case key.state {
         trust.Active(since, until) -> #(
@@ -246,7 +255,7 @@ pub fn workspace_key_status_at(
 ) -> Result(#(Bool, Bool), String) {
   use policy <- result.try(load(workspace))
   let revoked =
-    list.any(policy.keys, fn(key) {
+    list.any(keys(policy), fn(key) {
       key.signer.id == signer_id && key.state == trust.Revoked
     })
   Ok(#(result.is_ok(admit_key(policy, signer_id, now)), revoked))

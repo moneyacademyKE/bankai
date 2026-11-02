@@ -4,11 +4,14 @@ import bankai/cli
 import bankai/metrics_view
 import gleam/json
 import gleam/string
-import gleamunison/metrics
+
+@external(erlang, "gleamunison_metrics", "counter")
+fn counter(name: String, delta: Int) -> Nil
+
 import gleeunit/should
 
 pub fn doctor_reports_metrics_snapshot_test() {
-  metrics.counter("bankai.test.adopt", 1)
+  counter("bankai.test.adopt", 1)
   let snap = json.to_string(metrics_view.snapshot())
   snap |> string.contains("bankai.test.adopt") |> should.be_true
 }

@@ -161,8 +161,9 @@ forks and free-form diagnostics keep their full history.
 `identity/trusted.term` now stores `{bankai_trust_policy_v1, Active, Revoked}`: each
 active entry carries a raw Ed25519 public key and a nanosecond `[since, until)` validity
 window, while revocation is an explicit tombstone. `bankai/sync/trust.gleam` converts that
-storage into `gleamunison/trust.TrustPolicy` and calls `key_admits`, preserving the library's
-named refusals (`unknown_signer`, `key_not_yet_valid`, `key_expired`, `key_revoked`). The
+storage into `gleamunison/trust.TrustPolicy` and calls `keys_admit(keys(policy), signer_id, now)`,
+where `keys(policy)` extracts the key list and fails closed on `FixturesOnly`, preserving the
+library's named refusals (`unknown_signer`, `key_not_yet_valid`, `key_expired`, `key_revoked`). The
 signer id is the canonical Base64 public key already used by the envelope's `author` field.
 Gleamunison's HMAC evidence admission is not involved; AaronDB remains the Ed25519
 signature verifier for both replica frames and gate facts.
@@ -187,7 +188,7 @@ starts now, and the old key expires at the earlier of its existing expiry and th
 overlap. A zero overlap switches immediately. Distinct old/new keys and nonnegative overlap
 are required. `sync revoke` replaces an active entry with a tombstone; a deliberate trust
 upsert may later re-admit it, but replication never grants trust implicitly. A key has one
-policy state, matching `key_admits`: rotating to an already-provisioned new key replaces its
+policy state, matching `keys_admit`: rotating to an already-provisioned new key replaces its
 previous window. Rotation changes local admission only; the peer must provision its new key
 separately, and zero-overlap rotation intentionally fails closed for a peer still using the
 old key.
