@@ -60,8 +60,12 @@ fn add_link(
   )
 }
 
-/// Every ancestor of `hash`, nearest first. Cycle-safe: a malformed ancestry
-/// row can never loop, it just stops contributing.
+/// Every ancestor of `hash`, in unspecified order. Treat the result as a
+/// membership set, not a ranking: `walk` returns `set.to_list`, and
+/// gleam_stdlib documents set and dict enumeration as unordered. A caller
+/// that needs the nearest common ancestor must order the walk itself.
+/// Cycle-safe: a malformed ancestry row can never loop, it just stops
+/// contributing.
 pub fn ancestors(graph: Graph, hash: String) -> List(String) {
   walk(graph, [hash], set.new())
   |> list.filter(fn(h) { h != hash })
