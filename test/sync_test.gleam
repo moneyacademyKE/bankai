@@ -2,6 +2,7 @@ import bankai/ast_bridge
 import bankai/builder
 import bankai/cli
 import bankai/serde
+import bankai/sync/conflicts
 import bankai/sync/jsonl
 import bankai/sync/merge
 import bankai/types.{InProgress, Open, Task}
@@ -142,6 +143,55 @@ pub fn merge_never_raises_on_garbage_test() {
   // The "garbage tolerance" lives in jsonl.load (unparseable lines skipped).
   let _ = merge.merge([], [])
   should.be_true(True)
+}
+
+/// A durable conflict record is the only proof a fork ever happened, and its
+/// detail line has exactly one writer (`merge.conflict_detail`) and one reader
+/// (`conflicts.parse_conflict_sides`). Nothing bound the two: renaming a token
+/// in the writer left the whole suite green while every record written
+/// afterwards became permanently unresolvable, and the record is deliberately
+/// kept outside the head tables so it cannot be rebuilt. This is the round trip
+/// that closes the gap `merge.conflict_detail`'s doc already claims.
+pub fn conflict_detail_round_trips_through_parse_sides_test() {
+  let conflict =
+    merge.Conflict(
+      id: "bk-0001",
+      local_hash: "aaaa1111",
+      remote_hash: "bbbb2222",
+    )
+
+  let sides =
+    should.be_ok(
+      conflict
+      |> merge.conflict_detail
+      |> conflicts.parse_conflict_sides,
+    )
+
+  sides.task |> should.equal(conflict.id)
+  sides.local |> should.equal(conflict.local_hash)
+  sides.remote |> should.equal(conflict.remote_hash)
+
+  // The reader is strict, and that is what makes the round trip above
+  // load-bearing rather than decorative: a renamed token is not a near-miss
+  // that still resolves, it is an unresolvable record.
+  conflicts.parse_conflict_sides("task=bk-0001 ours=aaaa1111 remote=bbbb2222")
+  |> should.be_error
+}
+
+/// The round trip above proves writer and reader agree today; this proves the
+/// reader keeps accepting the shape already durable on disk, so records written
+/// by an older build stay resolvable after the writer evolves. Deliberately a
+/// hand-written literal — it is backward-compatibility evidence, not a
+/// restatement of the writer.
+pub fn legacy_conflict_detail_literal_still_parses_test() {
+  let sides =
+    should.be_ok(conflicts.parse_conflict_sides(
+      "task=bk-0001 local=aaaa1111 remote=bbbb2222",
+    ))
+
+  sides.task |> should.equal("bk-0001")
+  sides.local |> should.equal("aaaa1111")
+  sides.remote |> should.equal("bbbb2222")
 }
 
 /// BUG-09 regression: JSONL output ends with a trailing newline (wc -l / jq interop).
