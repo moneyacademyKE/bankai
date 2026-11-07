@@ -105,28 +105,14 @@ pub fn backup_prune_cmd(
   })
 }
 
-pub type ConflictDetail {
-  ConflictDetail(task: String, local: String, remote: String)
-}
-
-/// Parse the structured merge-conflict detail format
-/// `task=<id> local=<hash> remote=<hash>`. Legacy free-text details return
-/// Error and render raw — one payload shape, not a junk drawer.
-pub fn parse_conflict_detail(detail: String) -> Result(ConflictDetail, Nil) {
-  conflicts.parse_conflict_sides(detail)
-  |> result.map(fn(sides) {
-    ConflictDetail(task: sides.task, local: sides.local, remote: sides.remote)
-  })
-  |> result.replace_error(Nil)
-}
-
 /// Task ids that already have a pending conflict record.
 pub fn pending_conflict_tasks(workspace: String) -> List(String) {
   case conflicts.list_conflicts(workspace) {
     Ok(records) ->
       records
       |> list.filter_map(fn(r) {
-        parse_conflict_detail(r.detail) |> result.map(fn(d) { d.task })
+        conflicts.parse_conflict_sides(r.detail)
+        |> result.map(fn(sides) { sides.task })
       })
     Error(_) -> []
   }
@@ -152,13 +138,15 @@ pub fn sync_conflicts_cmd(workspace: String) -> Result(json.Json, String) {
   conflicts.list_conflicts(workspace)
   |> result.map(fn(conflicts) {
     json.array(conflicts, fn(c) {
+      // A legacy or free-form detail is not a merge conflict, so it renders
+      // without the parsed fields — the raw text stays visible either way.
       let parsed =
-        parse_conflict_detail(c.detail)
-        |> result.map(fn(d) {
+        conflicts.parse_conflict_sides(c.detail)
+        |> result.map(fn(sides) {
           [
-            #("task", json.string(d.task)),
-            #("local", json.string(d.local)),
-            #("remote", json.string(d.remote)),
+            #("task", json.string(sides.task)),
+            #("local", json.string(sides.local)),
+            #("remote", json.string(sides.remote)),
           ]
         })
         |> result.unwrap([])
@@ -181,15 +169,20 @@ pub fn sync_resolve_cmd(
   use keep <- result.try(parse_keep(rest))
   use side <- result.try(conflicts.parse_side(keep))
   use record <- result.try(find_conflict(workspace, conflict_id))
-  use detail <- result.try(
-    parse_conflict_detail(record.detail)
-    |> result.replace_error(
-      "conflict " <> conflict_id <> " has a non-merge detail; resolve manually",
-    ),
+  // Keep the conflict id for context, but surface the parse reason itself: it
+  // carries the offending detail text, which is exactly what an operator needs
+  // in order to resolve by hand. The old path erased it into Nil and then
+  // replaced it with a generic sentence, hiding the one piece of evidence that
+  // explains the refusal.
+  use sides <- result.try(
+    conflicts.parse_conflict_sides(record.detail)
+    |> result.map_error(fn(reason) {
+      "conflict " <> conflict_id <> " cannot be resolved: " <> reason
+    }),
   )
   let chosen_hex = case side {
-    conflicts.KeepLocal -> detail.local
-    conflicts.KeepRemote -> detail.remote
+    conflicts.KeepLocal -> sides.local
+    conflicts.KeepRemote -> sides.remote
   }
   // Resolution writes the chosen side as the authoritative head in Mnesia and
   // refreshes the JSONL export, so both views agree after the record is gone.
@@ -197,7 +190,7 @@ pub fn sync_resolve_cmd(
   Ok(
     json.object([
       #("resolved", json.string(conflict_id)),
-      #("task", json.string(detail.task)),
+      #("task", json.string(sides.task)),
       #("kept", json.string(keep)),
       #("chosen", json.string(chosen_hex)),
     ]),

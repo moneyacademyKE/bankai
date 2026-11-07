@@ -249,5 +249,10 @@ pub fn resolve_legacy_detail_errors_cleanly_test() {
   let id = first_conflict_id(ws)
 
   let out = cli.run_in(ws, ["sync", "resolve", id, "--keep", "local"])
-  out |> string.contains("non-merge detail") |> should.be_true
+  // A free-form detail is not a merge conflict, so resolution must refuse
+  // rather than guess. The refusal also has to carry the offending text: that
+  // detail is the only evidence an operator has for resolving by hand, and the
+  // previous generic "non-merge detail; resolve manually" sentence hid it.
+  out |> string.contains("cannot be resolved") |> should.be_true
+  out |> string.contains("snapshot gap at clock 42") |> should.be_true
 }
