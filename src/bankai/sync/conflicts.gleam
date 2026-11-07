@@ -169,16 +169,13 @@ pub fn resolve_conflict(
 }
 
 /// Keep the JSONL export in step with the authoritative head set after a
-/// resolution, so a reader of either view sees the same task state.
+/// resolution, so a reader of either view sees the same task state. The
+/// exportable-set rule belongs to `mnesia_store.exportable_versions`, the
+/// owner `daemon_store.export_jsonl` also writes through — not restated here.
 fn refresh_export(workspace: String) -> Result(Nil, String) {
-  mnesia_store.version_store(workspace)
+  mnesia_store.exportable_versions(workspace)
   |> result.try(fn(versions) {
-    jsonl.flush(
-      versions
-        |> store.list
-        |> list.filter(fn(task) { task.kind != types.Wisp }),
-      to: workspace <> "/tasks.jsonl",
-    )
+    jsonl.flush(store.list(versions), to: workspace <> "/tasks.jsonl")
     |> result.replace_error("could not refresh the task export")
   })
 }
