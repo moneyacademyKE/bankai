@@ -25,31 +25,47 @@ pub fn main() -> Nil {
   let args = argv()
   case args {
     // Long-running servers — block, no single-shot envelope.
-    ["serve", ..] ->
-      // bk-07a7: any boot crash halts the VM so launchd's KeepAlive can
-      // actually respawn us — a zombie process defeats it permanently.
-      run_or_halt(fn() {
-        case platform_profile.load(cli.default_workspace) {
-          Ok(profile) ->
-            case profile.mode {
-              platform_profile.Local -> socket.serve(cli.default_workspace)
-              platform_profile.Clustered ->
-                socket.serve_clustered(cli.default_workspace)
+    // bk-2d1b: --help answers before anything boots; a misrouted help
+    // flag is how a `serve --help` parked a BEAM node for days.
+    ["serve", ..rest] ->
+      case cli.wants_help(rest) {
+        True -> io.println(cli.usage())
+        False ->
+          // bk-07a7: any boot crash halts the VM so launchd's KeepAlive can
+          // actually respawn us — a zombie process defeats it permanently.
+          run_or_halt(fn() {
+            case platform_profile.load(cli.default_workspace) {
+              Ok(profile) ->
+                case profile.mode {
+                  platform_profile.Local -> socket.serve(cli.default_workspace)
+                  platform_profile.Clustered ->
+                    socket.serve_clustered(cli.default_workspace)
+                }
+              Error(message) -> io.println(cli.error_envelope(message))
             }
-          Error(message) -> io.println(cli.error_envelope(message))
-        }
-      })
-    ["mcp", ..] -> mcp.serve(cli.default_workspace)
+          })
+      }
+    ["mcp", ..rest] ->
+      case cli.wants_help(rest) {
+        True -> io.println(cli.usage())
+        False -> mcp.serve(cli.default_workspace)
+      }
     ["llm", ..] -> io.println(cli.run_in(cli.default_workspace, args))
     ["sync-serve", ..rest] ->
-      sync_peer.serve(
-        cli.default_workspace,
-        sync_peer.parse_port(rest, sync_peer.default_port),
-      )
+      case cli.wants_help(rest) {
+        True -> io.println(cli.usage())
+        False ->
+          sync_peer.serve(
+            cli.default_workspace,
+            sync_peer.parse_port(rest, sync_peer.default_port),
+          )
+      }
     [] -> io.println(cli.usage())
     // bk-e85d: client-side version probe — handled before dispatch so it
     // answers identically whether or not a daemon is listening.
     ["--version"] | ["-v"] -> io.println(cli.version_output())
+    // bk-2d1b: help is a client-side concern too — never "unknown command".
+    ["--help"] | ["-h"] | ["help"] -> io.println(cli.usage())
     [method, ..params] -> {
       // Mutation is daemon-only. Falling back to JSONL here would reinstate the
       // lost-update race that Mnesia is meant to remove.

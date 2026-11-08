@@ -46,6 +46,16 @@ pub fn version_output() -> String {
   parser.envelope(Ok(json.object([#("version", json.string(version.current))])))
 }
 
+/// bk-2d1b: does an argv ask for help? The top-level dispatch and the
+/// long-running verbs check this BEFORE booting anything, so `--help`,
+/// `bankai help` and `serve --help` answer with usage instead of an
+/// "unknown command" envelope or a parked BEAM node.
+pub fn wants_help(args: List(String)) -> Bool {
+  list.contains(args, "--help")
+  || list.contains(args, "-h")
+  || list.contains(args, "help")
+}
+
 /// Run a command against a workspace. Output is always a JSON envelope:
 /// {"ok": <json>} or {"error": "<msg>"}. No-args prints plain help.
 pub fn run_in(workspace: String, argv: List(String)) -> String {
@@ -973,6 +983,7 @@ pub fn usage() -> String {
   "bankai — content-addressed task memory\n\n"
   <> "usage: bankai <command> [args]\n\n"
   <> "  --version, -v                 print the version (JSON envelope)\n"
+  <> "  --help, -h, help              print this usage (no daemon needed)\n"
   <> "  create <title> [--label L].. [--parent <id>] [--priority N]\n"
   <> "                                create a task / subtask\n"
   <> "  show <id>                     print a task by id (JSON)\n"
@@ -1037,6 +1048,7 @@ pub fn usage() -> String {
   <> "  sync-serve [--port N]         serve immutable history + current heads\n"
   <> "  sync-pull --host H [--port N] replicate immutable history from a peer\n"
   <> "  init                          initialize .bankai/\n"
-  <> "  serve                         run the daemon (warm JSON-RPC socket path)\n\n"
+  <> "  serve                         run the daemon (warm JSON-RPC socket path)\n"
+  <> "  mcp                           run the MCP stdio server\n\n"
   <> "all command output is a JSON envelope: {\"ok\": ...} / {\"error\": ...}"
 }
