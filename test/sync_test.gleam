@@ -161,6 +161,7 @@ pub fn conflict_detail_round_trips_through_parse_sides_test() {
       id: "bk-0001",
       local_hash: "aaaa1111",
       remote_hash: "bbbb2222",
+      base: option.Some("cccc3333"),
     )
 
   let sides =
@@ -173,6 +174,27 @@ pub fn conflict_detail_round_trips_through_parse_sides_test() {
   sides.task |> should.equal(conflict.id)
   sides.local |> should.equal(conflict.local_hash)
   sides.remote |> should.equal(conflict.remote_hash)
+  // bk-98c7: the fork point is part of the durable record now — the
+  // round trip must carry it, or two rigs resolving the same fork
+  // differently lose the fact that they share one.
+  sides.base |> should.equal(option.Some("cccc3333"))
+
+  // A conflict with no derivable base still round-trips: absence is
+  // honest (pure file merges, criss-cross histories), not unparseable.
+  let baseless =
+    merge.Conflict(
+      id: "bk-0002",
+      local_hash: "aaaa1111",
+      remote_hash: "bbbb2222",
+      base: option.None,
+    )
+  let sides2 =
+    should.be_ok(
+      baseless
+      |> merge.conflict_detail
+      |> conflicts.parse_conflict_sides,
+    )
+  sides2.base |> should.equal(option.None)
 
   // The reader is strict, and that is what makes the round trip above
   // load-bearing rather than decorative: a renamed token is not a near-miss
@@ -195,6 +217,9 @@ pub fn legacy_conflict_detail_literal_still_parses_test() {
   sides.task |> should.equal("bk-0001")
   sides.local |> should.equal("aaaa1111")
   sides.remote |> should.equal("bbbb2222")
+  // bk-98c7: records written before the base existed resolve exactly as
+  // they did before — the base is a fact about the fork, not a key of it.
+  sides.base |> should.equal(option.None)
 }
 
 /// BUG-09 regression: JSONL output ends with a trailing newline (wc -l / jq interop).

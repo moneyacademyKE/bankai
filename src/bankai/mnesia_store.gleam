@@ -216,6 +216,9 @@ pub fn plan_import(
               id: remote.id,
               local_hash: local_hash,
               remote_hash: remote_hash,
+              // bk-98c7: the graph is in hand exactly here — fill the fork
+              // point so the durable record can carry into/from/ancestor.
+              base: version_graph.merge_base(graph, local_hash, remote_hash),
             ),
           ))
         }

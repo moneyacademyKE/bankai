@@ -11,6 +11,7 @@
 
 import gleam/dict.{type Dict}
 import gleam/list
+import gleam/option
 import gleam/result
 import gleam/set
 
@@ -87,6 +88,31 @@ fn walk(
           walk(graph, list.append(rest, parents), seen)
         }
       }
+  }
+}
+
+/// The merge base of two divergent heads: the common ancestor that no other
+/// common ancestor descends from — the maximal element of the shared history.
+/// A clean fork has exactly one. Criss-cross histories have several (Dolt
+/// synthesises a virtual base there — we honestly report none) and unrelated
+/// heads have none. `None` never invents a pick: an absent base means "no
+/// single fork point is derivable", not "unknown for other reasons".
+pub fn merge_base(graph: Graph, a: String, b: String) -> option.Option(String) {
+  let common =
+    set.intersection(
+      set.from_list(ancestors(graph, a)),
+      set.from_list(ancestors(graph, b)),
+    )
+  let candidates = set.to_list(common)
+  let bases =
+    list.filter(candidates, fn(candidate) {
+      !list.any(candidates, fn(other) {
+        other != candidate && list.contains(ancestors(graph, other), candidate)
+      })
+    })
+  case bases {
+    [base] -> option.Some(base)
+    _ -> option.None
   }
 }
 

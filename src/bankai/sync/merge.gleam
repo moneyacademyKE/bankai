@@ -9,11 +9,21 @@ import bankai/storage/store
 import bankai/types.{type Task}
 import gleam/dict.{type Dict}
 import gleam/list
+import gleam/option
 import gleam/string
 import gleamunison/identity
 
 pub type Conflict {
-  Conflict(id: String, local_hash: String, remote_hash: String)
+  Conflict(
+    id: String,
+    local_hash: String,
+    remote_hash: String,
+    /// The fork point: the common ancestor both sides diverged from
+    /// (bk-98c7 — Dolt's into/from/ancestor shape). Filled by the layer
+    /// that holds the version graph; this pure set merge has no ancestry
+    /// and honestly records None.
+    base: option.Option(String),
+  )
 }
 
 pub type MergeResult {
@@ -28,14 +38,22 @@ pub fn merge(local: List(Task), remote: List(Task)) -> MergeResult {
 }
 
 /// Canonical conflict detail line. Recording and resolving share this exact
-/// shape, so a durable conflict record is always machine-resolvable.
+/// shape, so a durable conflict record is always machine-resolvable. The
+/// optional `base=` token carries the fork point when the recording layer
+/// could derive it; its absence (legacy records, pure file merges) still
+/// parses — the base is a fact about the fork, not a key of it.
 pub fn conflict_detail(conflict: Conflict) -> String {
+  let base = case conflict.base {
+    option.Some(hash) -> " base=" <> hash
+    option.None -> ""
+  }
   "task="
   <> conflict.id
   <> " local="
   <> conflict.local_hash
   <> " remote="
   <> conflict.remote_hash
+  <> base
 }
 
 /// True when both sides have the same set of hashes (no divergence at all).
@@ -81,6 +99,7 @@ fn id_conflicts(
               id: id,
               local_hash: store.hash_key(l.content_hash),
               remote_hash: store.hash_key(r.content_hash),
+              base: option.None,
             ))
         }
       Error(Nil) -> Error(Nil)

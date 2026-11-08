@@ -23,6 +23,7 @@ import bankai/types
 import gleam/erlang/process
 import gleam/json
 import gleam/list
+import gleam/option
 import gleam/string
 import gleeunit
 import gleeunit/should
@@ -115,6 +116,71 @@ pub fn resolving_a_fork_makes_the_pair_converge_test() {
   |> should.be_ok
   status_of(local, remote_id)
   |> should.equal(types.InProgress)
+}
+
+/// bk-98c7: a conflict record carries the fork point. The first-generation
+/// record names the shared ancestor both sides diverged from — Dolt's
+/// into/from/ancestor shape — and two rigs that resolve the same fork
+/// differently re-present as a second record whose sides are the two
+/// resolutions (nobody's decision is thrown away) and whose base is
+/// honestly absent: two resolutions of one fork share two fork points.
+pub fn conflict_records_carry_the_merge_base_test() {
+  let local = "/tmp/bankai_res_base_local"
+  let remote = "/tmp/bankai_res_base_remote"
+  wipe(local)
+  wipe(remote)
+  let _ = should.be_ok(daemon_store.boot(local))
+  let _ = should.be_ok(daemon_store.boot(remote))
+
+  // Fork one shared task, capturing the pre-fork head before either side
+  // moves: that head is the state both sides last agreed on.
+  let remote_id =
+    should.be_ok(daemon_store.create(remote, "Shared ancestor", []))
+    |> extract_id
+  let remote_key = should.be_ok(sync_peer.public_key(remote))
+  let _ = should.be_ok(sync_peer.trust_peer(local, remote_key))
+  serve_peer(remote, 17_827)
+  let _ = should.be_ok(daemon_store.pull_peer(local, "localhost", 17_827))
+  let shared = head_hash(local, remote_id)
+  let _ = should.be_ok(daemon_store.update(remote, remote_id, "in_progress"))
+  let _ = should.be_ok(daemon_store.update(local, remote_id, "blocked"))
+  daemon_store.pull_peer(local, "localhost", 17_827)
+  |> should.be_error
+
+  let assert [record] = should.be_ok(conflicts.list_conflicts(local))
+  let sides = should.be_ok(conflicts.parse_conflict_sides(record.detail))
+  sides.base |> should.equal(option.Some(shared))
+
+  // Both rigs see the fork and resolve it OPPOSITELY.
+  let local_key = should.be_ok(sync_peer.public_key(local))
+  let _ = should.be_ok(sync_peer.trust_peer(remote, local_key))
+  serve_peer(local, 17_828)
+  daemon_store.pull_peer(remote, "localhost", 17_828)
+  |> should.be_error
+  let assert [remote_record] = should.be_ok(conflicts.list_conflicts(remote))
+  let _ =
+    should.be_ok(daemon_store.conflicts_resolve(
+      remote,
+      remote_record.id,
+      "remote",
+    ))
+  let _ =
+    should.be_ok(daemon_store.conflicts_resolve(local, record.id, "local"))
+  let promoted_local = head_hash(local, remote_id)
+  let promoted_remote = head_hash(remote, remote_id)
+  should.be_true(promoted_local != promoted_remote)
+
+  // The two resolutions themselves diverge: the next pull is refused again
+  // and the fresh record's sides are the two resolutions.
+  daemon_store.pull_peer(local, "localhost", 17_827)
+  |> should.be_error
+  let assert [second] = should.be_ok(conflicts.list_conflicts(local))
+  let second_sides = should.be_ok(conflicts.parse_conflict_sides(second.detail))
+  second_sides.local |> should.equal(promoted_local)
+  second_sides.remote |> should.equal(promoted_remote)
+  // Criss-cross: the two resolutions share BOTH fork sides as ancestors,
+  // so no single fork point exists and the record honestly says none.
+  second_sides.base |> should.equal(option.None)
 }
 
 /// bk-ec1a, keeping local: the same convergence requirement. A `--keep local`

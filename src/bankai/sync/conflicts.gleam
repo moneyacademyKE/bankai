@@ -17,6 +17,7 @@ import gleam/dict
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
+import gleam/option
 import gleam/result
 import gleam/string
 
@@ -85,11 +86,20 @@ pub fn parse_side(raw: String) -> Result(Side, String) {
 }
 
 pub type ConflictSides {
-  ConflictSides(task: String, local: String, remote: String)
+  ConflictSides(
+    task: String,
+    local: String,
+    remote: String,
+    /// The fork point the record carried, when it carried one (bk-98c7).
+    /// Absent on legacy records and pure file merges — the sides alone
+    /// remain sufficient to resolve.
+    base: option.Option(String),
+  )
 }
 
-/// The sync path records `task=<id> local=<hash> remote=<hash>`. Anything else
-/// (legacy or free-form) is not a merge conflict and cannot be auto-resolved.
+/// The sync path records `task=<id> local=<hash> remote=<hash> [base=<hash>]`.
+/// Anything else (legacy or free-form) is not a merge conflict and cannot be
+/// auto-resolved.
 pub fn parse_conflict_sides(detail: String) -> Result(ConflictSides, String) {
   let fields =
     detail
@@ -107,7 +117,13 @@ pub fn parse_conflict_sides(detail: String) -> Result(ConflictSides, String) {
     dict.get(fields, "local"),
     dict.get(fields, "remote")
   {
-    Ok(task), Ok(local), Ok(remote) -> Ok(ConflictSides(task:, local:, remote:))
+    Ok(task), Ok(local), Ok(remote) ->
+      Ok(ConflictSides(
+        task:,
+        local:,
+        remote:,
+        base: option.from_result(dict.get(fields, "base")),
+      ))
     _, _, _ -> Error("conflict detail is not a merge conflict: " <> detail)
   }
 }
