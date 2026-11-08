@@ -160,6 +160,16 @@ pub fn load(from path: String) -> Result(List(Message), String) {
           |> list.filter(fn(line) { line != "" })
           |> list.try_map(message_from_json_string)
       }
-    Error(_) -> Ok([])
+    // Missing file -> empty set. An existing file that cannot be read is
+    // an Error (bk-31a4): masking it lets the next append flush destroy
+    // the whole history.
+    Error(e) ->
+      case simplifile.is_file(path) {
+        Ok(False) -> Ok([])
+        _ ->
+          Error(
+            "messages file exists but could not be read: " <> string.inspect(e),
+          )
+      }
   }
 }

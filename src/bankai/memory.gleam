@@ -148,7 +148,16 @@ pub fn load(from path: String) -> Result(List(Memory), String) {
           |> list.filter(fn(line) { line != "" })
           |> list.try_map(memory_from_json_string)
       }
-    // Missing file / unreadable = empty memory set (never crash the CLI).
-    Error(_) -> Ok([])
+    // Missing file -> empty set. An existing file that cannot be read is
+    // an Error, never an empty set (bk-31a4): masking it lets the next
+    // flush destroy the memories.
+    Error(e) ->
+      case simplifile.is_file(path) {
+        Ok(False) -> Ok([])
+        _ ->
+          Error(
+            "memories file exists but could not be read: " <> string.inspect(e),
+          )
+      }
   }
 }

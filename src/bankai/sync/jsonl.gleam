@@ -29,7 +29,8 @@ pub fn flush(
   simplifile.write(body, to: path)
 }
 
-/// Load tasks from a JSONL file. A missing file or empty body yields [].
+/// Load tasks from a JSONL file. A missing file or empty body yields [];
+/// an existing file that cannot be read is an Error, never an empty store.
 /// Every non-empty record must decode and pass the content-address integrity
 /// check; a corrupt snapshot is rejected rather than partially loaded.
 pub fn load(from path: String) -> Result(List(Task), String) {
@@ -43,8 +44,17 @@ pub fn load(from path: String) -> Result(List(Task), String) {
           |> list.filter(fn(line) { string.trim(line) != "" })
           |> list.try_map(serde.task_from_json_string)
       }
-    Error(_) -> Ok([])
-    // missing file -> empty store
+    // Missing file -> empty store (fresh workspace). An existing file that
+    // cannot be read is NOT an empty store: reporting [] would let the next
+    // flush destroy it (bk-31a4).
+    Error(e) ->
+      case simplifile.is_file(path) {
+        Ok(False) -> Ok([])
+        _ ->
+          Error(
+            "tasks file exists but could not be read: " <> string.inspect(e),
+          )
+      }
   }
 }
 
