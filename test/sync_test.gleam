@@ -5,7 +5,9 @@ import bankai/serde
 import bankai/sync/conflicts
 import bankai/sync/jsonl
 import bankai/sync/merge
+import bankai/time
 import bankai/types.{InProgress, Open, Task}
+import gleam/int
 import gleam/list
 import gleam/option
 import gleam/string
@@ -64,7 +66,8 @@ pub fn jsonl_flush_load_roundtrip_test() {
       1000,
       [],
     )
-  let path = "test_bk_tasks.jsonl"
+  let path =
+    "/tmp/bankai_sync_test_tasks_" <> int.to_string(time.now()) <> ".jsonl"
   let _ = jsonl.flush([t1, t2], to: path)
   let loaded = jsonl.load(from: path)
 
@@ -196,7 +199,8 @@ pub fn legacy_conflict_detail_literal_still_parses_test() {
 
 /// BUG-09 regression: JSONL output ends with a trailing newline (wc -l / jq interop).
 pub fn flush_writes_trailing_newline_test() {
-  let path = "test_bk_newline.jsonl"
+  let path =
+    "/tmp/bankai_sync_test_newline_" <> int.to_string(time.now()) <> ".jsonl"
   let _ = jsonl.flush([fresh()], to: path)
   let raw = should.be_ok(simplifile.read(from: path))
   string.ends_with(raw, "\n")
