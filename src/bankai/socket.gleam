@@ -498,6 +498,8 @@ fn route_update(workspace: String, args: parser.UpdateArgs) -> Response {
         && args.claim == option.None
         && args.labels == []
         && args.priority == option.None
+        && args.title == option.None
+        && args.description == option.None
       {
         True -> daemon_result(daemon_store.heartbeat(workspace, id, args.ttl))
         False ->
@@ -516,6 +518,8 @@ fn route_update_rest(workspace: String, args: parser.UpdateArgs) -> Response {
     || args.claim != option.None
     || args.labels != []
     || args.priority != option.None
+    || args.title != option.None
+    || args.description != option.None
   let exclusive_count =
     bool_int(args.release)
     + bool_int(args.reopen)
@@ -540,6 +544,8 @@ fn route_update_rest(workspace: String, args: parser.UpdateArgs) -> Response {
             args.ttl,
             args.labels,
             args.priority,
+            args.title,
+            args.description,
           ))
       }
     0, False -> ErrorResponse(message: "update requires a change")

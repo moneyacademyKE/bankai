@@ -106,6 +106,8 @@ pub fn update_fields(
   ttl: option.Option(String),
   labels: List(String),
   priority: option.Option(String),
+  title: option.Option(String),
+  description: option.Option(String),
 ) -> Result(json.Json, String) {
   mutations.update_fields(
     workspace,
@@ -116,6 +118,8 @@ pub fn update_fields(
     ttl,
     labels,
     priority,
+    title,
+    description,
   )
 }
 

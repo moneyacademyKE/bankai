@@ -167,6 +167,10 @@ pub type UpdateArgs {
     labels: List(String),
     remove_labels: List(String),
     priority: Option(String),
+    // bk-490f: text fields are updatable like priority — the store is
+    // immutable-versioned, so an edit is a new version, not a mutation.
+    title: Option(String),
+    description: Option(String),
     fence: Option(String),
     release: Bool,
     reopen: Bool,
@@ -257,6 +261,8 @@ pub fn parse_update_args(args: List(String)) -> Result(UpdateArgs, String) {
               labels: [],
               remove_labels: [],
               priority: option.None,
+              title: option.None,
+              description: option.None,
               fence: option.None,
               release: False,
               reopen: False,
@@ -308,6 +314,13 @@ fn parse_update_rest(
       )
     ["--priority", value, ..rest] ->
       parse_update_rest(rest, UpdateArgs(..acc, priority: option.Some(value)))
+    ["--title", value, ..rest] ->
+      parse_update_rest(rest, UpdateArgs(..acc, title: option.Some(value)))
+    ["--description", value, ..rest] ->
+      parse_update_rest(
+        rest,
+        UpdateArgs(..acc, description: option.Some(value)),
+      )
     ["--fence", value, ..rest] ->
       parse_update_rest(rest, UpdateArgs(..acc, fence: option.Some(value)))
     ["--release", ..rest] ->

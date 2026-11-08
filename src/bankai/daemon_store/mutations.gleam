@@ -196,6 +196,8 @@ pub fn update_fields(
   ttl: option.Option(String),
   labels: List(String),
   priority: option.Option(String),
+  title: option.Option(String),
+  description: option.Option(String),
 ) -> Result(json.Json, String) {
   let new_status = case status {
     option.None -> Ok(option.None)
@@ -272,6 +274,8 @@ pub fn update_fields(
               ttl,
               labels,
               new_priority,
+              title,
+              description,
             )
         }
       })
@@ -287,6 +291,8 @@ fn update_fields_apply(
   claim_ttl: option.Option(String),
   labels: List(String),
   new_priority: option.Option(Int),
+  new_title: option.Option(String),
+  new_description: option.Option(String),
 ) -> Result(Task, String) {
   let effective_status = case new_status, claim {
     option.Some(s), _ -> option.Some(s)
@@ -305,6 +311,14 @@ fn update_fields_apply(
     || case new_priority {
       option.None -> False
       option.Some(p) -> previous.priority != p
+    }
+    || case new_title {
+      option.None -> False
+      option.Some(t) -> previous.title != t
+    }
+    || case new_description {
+      option.None -> False
+      option.Some(d) -> previous.description != d
     }
     || case effective_status {
       option.None -> False
@@ -334,6 +348,14 @@ fn update_fields_apply(
           let task = case new_priority {
             option.None -> task
             option.Some(p) -> Task(..task, priority: p)
+          }
+          let task = case new_title {
+            option.None -> task
+            option.Some(t) -> Task(..task, title: t)
+          }
+          let task = case new_description {
+            option.None -> task
+            option.Some(d) -> Task(..task, description: d)
           }
           let task = case effective_status {
             option.None -> task

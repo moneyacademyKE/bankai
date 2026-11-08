@@ -457,6 +457,8 @@ fn update_dispatch(
         && args.claim == option.None
         && args.labels == []
         && args.priority == option.None
+        && args.title == option.None
+        && args.description == option.None
       {
         True -> heartbeat_cmd(tasks_path, args.id, args.ttl)
         False -> Error("--heartbeat does not combine with other update fields")
@@ -623,6 +625,14 @@ fn apply_guarded_update(
       option.None -> False
       option.Some(d) -> task.defer_until != option.Some(d)
     }
+    || case args.title {
+      option.None -> False
+      option.Some(t) -> task.title != t
+    }
+    || case args.description {
+      option.None -> False
+      option.Some(d) -> task.description != d
+    }
   case changed {
     False -> Ok(serde.task_to_json(task))
     True -> {
@@ -648,6 +658,14 @@ fn apply_guarded_update(
           let t = case new_priority {
             option.None -> t
             option.Some(p) -> Task(..t, priority: p)
+          }
+          let t = case args.title {
+            option.None -> t
+            option.Some(v) -> Task(..t, title: v)
+          }
+          let t = case args.description {
+            option.None -> t
+            option.Some(v) -> Task(..t, description: v)
           }
           let t = case effective_status {
             option.None -> t
@@ -989,6 +1007,8 @@ pub fn usage() -> String {
   <> "  update <id> --label L         add a label\n"
   <> "  update <id> --remove-label L  remove a label\n"
   <> "  update <id> --priority N      set the priority\n"
+  <> "  update <id> --title T         set the title (new immutable version)\n"
+  <> "  update <id> --description D   set the description (new immutable version)\n"
   <> "  batch --idempotency-key K <mutation>...\n"
   <> "                                atomically apply one mutation per task\n"
   <> "  auth mint <read|write|admin> [--ttl seconds]\n"
