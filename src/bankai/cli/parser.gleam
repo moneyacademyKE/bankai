@@ -181,6 +181,18 @@ pub type UpdateArgs {
   )
 }
 
+/// Does this update request any simple field (status, claim, labels,
+/// priority, title, description)? Heartbeat refuses to combine with these,
+/// and the socket's composed-update route requires at least one of them.
+pub fn simple_fields_requested(args: UpdateArgs) -> Bool {
+  args.status != option.None
+  || args.claim != option.None
+  || args.labels != []
+  || args.priority != option.None
+  || args.title != option.None
+  || args.description != option.None
+}
+
 fn is_flag(value: String) -> Bool {
   string.starts_with(value, "--")
 }

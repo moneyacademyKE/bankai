@@ -493,16 +493,9 @@ fn route_update(workspace: String, args: parser.UpdateArgs) -> Response {
   // Heartbeat is exclusive and supported: refresh the live claim's lease.
   case args.heartbeat {
     True ->
-      case
-        args.status == option.None
-        && args.claim == option.None
-        && args.labels == []
-        && args.priority == option.None
-        && args.title == option.None
-        && args.description == option.None
-      {
-        True -> daemon_result(daemon_store.heartbeat(workspace, id, args.ttl))
-        False ->
+      case parser.simple_fields_requested(args) {
+        False -> daemon_result(daemon_store.heartbeat(workspace, id, args.ttl))
+        True ->
           ErrorResponse(
             message: "--heartbeat does not combine with other update fields",
           )
@@ -513,13 +506,7 @@ fn route_update(workspace: String, args: parser.UpdateArgs) -> Response {
 
 fn route_update_rest(workspace: String, args: parser.UpdateArgs) -> Response {
   let id = args.id
-  let simple_requested =
-    args.status != option.None
-    || args.claim != option.None
-    || args.labels != []
-    || args.priority != option.None
-    || args.title != option.None
-    || args.description != option.None
+  let simple_requested = parser.simple_fields_requested(args)
   let exclusive_count =
     bool_int(args.release)
     + bool_int(args.reopen)
@@ -534,19 +521,7 @@ fn route_update_rest(workspace: String, args: parser.UpdateArgs) -> Response {
       case args.force, args.claim {
         True, option.None ->
           ErrorResponse(message: "--force only applies with --claim")
-        _, _ ->
-          daemon_result(daemon_store.update_fields(
-            workspace,
-            id,
-            args.status,
-            args.claim,
-            args.force,
-            args.ttl,
-            args.labels,
-            args.priority,
-            args.title,
-            args.description,
-          ))
+        _, _ -> daemon_result(daemon_store.update_fields(workspace, id, args))
       }
     0, False -> ErrorResponse(message: "update requires a change")
     1, True ->

@@ -4,6 +4,7 @@
 //// and subsystem services.
 
 import bankai/backup
+import bankai/cli/parser
 import bankai/compact
 import bankai/daemon_store/diagnostics
 import bankai/daemon_store/mutations
@@ -100,27 +101,9 @@ pub fn update(
 pub fn update_fields(
   workspace: String,
   id: String,
-  status: option.Option(String),
-  claim: option.Option(String),
-  force: Bool,
-  ttl: option.Option(String),
-  labels: List(String),
-  priority: option.Option(String),
-  title: option.Option(String),
-  description: option.Option(String),
+  args: parser.UpdateArgs,
 ) -> Result(json.Json, String) {
-  mutations.update_fields(
-    workspace,
-    id,
-    status,
-    claim,
-    force,
-    ttl,
-    labels,
-    priority,
-    title,
-    description,
-  )
+  mutations.update_fields(workspace, id, args)
 }
 
 pub fn update_fenced(

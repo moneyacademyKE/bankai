@@ -6,11 +6,11 @@
 //// (the "update requires a change" error belongs to requests that
 //// carry no field at all, not to values that happen to repeat).
 
+import bankai/cli/parser
 import bankai/daemon_store
 import bankai/mnesia_store
 import bankai/storage/store
 import gleam/json
-import gleam/option
 import gleam/string
 import gleeunit
 import gleeunit/should
@@ -66,19 +66,8 @@ pub fn create_description_round_trips_verbatim_test() {
 pub fn update_description_round_trips_verbatim_test() {
   reset()
   let id = seeded_id()
-  let assert Ok(_json) =
-    daemon_store.update_fields(
-      workspace,
-      id,
-      option.None,
-      option.None,
-      False,
-      option.None,
-      [],
-      option.None,
-      option.None,
-      option.Some(gnarly),
-    )
+  let assert Ok(args) = parser.parse_update_args([id, "--description", gnarly])
+  let assert Ok(_json) = daemon_store.update_fields(workspace, id, args)
   let assert Ok(task) = mnesia_store.get_current(workspace, id)
   task.description |> should.equal(gnarly)
 }
@@ -86,19 +75,13 @@ pub fn update_description_round_trips_verbatim_test() {
 pub fn update_title_round_trips_verbatim_test() {
   reset()
   let id = seeded_id()
-  let assert Ok(_json) =
-    daemon_store.update_fields(
-      workspace,
+  let assert Ok(args) =
+    parser.parse_update_args([
       id,
-      option.None,
-      option.None,
-      False,
-      option.None,
-      [],
-      option.None,
-      option.Some("New title \"quoted\" {braced}"),
-      option.None,
-    )
+      "--title",
+      "New title \"quoted\" {braced}",
+    ])
+  let assert Ok(_json) = daemon_store.update_fields(workspace, id, args)
   let assert Ok(task) = mnesia_store.get_current(workspace, id)
   task.title |> should.equal("New title \"quoted\" {braced}")
 }
@@ -106,19 +89,8 @@ pub fn update_title_round_trips_verbatim_test() {
 pub fn update_same_value_is_an_idempotent_no_op_test() {
   reset()
   let id = seeded_id()
-  let assert Ok(_json) =
-    daemon_store.update_fields(
-      workspace,
-      id,
-      option.None,
-      option.None,
-      False,
-      option.None,
-      [],
-      option.None,
-      option.None,
-      option.Some("seed"),
-    )
+  let assert Ok(args) = parser.parse_update_args([id, "--description", "seed"])
+  let assert Ok(_json) = daemon_store.update_fields(workspace, id, args)
   let assert Ok(task) = mnesia_store.get_current(workspace, id)
   task.description |> should.equal("seed")
 }

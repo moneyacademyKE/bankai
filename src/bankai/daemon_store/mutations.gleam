@@ -14,10 +14,11 @@ import bankai/mnesia_store
 import bankai/serde
 import bankai/storage/store
 import bankai/task_lifecycle
+import bankai/task_update
 import bankai/time
 import bankai/types.{
-  type Task, type TaskKind, Closed, Completed, DefaultTask, Gate, InProgress,
-  Open, ParentChild, Relationship, Supersedes, Task, Wisp,
+  type Task, type TaskKind, Closed, DefaultTask, Gate, InProgress, Open,
+  ParentChild, Relationship, Supersedes, Task, Wisp,
 }
 import bankai/wisps/service as wisp_service
 import gleam/int
@@ -190,37 +191,9 @@ pub fn reopen(workspace: String, id: String) -> Result(json.Json, String) {
 pub fn update_fields(
   workspace: String,
   id: String,
-  status: option.Option(String),
-  claim: option.Option(String),
-  force: Bool,
-  ttl: option.Option(String),
-  labels: List(String),
-  priority: option.Option(String),
-  title: option.Option(String),
-  description: option.Option(String),
+  args: parser.UpdateArgs,
 ) -> Result(json.Json, String) {
-  let new_status = case status {
-    option.None -> Ok(option.None)
-    option.Some(s) ->
-      case serde.status_from_string(s) {
-        Ok(parsed) -> Ok(option.Some(parsed))
-        Error(_) -> Error("invalid status: " <> s)
-      }
-  }
-  use new_status <- result.try(new_status)
-  let new_priority = case priority {
-    option.None -> Ok(option.None)
-    option.Some(p) ->
-      case int.parse(p) {
-        Ok(parsed) ->
-          case parser.validate_priority(parsed) {
-            Ok(valid) -> Ok(option.Some(valid))
-            Error(message) -> Error(message)
-          }
-        Error(_) -> Error("invalid priority: " <> p)
-      }
-  }
-  use new_priority <- result.try(new_priority)
+  use fields <- result.try(task_update.fields_from_args(args))
   case cluster.mode(workspace) {
     Error(error) -> Error(error)
     Ok(cluster.Cluster(_, _)) ->
@@ -231,12 +204,12 @@ pub fn update_fields(
         // Claim guards (bk-9f48): claimable only while Open/InProgress;
         // someone else's claim needs --force. A silent steal corrupts the
         // ledger — loud beats clever.
-        let claim_error = case claim {
+        let claim_error = case args.claim {
           option.None -> option.None
           option.Some(new_claimant) ->
             case previous.status {
               Open | InProgress ->
-                case previous.assignee, force {
+                case previous.assignee, args.force {
                   option.Some(owner), False ->
                     case owner == new_claimant {
                       True -> option.None
@@ -265,112 +238,16 @@ pub fn update_fields(
         }
         case claim_error {
           option.Some(message) -> Error(message)
-          option.None ->
-            update_fields_apply(
-              workspace,
-              previous,
-              new_status,
-              claim,
-              ttl,
-              labels,
-              new_priority,
-              title,
-              description,
-            )
+          option.None -> {
+            let #(changed, updated) = task_update.apply(previous, fields)
+            case changed {
+              False -> Ok(previous)
+              True -> mnesia_store.replace(workspace, previous, updated)
+            }
+          }
         }
       })
       |> result.map(serde.task_to_json)
-  }
-}
-
-fn update_fields_apply(
-  workspace: String,
-  previous: Task,
-  new_status: option.Option(types.TaskStatus),
-  claim: option.Option(String),
-  claim_ttl: option.Option(String),
-  labels: List(String),
-  new_priority: option.Option(Int),
-  new_title: option.Option(String),
-  new_description: option.Option(String),
-) -> Result(Task, String) {
-  let effective_status = case new_status, claim {
-    option.Some(s), _ -> option.Some(s)
-    option.None, option.Some(_) -> option.Some(InProgress)
-    option.None, option.None -> option.None
-  }
-  let added_labels =
-    list.filter(labels, fn(l) { !list.contains(previous.labels, l) })
-  let changed =
-    added_labels != []
-    || case claim {
-      // A re-claim always renews the lease, so it always counts as a change.
-      option.None -> False
-      option.Some(_) -> True
-    }
-    || case new_priority {
-      option.None -> False
-      option.Some(p) -> previous.priority != p
-    }
-    || case new_title {
-      option.None -> False
-      option.Some(t) -> previous.title != t
-    }
-    || case new_description {
-      option.None -> False
-      option.Some(d) -> previous.description != d
-    }
-    || case effective_status {
-      option.None -> False
-      option.Some(s) -> previous.status != s
-    }
-  case changed {
-    False -> Ok(previous)
-    True -> {
-      let updated =
-        builder.update(previous, fn(task) {
-          let task = case added_labels {
-            [] -> task
-            new -> Task(..task, labels: list.append(new, task.labels))
-          }
-          let task = case claim {
-            option.None -> task
-            option.Some(a) ->
-              Task(
-                ..task,
-                assignee: option.Some(a),
-                claim_lease_expires_at: lease.fresh(
-                  time.now(),
-                  lease.ttl_from(claim_ttl),
-                ),
-              )
-          }
-          let task = case new_priority {
-            option.None -> task
-            option.Some(p) -> Task(..task, priority: p)
-          }
-          let task = case new_title {
-            option.None -> task
-            option.Some(t) -> Task(..task, title: t)
-          }
-          let task = case new_description {
-            option.None -> task
-            option.Some(d) -> Task(..task, description: d)
-          }
-          let task = case effective_status {
-            option.None -> task
-            option.Some(s) -> Task(..task, status: s)
-          }
-          // Terminal statuses retire the lease with the claim (bk-ccbf).
-          let task = case effective_status {
-            option.Some(Closed) | option.Some(Completed) ->
-              Task(..task, claim_lease_expires_at: option.None)
-            _ -> task
-          }
-          Task(..task, updated_at: time.now())
-        })
-      mnesia_store.replace(workspace, previous, updated)
-    }
   }
 }
 

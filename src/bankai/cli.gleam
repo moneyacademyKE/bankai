@@ -20,11 +20,12 @@ import bankai/storage/store
 import bankai/sync/jsonl
 import bankai/sync/merge
 import bankai/sync_peer
+import bankai/task_update
 import bankai/task_view
 import bankai/time
 import bankai/types.{
-  type Task, Blocks, Closed, Completed, Duplicates, InProgress, Open,
-  ParentChild, Relationship, Task,
+  type Task, Blocks, Duplicates, InProgress, Open, ParentChild, Relationship,
+  Task,
 }
 import bankai/version
 import gleam/int
@@ -487,16 +488,9 @@ fn update_dispatch(
   // with nothing (a fresh claim already stamps a lease).
   case args.heartbeat {
     True ->
-      case
-        args.status == option.None
-        && args.claim == option.None
-        && args.labels == []
-        && args.priority == option.None
-        && args.title == option.None
-        && args.description == option.None
-      {
-        True -> heartbeat_cmd(tasks_path, args.id, args.ttl)
-        False -> Error("--heartbeat does not combine with other update fields")
+      case parser.simple_fields_requested(args) {
+        False -> heartbeat_cmd(tasks_path, args.id, args.ttl)
+        True -> Error("--heartbeat does not combine with other update fields")
       }
     False -> update_dispatch_rest(tasks_path, args)
   }
@@ -528,37 +522,7 @@ fn apply_update(
   tasks_path: String,
   args: parser.UpdateArgs,
 ) -> Result(json.Json, String) {
-  let new_status = case args.status {
-    option.None -> Ok(option.None)
-    option.Some(s) ->
-      case serde.status_from_string(s) {
-        Ok(parsed) -> Ok(option.Some(parsed))
-        Error(Nil) -> Error("invalid status: " <> s)
-      }
-  }
-  use new_status <- result.try(new_status)
-  let new_priority = case args.priority {
-    option.None -> Ok(option.None)
-    option.Some(p) ->
-      case int.parse(p) {
-        Ok(parsed) ->
-          case parser.validate_priority(parsed) {
-            Ok(valid) -> Ok(option.Some(valid))
-            Error(message) -> Error(message)
-          }
-        Error(_) -> Error("invalid priority: " <> p)
-      }
-  }
-  use new_priority <- result.try(new_priority)
-  let new_defer = case args.defer_until {
-    option.None -> Ok(option.None)
-    option.Some(d) ->
-      case int.parse(d) {
-        Ok(parsed) -> Ok(option.Some(parsed))
-        Error(_) -> Error("defer timestamp must be an integer")
-      }
-  }
-  use new_defer <- result.try(new_defer)
+  use fields <- result.try(task_update.fields_from_args(args))
   // --force is only meaningful alongside --claim.
   use Nil <- result.try(case args.force, args.claim {
     True, option.None -> Error("--force only applies with --claim")
@@ -605,16 +569,7 @@ fn apply_update(
       }
       case claim_error {
         option.Some(message) -> Error(message)
-        option.None ->
-          apply_guarded_update(
-            tasks_path,
-            index,
-            task,
-            args,
-            new_status,
-            new_priority,
-            new_defer,
-          )
+        option.None -> apply_guarded_update(tasks_path, index, task, fields)
       }
     }
   }
@@ -624,100 +579,12 @@ fn apply_guarded_update(
   tasks_path: String,
   index: store.Store,
   task: Task,
-  args: parser.UpdateArgs,
-  new_status: option.Option(types.TaskStatus),
-  new_priority: option.Option(Int),
-  new_defer: option.Option(Int),
+  fields: task_update.Fields,
 ) -> Result(json.Json, String) {
-  // Idempotency: a no-op update must leave the task (and its content
-  // hash) byte-identical — no updated_at bump, matching the old
-  // per-flag handlers that returned the task unchanged.
-  let effective_status = case new_status, args.claim {
-    option.Some(s), _ -> option.Some(s)
-    // Claim implies in_progress when no explicit status was given:
-    // one claim semantic on every path (bk-9f48 groundwork).
-    option.None, option.Some(_) -> option.Some(InProgress)
-    option.None, option.None -> option.None
-  }
-  let added_labels =
-    list.filter(args.labels, fn(l) { !list.contains(task.labels, l) })
-  let changed =
-    added_labels != []
-    || case args.claim {
-      // A re-claim always renews the lease, so it always counts as a change.
-      option.None -> False
-      option.Some(_) -> True
-    }
-    || case new_priority {
-      option.None -> False
-      option.Some(p) -> task.priority != p
-    }
-    || case effective_status {
-      option.None -> False
-      option.Some(s) -> task.status != s
-    }
-    || case new_defer {
-      option.None -> False
-      option.Some(d) -> task.defer_until != option.Some(d)
-    }
-    || case args.title {
-      option.None -> False
-      option.Some(t) -> task.title != t
-    }
-    || case args.description {
-      option.None -> False
-      option.Some(d) -> task.description != d
-    }
+  let #(changed, updated) = task_update.apply(task, fields)
   case changed {
     False -> Ok(serde.task_to_json(task))
     True -> {
-      let updated =
-        builder.update(task, fn(t) {
-          let t = case added_labels {
-            [] -> t
-            new -> Task(..t, labels: list.append(new, t.labels))
-          }
-          let t = case args.claim {
-            option.None -> t
-            option.Some(assignee) ->
-              // A claim stamps a fresh lease (bk-ccbf); re-claim renews.
-              Task(
-                ..t,
-                assignee: option.Some(assignee),
-                claim_lease_expires_at: lease.fresh(
-                  time.now(),
-                  lease.ttl_from(args.ttl),
-                ),
-              )
-          }
-          let t = case new_priority {
-            option.None -> t
-            option.Some(p) -> Task(..t, priority: p)
-          }
-          let t = case args.title {
-            option.None -> t
-            option.Some(v) -> Task(..t, title: v)
-          }
-          let t = case args.description {
-            option.None -> t
-            option.Some(v) -> Task(..t, description: v)
-          }
-          let t = case effective_status {
-            option.None -> t
-            option.Some(s) -> Task(..t, status: s)
-          }
-          let t = case new_defer {
-            option.None -> t
-            option.Some(d) -> Task(..t, defer_until: option.Some(d))
-          }
-          // Terminal statuses retire the lease with the claim.
-          let t = case effective_status {
-            option.Some(Closed) | option.Some(Completed) ->
-              Task(..t, claim_lease_expires_at: option.None)
-            _ -> t
-          }
-          Task(..t, updated_at: time.now())
-        })
       let index = store.put(index, updated)
       use _ <- result.try(jsonl.flush_report(store.list(index), to: tasks_path))
       Ok(serde.task_to_json(updated))
