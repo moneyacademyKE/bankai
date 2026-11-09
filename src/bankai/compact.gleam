@@ -19,6 +19,7 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/set
+import simplifile
 
 /// Compact the workspace: move Closed tasks (all their versions) out of the
 /// active store into archive.jsonl (deduped by hash), rewrite the active store
@@ -46,11 +47,13 @@ pub fn run(workspace: String, tasks_path: String) -> Result(String, String) {
       // would otherwise destroy the archived history it cannot see.
       let archive_path = workspace <> "/archive.jsonl"
       use existing <- result.try(jsonl.load(from: archive_path))
-      let _ =
-        jsonl.flush(dedupe(list.append(existing, archived)), to: archive_path)
+      use _ <- result.try(jsonl.flush_report(
+        dedupe(list.append(existing, archived)),
+        to: archive_path,
+      ))
 
       // Rewrite the active store with the survivors.
-      let _ = jsonl.flush(keep, to: tasks_path)
+      use _ <- result.try(jsonl.flush_report(keep, to: tasks_path))
 
       // Record a summary memory (the agent may elaborate; bankai just notes it).
       let note =
@@ -59,7 +62,16 @@ pub fn run(workspace: String, tasks_path: String) -> Result(String, String) {
         <> " closed task(s) retired into archive.jsonl"
       let mem = memory.new(note, time.now())
       use mems <- result.try(memory.load(from: workspace <> "/memories.jsonl"))
-      let _ = memory.flush([mem, ..mems], to: workspace <> "/memories.jsonl")
+      let memories_path = workspace <> "/memories.jsonl"
+      use _ <- result.try(
+        memory.flush([mem, ..mems], to: memories_path)
+        |> result.map_error(fn(e) {
+          "could not write "
+          <> memories_path
+          <> ": "
+          <> simplifile.describe_error(e)
+        }),
+      )
       Ok(note)
     }
   }

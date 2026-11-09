@@ -103,3 +103,17 @@ pub fn cli_list_unreadable_file_is_error_test() {
   should.be_true(string.contains(out, "tasks file exists"))
   cleanup()
 }
+
+/// bk-035b: a failed durable write is the operation's error — creating
+/// against a tasks.jsonl that cannot be written (the path is a directory)
+/// answers "could not write", never ok. The old `let _ =` discard let the
+/// create report success with the store unwritten.
+pub fn cli_create_unwritable_store_is_error_test() {
+  let ws = "/tmp/bankai_unwritable_store_test"
+  let _ = simplifile.delete(ws)
+  let _ = simplifile.create_directory_all(ws)
+  let _ = simplifile.create_directory_all(ws <> "/tasks.jsonl")
+  let out = cli.run_in(ws, ["create", "probe"])
+  should.be_true(string.contains(out, "could not write"))
+  let _ = simplifile.delete(ws)
+}

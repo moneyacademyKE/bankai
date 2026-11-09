@@ -243,7 +243,10 @@ fn create_cmd(
                   kind,
                 )
               let index = store.put(index, task)
-              let _ = jsonl.flush(store.list(index), to: tasks_path)
+              use _ <- result.try(jsonl.flush_report(
+                store.list(index),
+                to: tasks_path,
+              ))
               Ok(serde.task_to_json(task))
             }
           }
@@ -267,7 +270,7 @@ fn create_cmd(
         )
       use index <- result.try(jsonl.load_store(from: tasks_path))
       let index = store.put(index, task)
-      let _ = jsonl.flush(store.list(index), to: tasks_path)
+      use _ <- result.try(jsonl.flush_report(store.list(index), to: tasks_path))
       Ok(serde.task_to_json(task))
     }
   }
@@ -406,7 +409,12 @@ fn msg_add_cmd(
       let msg = message.new(task_id, parent, "agent", text, time.now())
       let path = workspace <> "/messages.jsonl"
       use existing <- result.try(message.load(from: path))
-      let _ = message.flush([msg, ..existing], to: path)
+      use _ <- result.try(
+        message.flush([msg, ..existing], to: path)
+        |> result.map_error(fn(e) {
+          "could not write " <> path <> ": " <> simplifile.describe_error(e)
+        }),
+      )
       Ok(message.message_to_json(msg))
     }
   }
@@ -456,7 +464,10 @@ fn dep_add_cmd(
               let updated =
                 relations.relation_typed(task, target_id, rel_type, time.now())
               let index = store.put(index, updated)
-              let _ = jsonl.flush(store.list(index), to: tasks_path)
+              use _ <- result.try(jsonl.flush_report(
+                store.list(index),
+                to: tasks_path,
+              ))
               Ok(serde.task_to_json(updated))
             }
           }
@@ -708,7 +719,7 @@ fn apply_guarded_update(
           Task(..t, updated_at: time.now())
         })
       let index = store.put(index, updated)
-      let _ = jsonl.flush(store.list(index), to: tasks_path)
+      use _ <- result.try(jsonl.flush_report(store.list(index), to: tasks_path))
       Ok(serde.task_to_json(updated))
     }
   }
@@ -738,7 +749,10 @@ fn heartbeat_cmd(
               )
             })
           let index = store.put(index, updated)
-          let _ = jsonl.flush(store.list(index), to: tasks_path)
+          use _ <- result.try(jsonl.flush_report(
+            store.list(index),
+            to: tasks_path,
+          ))
           Ok(serde.task_to_json(updated))
         }
       }
@@ -773,7 +787,7 @@ fn reclaim_cmd(tasks_path: String) -> Result(json.Json, String) {
         })
       let index =
         list.fold(updated_tasks, index, fn(acc, t) { store.put(acc, t) })
-      let _ = jsonl.flush(store.list(index), to: tasks_path)
+      use _ <- result.try(jsonl.flush_report(store.list(index), to: tasks_path))
       Ok(json.array(expired_ids, of: json.string))
     }
   }
@@ -867,7 +881,10 @@ fn sync_cmd(
             Error(_) -> Error("could not read remote: " <> remote_path)
             Ok(remote_tasks) -> {
               let result = merge.merge(local, remote_tasks)
-              let _ = jsonl.flush(result.tasks, to: tasks_path)
+              use _ <- result.try(jsonl.flush_report(
+                result.tasks,
+                to: tasks_path,
+              ))
               let recorded =
                 maintenance.record_merge_conflicts(workspace, result.conflicts)
               let nc = list.length(result.conflicts)
@@ -901,7 +918,7 @@ fn sync_cmd(
         option.None -> {
           use index <- result.try(jsonl.load_store(from: tasks_path))
           let tasks = store.list(index)
-          let _ = jsonl.flush(tasks, to: tasks_path)
+          use _ <- result.try(jsonl.flush_report(tasks, to: tasks_path))
           Ok(json.string(
             "synced " <> int.to_string(list.length(tasks)) <> " task(s)",
           ))

@@ -31,6 +31,17 @@ pub fn flush(
   simplifile.write(body, to: path)
 }
 
+/// Flush with an honest, named error (bk-035b): a failed durable write IS
+/// the operation's error at every file-mode call site. Single owner of the
+/// rendering — the `let _ =` call sites that used to discard the flush
+/// Result route through here instead.
+pub fn flush_report(tasks: List(Task), to path: String) -> Result(Nil, String) {
+  flush(tasks, to: path)
+  |> result.map_error(fn(e) {
+    "could not write " <> path <> ": " <> simplifile.describe_error(e)
+  })
+}
+
 /// Load tasks from a JSONL file. A missing file or empty body yields [];
 /// an existing file that cannot be read is an Error, never an empty store.
 /// Every non-empty record must decode and pass the content-address integrity
