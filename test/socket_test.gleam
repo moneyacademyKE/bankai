@@ -16,6 +16,7 @@ const ws = "/tmp/bankai_socket_wire"
 pub fn handle_line_roundtrip_test() {
   let _ = cli.run_in(ws, ["init"])
   let _ = cli.run_in(ws, ["create", "Wire test task"])
+  let _ = socket.handle_request(ws, socket.Request("init", []))
   let req = "{\"method\":\"ready\",\"params\":[],\"id\":7}"
   let resp = socket.handle_line(ws, req)
   resp
@@ -30,6 +31,7 @@ pub fn handle_line_roundtrip_test() {
 /// create then ready over the wire handler surfaces the created task.
 pub fn handle_line_create_then_ready_test() {
   let _ = cli.run_in(ws, ["init"])
+  let _ = socket.handle_request(ws, socket.Request("init", []))
   let created =
     socket.handle_line(
       ws,

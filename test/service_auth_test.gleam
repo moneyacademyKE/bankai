@@ -234,9 +234,9 @@ fn wait_for_socket(workspace: String, tries: Int) -> Nil {
   case tries <= 0 {
     True -> Nil
     False ->
-      case simplifile.is_file(socket.socket_path(workspace)) {
-        Ok(True) -> Nil
-        _ -> {
+      case socket.socket_owned(socket.socket_path(workspace)) {
+        True -> Nil
+        False -> {
           process.sleep(50)
           wait_for_socket(workspace, tries - 1)
         }

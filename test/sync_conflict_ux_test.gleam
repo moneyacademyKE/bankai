@@ -32,6 +32,9 @@ fn wipe(ws: String) -> Nil {
   // that is neither side of the recorded fork, so a promoted head left behind
   // by an earlier run would make every resolve look like a moved task.
   let _ = mnesia_store.reset_workspace_for_test(ws)
+  // Boot Mnesia for this workspace so resolve is not order-dependent on
+  // another test module having started the node.
+  let _ = mnesia_store.init(ws)
   Nil
 }
 

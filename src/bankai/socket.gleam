@@ -1,29 +1,19 @@
 //// The daemon transport + protocol layer. A resident daemon owns the Mnesia
 //// write authority; JSONL is no longer a fallback for mutations.
 
-import bankai/cli
-import bankai/cli/parser
 import bankai/cluster_transport
 import bankai/daemon_store
-import bankai/gates/service as gate_service
-import bankai/molecules/service as molecule_service
 import bankai/platform_profile
-import bankai/rules/service as rule_service
-import bankai/service_auth
 import bankai/service_protocol
+import bankai/socket_route
+import bankai/socket_wire
 import bankai/sync/jsonl
-import bankai/sync/trust_args
-import bankai/wisps/service as wisp_service
 import gleam/dynamic.{type Dynamic}
-import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/json
-import gleam/list
-import gleam/option
 import gleam/result
-import gleam/string
 
 pub type Request {
   Request(method: String, params: List(String))
@@ -34,583 +24,43 @@ pub type Response {
   ErrorResponse(message: String)
 }
 
-const socket_filename = "bankai.sock"
-
-pub fn socket_path(workspace: String) -> String {
-  workspace <> "/" <> socket_filename
-}
-
-// ---------------------------------------------------------------------------
-// Public protocol entry point (pure, tested) — dispatches to the CLI ops.
-// ---------------------------------------------------------------------------
-
 pub fn handle_request(workspace: String, request: Request) -> Response {
-  case request.method {
-    "ready" ->
-      case request.params {
-        ["--claim", ..rest] ->
-          daemon_result(daemon_store.claim_next_ready(workspace, rest))
-        _ -> daemon_result(daemon_store.ready_tasks(workspace, request.params))
-      }
-
-    "list" -> daemon_result(daemon_store.list_tasks(workspace, request.params))
-    "reclaim" -> daemon_result(daemon_store.reclaim_expired(workspace))
-    "create" ->
-      case parser.parse_create_args(request.params) {
-        Error(e) -> ErrorResponse(message: e)
-        Ok(parsed) -> {
-          // Strip the title token(s) but pass every other flag through raw:
-          // gate/wisp handlers downstream still read the original argv.
-          let rest = case request.params {
-            ["--title", _, ..r] -> r
-            [_, ..r] -> r
-            [] -> []
-          }
-          daemon_result(daemon_store.create(workspace, parsed.title, rest))
-        }
-      }
-    "update" ->
-      case parser.parse_update_args(request.params) {
-        Error(e) -> ErrorResponse(message: e)
-        Ok(parsed) -> route_update(workspace, parsed)
-      }
-    "batch" ->
-      case request.params {
-        ["--idempotency-key", key, ..mutations] ->
-          daemon_result(daemon_store.batch_mutate(workspace, key, mutations))
-        _ ->
-          ErrorResponse(
-            message: "batch requires --idempotency-key <key> <mutation>...",
-          )
-      }
-    "merge" ->
-      case request.params {
-        [source_id, canonical_id, ..] ->
-          daemon_result(daemon_store.merge_duplicate(
-            workspace,
-            source_id,
-            canonical_id,
-          ))
-        _ -> ErrorResponse(message: "merge requires <source-id> <canonical-id>")
-      }
-    "dep_add" ->
-      case request.params {
-        [task_id, target_id, ..rest] ->
-          daemon_result(daemon_store.add_dependency(
-            workspace,
-            task_id,
-            target_id,
-            rest,
-          ))
-        _ -> ErrorResponse(message: "dep_add requires <task-id> <target-id>")
-      }
-    "dep_remove" ->
-      case request.params {
-        [task_id, target_id, ..rest] ->
-          daemon_result(daemon_store.remove_dependency(
-            workspace,
-            task_id,
-            target_id,
-            rest,
-          ))
-        _ -> ErrorResponse(message: "dep_remove requires <task-id> <target-id>")
-      }
-    "dep_list" ->
-      case request.params {
-        [id, ..] -> daemon_result(daemon_store.dependency_list(workspace, id))
-        _ -> ErrorResponse(message: "dep_list requires <task-id>")
-      }
-    "dep_tree" ->
-      case request.params {
-        [id, ..] -> daemon_result(daemon_store.dependency_tree(workspace, id))
-        _ -> ErrorResponse(message: "dep_tree requires <task-id>")
-      }
-    "dep_traverse" ->
-      case request.params {
-        [id, ..rest] ->
-          daemon_result(daemon_store.traverse_dependencies(workspace, id, rest))
-        _ -> ErrorResponse(message: "dep_traverse requires <task-id>")
-      }
-    "dep_graph" ->
-      daemon_result(daemon_store.dependency_graph(workspace, request.params))
-    "dep_check" -> daemon_result(daemon_store.dependency_integrity(workspace))
-    "doctor" -> daemon_result(daemon_store.doctor(workspace))
-    "cluster_status" -> daemon_result(daemon_store.cluster_status(workspace))
-    "backup" -> daemon_result(daemon_store.backup_jsonl(workspace))
-    "backup_list" -> daemon_result(daemon_store.backup_list(workspace))
-    "backup_preview" ->
-      case request.params {
-        [path, ..] ->
-          daemon_result(daemon_store.backup_preview(workspace, path))
-        _ -> ErrorResponse(message: "backup_preview requires <path>")
-      }
-    "backup_restore" ->
-      case request.params {
-        [path, ..] ->
-          daemon_result(daemon_store.backup_restore(workspace, path))
-        _ -> ErrorResponse(message: "backup_restore requires <path>")
-      }
-    "backup_prune" ->
-      case request.params {
-        ["--keep", keep_text, ..] ->
-          case int.parse(keep_text) {
-            Ok(k) -> daemon_result(daemon_store.backup_prune(workspace, k))
-            Error(_) -> ErrorResponse(message: "keep must be an integer")
-          }
-        [keep_text, ..] ->
-          case int.parse(keep_text) {
-            Ok(k) -> daemon_result(daemon_store.backup_prune(workspace, k))
-            Error(_) -> ErrorResponse(message: "keep must be an integer")
-          }
-        _ -> daemon_result(daemon_store.backup_prune(workspace, 5))
-      }
-    "sync_conflicts" -> daemon_result(daemon_store.conflicts_list(workspace))
-    "sync_conflict_resolve" ->
-      case request.params {
-        [id, "--keep", side, ..] ->
-          daemon_result(daemon_store.conflicts_resolve(workspace, id, side))
-        [_id, ..] ->
-          ErrorResponse(
-            message: "sync_conflict_resolve requires <conflict-id> --keep local|remote",
-          )
-        _ ->
-          ErrorResponse(
-            message: "sync_conflict_resolve requires <conflict-id> --keep local|remote",
-          )
-      }
-    "sync_conflict_clear" ->
-      daemon_result(daemon_store.conflicts_clear(workspace))
-    "sync_identity" -> daemon_result(daemon_store.sync_identity(workspace))
-    "sync_trust" ->
-      case request.params {
-        [key, ..rest] ->
-          case trust_args.expiry_args(rest) {
-            Ok(expires_at) ->
-              daemon_result(daemon_store.sync_trust_for(
-                workspace,
-                key,
-                expires_at,
-              ))
-            Error(message) -> ErrorResponse(message)
-          }
-        _ -> ErrorResponse(message: "sync_trust requires <public-key>")
-      }
-    "sync_revoke" ->
-      case request.params {
-        [key, ..] -> daemon_result(daemon_store.sync_revoke(workspace, key))
-        _ -> ErrorResponse(message: "sync_revoke requires <public-key>")
-      }
-    "sync_rotate" ->
-      case request.params {
-        [old_id, new_id, ..rest] ->
-          case trust_args.rotation_args(rest) {
-            Ok(#(overlap, expires_at)) ->
-              daemon_result(daemon_store.sync_rotate(
-                workspace,
-                old_id,
-                new_id,
-                overlap,
-                expires_at,
-              ))
-            Error(message) -> ErrorResponse(message)
-          }
-        _ ->
-          ErrorResponse(
-            message: "sync_rotate requires <old-key> <new-key> [--overlap NS] [--expires-at NS]",
-          )
-      }
-    "journal_tail" ->
-      case request.params {
-        ["--after", offset_text, ..] ->
-          case int.parse(offset_text) {
-            Ok(offset) ->
-              daemon_result(daemon_store.journal_tail(workspace, offset))
-            Error(_) ->
-              ErrorResponse(message: "after offset must be an integer")
-          }
-        [offset_text, ..] ->
-          case int.parse(offset_text) {
-            Ok(offset) ->
-              daemon_result(daemon_store.journal_tail(workspace, offset))
-            Error(_) -> ErrorResponse(message: "offset must be an integer")
-          }
-        [] -> daemon_result(daemon_store.journal_tail(workspace, -1))
-      }
-    "export" -> daemon_result(daemon_store.export_jsonl(workspace))
-    "import" ->
-      case request.params {
-        [path, ..] -> daemon_result(daemon_store.import_jsonl(workspace, path))
-        _ -> ErrorResponse(message: "import requires <path>")
-      }
-    "sync_pull" ->
-      case request.params {
-        ["--host", host, "--port", port_text, ..] ->
-          case int.parse(port_text) {
-            Ok(port) ->
-              daemon_result(daemon_store.pull_peer(workspace, host, port))
-            Error(_) ->
-              ErrorResponse(message: "sync_pull port must be an integer")
-          }
-        ["--host", host, ..] ->
-          daemon_result(daemon_store.pull_peer(workspace, host, 7654))
-        _ ->
-          ErrorResponse(
-            message: "sync_pull requires --host <host> [--port <n>]",
-          )
-      }
-    "remember" ->
-      case request.params {
-        [text, ..] -> daemon_result(daemon_store.remember(workspace, text))
-        _ -> ErrorResponse(message: "remember requires an insight")
-      }
-    "memories" -> daemon_result(daemon_store.memories(workspace))
-    "compact" -> daemon_result(daemon_store.compact(workspace))
-    "show" ->
-      case request.params {
-        [id, ..] -> daemon_result(daemon_store.show_task(workspace, id))
-        _ -> ErrorResponse(message: "show requires <id>")
-      }
-    "count" ->
-      daemon_result(daemon_store.count_tasks(workspace, request.params))
-    "blocked" ->
-      daemon_result(daemon_store.blocked_tasks(workspace, request.params))
-    "cycles" -> daemon_result(daemon_store.cycle_edges(workspace))
-    "duplicates" ->
-      case request.params {
-        ["--semantic", ..rest] ->
-          daemon_result(daemon_store.semantic_duplicates(workspace, rest))
-        _ -> daemon_result(daemon_store.duplicate_pairs(workspace))
-      }
-    "stale" ->
-      daemon_result(daemon_store.stale_tasks(workspace, request.params))
-    "history" ->
-      case request.params {
-        [id, ..] -> daemon_result(daemon_store.history(workspace, id))
-        _ -> ErrorResponse(message: "history requires <id>")
-      }
-    "analytics" -> daemon_result(daemon_store.analytics(workspace))
-    "search" -> daemon_result(daemon_store.search(workspace, request.params))
-    "prime_query" ->
-      case request.params {
-        [query, ..] -> daemon_result(daemon_store.prime_query(workspace, query))
-        _ -> ErrorResponse(message: "prime_query requires <query>")
-      }
-    "epic" ->
-      case request.params {
-        [id, ..] -> daemon_result(daemon_store.epic(workspace, id))
-        _ -> ErrorResponse(message: "epic requires <id>")
-      }
-    "inspect" ->
-      case request.params {
-        [hash, ..] -> daemon_result(daemon_store.inspect(workspace, hash))
-        _ -> ErrorResponse(message: "inspect requires <hash>")
-      }
-    "sync" ->
-      case request.params {
-        ["--from", path, ..] ->
-          daemon_result(daemon_store.reconcile_jsonl(workspace, path))
-        _ -> ErrorResponse(message: "sync requires --from <path>")
-      }
-    "init" ->
-      case daemon_store.boot(workspace) {
-        Ok(_) -> OkResponse(value: cli.run_in(workspace, ["init"]))
-        Error(message) -> ErrorResponse(message: message)
-      }
-    "auth_mint" ->
-      case request.params {
-        [role, "--ttl", ttl_text] ->
-          case int.parse(ttl_text) {
-            Ok(ttl) ->
-              daemon_result(
-                service_auth.mint(workspace, role, ttl)
-                |> result.map(json.string),
-              )
-            Error(_) -> ErrorResponse(message: "auth ttl must be an integer")
-          }
-        [role] ->
-          daemon_result(
-            service_auth.mint_default(workspace, role)
-            |> result.map(json.string),
-          )
-        _ ->
-          ErrorResponse(
-            message: "auth_mint requires <read|write|admin> [--ttl seconds]",
-          )
-      }
-    "gate_list" -> daemon_result(gate_service.list(workspace, request.params))
-    "gate_show" ->
-      case request.params {
-        [id, ..] -> daemon_result(gate_service.show(workspace, id))
-        _ -> ErrorResponse(message: "gate_show requires <gate-id>")
-      }
-    "gate_check" ->
-      case request.params {
-        [id, ..] -> daemon_result(gate_service.check(workspace, id))
-        _ -> ErrorResponse(message: "gate_check requires <gate-id>")
-      }
-    "gate_resolve" ->
-      case request.params {
-        [id, ..rest] -> daemon_result(gate_service.resolve(workspace, id, rest))
-        _ -> ErrorResponse(message: "gate_resolve requires <gate-id>")
-      }
-    "gate_fact_ingest" ->
-      case request.params {
-        [id, "--issuer", issuer, "--wire", wire, ..] ->
-          daemon_result(gate_service.ingest_fact(workspace, id, issuer, wire))
-        _ ->
-          ErrorResponse(
-            message: "gate_fact_ingest requires <gate-id> --issuer <public-key> --wire <json>",
-          )
-      }
-    "wisp_list" -> daemon_result(wisp_service.list(workspace, request.params))
-    "wisp_promote" ->
-      case request.params {
-        [id, ..rest] -> daemon_result(wisp_service.promote(workspace, id, rest))
-        _ -> ErrorResponse(message: "wisp_promote requires <wisp-id>")
-      }
-    "wisp_digest" ->
-      case request.params {
-        [id, ..] -> daemon_result(wisp_service.digest(workspace, id))
-        _ -> ErrorResponse(message: "wisp_digest requires <wisp-id>")
-      }
-    "wisp_burn" ->
-      case request.params {
-        [id, ..rest] -> daemon_result(wisp_service.burn(workspace, id, rest))
-        _ -> ErrorResponse(message: "wisp_burn requires <wisp-id>")
-      }
-    "wisp_gc" -> daemon_result(wisp_service.gc(workspace, request.params))
-    "wisp_archive" ->
-      case request.params {
-        [] -> daemon_result(wisp_service.archives(workspace, ""))
-        [id, ..] -> daemon_result(wisp_service.archives(workspace, id))
-      }
-    "molecule_register" ->
-      case request.params {
-        [source, ..] ->
-          daemon_result(molecule_service.register(workspace, source))
-        _ ->
-          ErrorResponse(message: "molecule_register requires <template-json>")
-      }
-    "molecule_list" -> daemon_result(molecule_service.list(workspace))
-    "molecule_show" ->
-      case request.params {
-        [hash, ..] -> daemon_result(molecule_service.show(workspace, hash))
-        _ -> ErrorResponse(message: "molecule_show requires <template-hash>")
-      }
-    "molecule_instantiate" ->
-      case request.params {
-        [hash, "--idempotency-key", key, ..bindings] ->
-          daemon_result(molecule_service.instantiate(
-            workspace,
-            hash,
-            key,
-            bindings,
-          ))
-        _ ->
-          ErrorResponse(
-            message: "molecule_instantiate requires <hash> --idempotency-key <key> [name=value]...",
-          )
-      }
-    "molecule_compose" ->
-      case request.params {
-        [name, left, right, ..] ->
-          daemon_result(molecule_service.compose(workspace, name, left, right))
-        _ ->
-          ErrorResponse(
-            message: "molecule_compose requires <name> <left-hash> <right-hash>",
-          )
-      }
-    "molecule_instance" ->
-      case request.params {
-        [id, ..] -> daemon_result(molecule_service.instance(workspace, id))
-        _ -> ErrorResponse(message: "molecule_instance requires <instance-id>")
-      }
-    "molecule_provenance" ->
-      case request.params {
-        [id, ..] -> daemon_result(molecule_service.provenance(workspace, id))
-        _ -> ErrorResponse(message: "molecule_provenance requires <task-id>")
-      }
-    "molecule_progress" ->
-      case request.params {
-        [id, ..] -> daemon_result(molecule_service.progress(workspace, id))
-        _ -> ErrorResponse(message: "molecule_progress requires <instance-id>")
-      }
-    "molecule_current" ->
-      case request.params {
-        [id, ..] -> daemon_result(molecule_service.current(workspace, id))
-        _ -> ErrorResponse(message: "molecule_current requires <instance-id>")
-      }
-    "molecule_distill" ->
-      case request.params {
-        [id, ..] -> daemon_result(molecule_service.distill(workspace, id))
-        _ -> ErrorResponse(message: "molecule_distill requires <instance-id>")
-      }
-    "rule_register" ->
-      case request.params {
-        [name, source, ..] ->
-          daemon_result(rule_service.register(workspace, name, source))
-        _ -> ErrorResponse(message: "rule_register requires <name> <source>")
-      }
-    "rule_list" -> daemon_result(rule_service.list(workspace))
-    "rule_show" ->
-      case request.params {
-        [hash, ..] -> daemon_result(rule_service.show(workspace, hash))
-        _ -> ErrorResponse(message: "rule_show requires <hash>")
-      }
-    "rule_approve" ->
-      case request.params {
-        [hash, ..] -> daemon_result(rule_service.approve(workspace, hash))
-        _ -> ErrorResponse(message: "rule_approve requires <hash>")
-      }
-    "rule_revoke" ->
-      case request.params {
-        [hash, ..] -> daemon_result(rule_service.revoke(workspace, hash))
-        _ -> ErrorResponse(message: "rule_revoke requires <hash>")
-      }
-    "rule_eval" ->
-      case request.params {
-        [hash, ..rest] ->
-          daemon_result(rule_service.evaluate(workspace, hash, rest))
-        _ ->
-          ErrorResponse(
-            message: "rule_eval requires <hash> [--caller <name>] [--task <id>]",
-          )
-      }
-    "rule_audit" ->
-      case request.params {
-        [] -> daemon_result(rule_service.audits(workspace, ""))
-        [hash, ..] -> daemon_result(rule_service.audits(workspace, hash))
-      }
-    _ -> ErrorResponse(message: "unknown method: " <> request.method)
-  }
-}
-
-/// Route one parsed update (bk-57c1): lifecycle verbs stay exclusive,
-/// `--fence` pairs only with a status, and everything else (status, claim,
-/// labels, priority) composes in one daemon_store.update_fields call.
-fn route_update(workspace: String, args: parser.UpdateArgs) -> Response {
-  let id = args.id
-  // Heartbeat is exclusive and supported: refresh the live claim's lease.
-  case args.heartbeat {
-    True ->
-      case parser.simple_fields_requested(args) {
-        False -> daemon_result(daemon_store.heartbeat(workspace, id, args.ttl))
-        True ->
-          ErrorResponse(
-            message: "--heartbeat does not combine with other update fields",
-          )
-      }
-    False -> route_update_rest(workspace, args)
-  }
-}
-
-fn route_update_rest(workspace: String, args: parser.UpdateArgs) -> Response {
-  let id = args.id
-  let simple_requested = parser.simple_fields_requested(args)
-  let exclusive_count =
-    bool_int(args.release)
-    + bool_int(args.reopen)
-    + bool_int(args.undefer)
-    + bool_int(args.satisfy_gate)
-    + bool_int(args.close != option.None)
-    + bool_int(args.defer_until != option.None)
-    + bool_int(args.remove_labels != [])
-    + bool_int(args.fence != option.None)
-  case exclusive_count, simple_requested {
-    0, True ->
-      case args.force, args.claim {
-        True, option.None ->
-          ErrorResponse(message: "--force only applies with --claim")
-        _, _ -> daemon_result(daemon_store.update_fields(workspace, id, args))
-      }
-    0, False -> ErrorResponse(message: "update requires a change")
-    1, True ->
-      case args.fence, args.status {
-        option.Some(fence), option.Some(status) ->
-          daemon_result(daemon_store.update_fenced(workspace, id, status, fence))
-        _, _ ->
-          ErrorResponse(
-            message: "only --fence may combine with a status update",
-          )
-      }
-    1, False ->
-      case args.fence {
-        option.Some(_) -> ErrorResponse(message: "--fence requires a status")
-        option.None -> route_exclusive(workspace, args)
-      }
-    _, _ ->
-      ErrorResponse(
-        message: "cannot combine lifecycle verbs (--release/--reopen/--undefer/--satisfy-gate/--close/--defer-until/--remove-label/--fence)",
-      )
-  }
-}
-
-fn bool_int(value: Bool) -> Int {
-  case value {
-    True -> 1
-    False -> 0
-  }
-}
-
-fn route_exclusive(workspace: String, args: parser.UpdateArgs) -> Response {
-  let id = args.id
-  // Tuple-of-discriminants match: record patterns with `..` would match an
-  // empty remove_labels list and shadow the arms below it.
-  case
-    args.release,
-    args.reopen,
-    args.undefer,
-    args.satisfy_gate,
-    args.close,
-    args.defer_until,
-    args.remove_labels,
-    args.fence
-  {
-    True, _, _, _, _, _, _, _ ->
-      daemon_result(daemon_store.release(workspace, id))
-    _, True, _, _, _, _, _, _ ->
-      daemon_result(daemon_store.reopen(workspace, id))
-    _, _, True, _, _, _, _, _ ->
-      daemon_result(daemon_store.undefer(workspace, id))
-    _, _, _, True, _, _, _, _ ->
-      daemon_result(daemon_store.satisfy_gate(workspace, id))
-    _, _, _, _, option.Some(reason), _, _, _ ->
-      daemon_result(daemon_store.close(workspace, id, reason))
-    _, _, _, _, _, option.Some(until), _, _ ->
-      daemon_result(daemon_store.defer_until(workspace, id, until))
-    _, _, _, _, _, _, labels, _ ->
-      daemon_result(
-        list.fold(labels, Ok(json.null()), fn(acc, l) {
-          case acc {
-            Ok(_) -> daemon_store.remove_label(workspace, id, l)
-            Error(e) -> Error(e)
-          }
-        }),
-      )
-  }
-}
-
-fn daemon_result(result: Result(json.Json, String)) -> Response {
-  case result {
+  case socket_route.route(workspace, request.method, request.params) {
     Ok(value) ->
       OkResponse(value: json.to_string(json.object([#("ok", value)])))
     Error(message) -> ErrorResponse(message: message)
   }
 }
 
-// ---------------------------------------------------------------------------
-// Wire layer: parse a JSON-RPC line, dispatch, emit a JSON-RPC response line.
-// ---------------------------------------------------------------------------
+pub fn socket_path(workspace: String) -> String {
+  socket_wire.socket_path(workspace)
+}
 
-/// Handle one raw request line -> one response line (JSON).
+pub fn client_request(
+  workspace: String,
+  method: String,
+  params: List(String),
+) -> Result(String, String) {
+  socket_wire.client_request(workspace, method, params)
+}
+
+pub fn client_request_with_token(
+  workspace: String,
+  method: String,
+  params: List(String),
+  token: String,
+) -> Result(String, String) {
+  socket_wire.client_request_with_token(workspace, method, params, token)
+}
+
 pub fn handle_line(workspace: String, line: String) -> String {
-  case parse_request(line) {
-    Error(_) -> error_response("parse error", 0)
+  case socket_wire.parse_request(line) {
+    Error(_) -> socket_wire.error_response("parse error", 0)
     Ok(#(method, params, id)) -> {
       let resp = handle_request(workspace, Request(method:, params:))
       case resp {
-        OkResponse(value) -> ok_response(value, id)
-        ErrorResponse(message) -> error_response(message, id)
+        OkResponse(value) -> socket_wire.ok_response(value, id)
+        ErrorResponse(message) -> socket_wire.error_response(message, id)
       }
     }
   }
@@ -625,103 +75,6 @@ pub fn handle_authenticated_line(workspace: String, line: String) -> String {
   })
 }
 
-fn parse_request(line: String) -> Result(#(String, List(String), Int), Nil) {
-  case json.parse(from: string.trim(line), using: request_decoder()) {
-    Ok(req) -> Ok(req)
-    Error(_) -> Error(Nil)
-  }
-}
-
-fn request_decoder() -> decode.Decoder(#(String, List(String), Int)) {
-  use method <- decode.field("method", decode.string)
-  use params <- decode.field("params", decode.list(of: decode.string))
-  use id <- decode.field("id", decode.int)
-  decode.success(#(method, params, id))
-}
-
-fn ok_response(value: String, id: Int) -> String {
-  json.object([#("result", json.string(value)), #("id", json.int(id))])
-  |> json.to_string()
-}
-
-fn error_response(message: String, id: Int) -> String {
-  json.object([#("error", json.string(message)), #("id", json.int(id))])
-  |> json.to_string()
-}
-
-fn extract_result(line: String) -> Result(String, String) {
-  case json.parse(from: string.trim(line), using: response_decoder()) {
-    Ok(#(result, error)) ->
-      case error == "" {
-        True -> Ok(result)
-        False -> Error(error)
-      }
-    Error(_) -> Error("malformed daemon response")
-  }
-}
-
-fn response_decoder() -> decode.Decoder(#(String, String)) {
-  use result <- decode.optional_field("result", "", decode.string)
-  use error <- decode.optional_field("error", "", decode.string)
-  decode.success(#(result, error))
-}
-
-// ---------------------------------------------------------------------------
-// Transport (FFI): gen_tcp over a UNIX-domain socket.
-// ---------------------------------------------------------------------------
-
-@external(erlang, "bankai_socket_ffi", "listen")
-fn ffi_listen(path: String) -> Result(Dynamic, Dynamic)
-
-@external(erlang, "bankai_socket_ffi", "accept")
-fn ffi_accept(ls: Dynamic) -> Result(Dynamic, Dynamic)
-
-@external(erlang, "bankai_socket_ffi", "recv_line")
-fn ffi_recv_line(sock: Dynamic) -> Result(String, Dynamic)
-
-/// Client-side bounded recv, WIRED (bk-06d1): {error, timeout} after
-/// Timeout ms instead of an infinite block when the daemon stalls —
-/// "daemon did not reply within 30s" is now a true statement. The daemon
-/// accept loop keeps unbounded recv_line (idle connections must stay open).
-///
-/// The historical full-suite Badarg is fixed at the FFI layer:
-/// gen_tcp can deliver {packet, line} data as an Erlang list, and Gleam's
-/// <> compiles to binary concatenation — a list operand crashed. The FFI
-/// now normalizes (strip_eol + iolist_to_binary), matching recv_line.
-@external(erlang, "bankai_socket_ffi", "recv_line_t")
-fn ffi_recv_line_t(sock: Dynamic, timeout: Int) -> Result(String, Dynamic)
-
-/// Client-side bounded recv, historically designed but left unwired: a
-/// controlled experiment flipping `recv_line_t/2` on produced a raw Badarg
-/// in full-suite service_auth runs; root cause found 2026-10-27 (bk-06d1) —
-/// gen_tcp delivered {packet, line} data as an Erlang list and Gleam's `<>`
-/// (binary concatenation) crashed on it. Fixed by normalizing in the FFI
-/// (same strip_eol + iolist_to_binary contract as recv_line); see
-/// ffi_recv_line_t below.
-@external(erlang, "bankai_socket_ffi", "send_data")
-fn ffi_send(sock: Dynamic, data: String) -> Result(Dynamic, Dynamic)
-
-@external(erlang, "bankai_socket_ffi", "close_s")
-fn ffi_close(sock: Dynamic) -> Nil
-
-@external(erlang, "bankai_socket_ffi", "connect")
-fn ffi_connect(path: String) -> Result(Dynamic, Dynamic)
-
-@external(erlang, "bankai_socket_ffi", "delete_path")
-fn ffi_delete_path(path: String) -> Nil
-
-@external(erlang, "bankai_socket_ffi", "controlling_process")
-fn ffi_controlling_process(
-  sock: Dynamic,
-  pid: process.Pid,
-) -> Result(Dynamic, Dynamic)
-
-// ---------------------------------------------------------------------------
-// Daemon: `bankai serve` — blocks in an accept loop.
-// ---------------------------------------------------------------------------
-
-/// Start an explicit local-mode daemon. A clustered profile is refused here so
-/// callers cannot accidentally create a second independent writer.
 pub fn serve(workspace: String) -> Nil {
   platform_profile.load(workspace)
   |> result.try(platform_profile.require_local_daemon)
@@ -778,9 +131,9 @@ fn warm_vector_projection(workspace: String) -> Nil {
 /// hijacking a workspace another daemon owns (round-4: deleting a live
 /// socket and rebinding leaves two daemons with one ledger — split brain).
 pub fn socket_owned(path: String) -> Bool {
-  case ffi_connect(path) {
+  case socket_wire.ffi_connect(path) {
     Ok(sock) -> {
-      ffi_close(sock)
+      socket_wire.ffi_close(sock)
       True
     }
     Error(_) -> False
@@ -788,7 +141,7 @@ pub fn socket_owned(path: String) -> Bool {
 }
 
 fn listen(workspace: String, mode: String) -> Nil {
-  let path = socket_path(workspace)
+  let path = socket_wire.socket_path(workspace)
   case socket_owned(path) {
     True ->
       io.println_error(
@@ -797,8 +150,8 @@ fn listen(workspace: String, mode: String) -> Nil {
         <> " — refusing to hijack it",
       )
     False -> {
-      let _ = ffi_delete_path(path)
-      case ffi_listen(path) {
+      let _ = socket_wire.ffi_delete_path(path)
+      case socket_wire.ffi_listen(path) {
         Error(_) -> io.println_error("bankai: failed to listen on " <> path)
         Ok(ls) -> {
           io.println("bankai " <> mode <> " daemon listening on " <> path)
@@ -810,7 +163,7 @@ fn listen(workspace: String, mode: String) -> Nil {
 }
 
 fn serve_loop(workspace: String, ls: Dynamic) -> Nil {
-  case ffi_accept(ls) {
+  case socket_wire.ffi_accept(ls) {
     Error(_) -> Nil
     Ok(sock) -> {
       // Isolate each connection: a handler crash must not kill the accept loop.
@@ -818,93 +171,24 @@ fn serve_loop(workspace: String, ls: Dynamic) -> Nil {
       // signals are tied to the handler (else the socket leaks when a handler
       // dies and error signals route to the acceptor).
       let handler = process.spawn(fn() { handle_conn(workspace, sock) })
-      let _ = ffi_controlling_process(sock, handler)
+      let _ = socket_wire.ffi_controlling_process(sock, handler)
       serve_loop(workspace, ls)
     }
   }
 }
 
 fn handle_conn(workspace: String, sock: Dynamic) -> Nil {
-  case ffi_recv_line(sock) {
+  case socket_wire.ffi_recv_line(sock) {
     Ok(line) -> {
-      let _ = ffi_send(sock, handle_authenticated_line(workspace, line) <> "\n")
+      let _ =
+        socket_wire.ffi_send(
+          sock,
+          handle_authenticated_line(workspace, line) <> "\n",
+        )
       Nil
     }
     Error(_) -> Nil
   }
-  let _ = ffi_close(sock)
+  let _ = socket_wire.ffi_close(sock)
   Nil
-}
-
-// ---------------------------------------------------------------------------
-// Client: connect to a running daemon and send one request.
-// ---------------------------------------------------------------------------
-
-/// Send one request to the daemon over the socket if it's up.
-/// Returns Error when no daemon is listening (caller falls back to single-shot).
-pub fn client_request(
-  workspace: String,
-  method: String,
-  params: List(String),
-) -> Result(String, String) {
-  service_auth.local_admin_token(workspace)
-  |> result.try(fn(token) {
-    client_request_with_token(workspace, method, params, token)
-  })
-}
-
-/// Recv helper: gen_tcp {packet, line} with no buffer option delivers a reply
-/// longer than the recv buffer as several partial "lines". Once the task store
-/// grew past ~4KB, the single recv here returned a mid-JSON fragment and every
-/// read died as "malformed daemon response" — masked upstream as
-/// "daemon required". Accumulate chunks until the whole line parses or the
-/// daemon closes the socket. Bounded: each chunk wait is capped at 30s
-/// (recv_line_t), so a stalled daemon yields "daemon did not reply within
-/// 30s" instead of hanging the client forever.
-fn recv_full_response(sock: Dynamic, acc: String) -> Result(String, Dynamic) {
-  case ffi_recv_line_t(sock, 30_000) {
-    Ok(chunk) -> {
-      let line = acc <> chunk
-      case extract_result(line) {
-        Ok(_) -> Ok(line)
-        Error(_) -> recv_full_response(sock, line)
-      }
-    }
-    Error(reason) ->
-      case acc {
-        "" -> Error(reason)
-        _ -> Ok(acc)
-      }
-  }
-}
-
-/// Send an attenuated request to the resident service. The token is included in
-/// the request only; errors and responses never echo bearer credentials.
-pub fn client_request_with_token(
-  workspace: String,
-  method: String,
-  params: List(String),
-  token: String,
-) -> Result(String, String) {
-  case ffi_connect(socket_path(workspace)) {
-    Error(_) -> Error("no daemon (not reachable; may still be starting)")
-    Ok(sock) -> {
-      let req =
-        json.object([
-          #("method", json.string(method)),
-          #("params", json.array(params, of: json.string)),
-          #("token", json.string(token)),
-          #("id", json.int(1)),
-        ])
-        |> json.to_string()
-      let _ = ffi_send(sock, req <> "\n")
-      let response = recv_full_response(sock, "")
-      let _ = ffi_close(sock)
-      case response {
-        Ok(line) -> extract_result(line)
-        Error(_) ->
-          Error("daemon did not reply within 30s (may still be starting)")
-      }
-    }
-  }
 }
