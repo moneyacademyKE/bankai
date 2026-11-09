@@ -245,7 +245,9 @@ pub fn export_cmd(
   rest: List(String),
 ) -> Result(json.Json, String) {
   let fmt = parser.parse_export_format(rest)
-  let tasks = load_store(tasks_path) |> store.current_tasks()
+  use tasks <- result.try(
+    jsonl.load_store(from: tasks_path) |> result.map(store.current_tasks),
+  )
   case fmt {
     "md" -> {
       let lines =
@@ -269,14 +271,14 @@ pub fn gc_cmd(
   workspace: String,
   tasks_path: String,
 ) -> Result(json.Json, String) {
-  Ok(json.string(compact.run(workspace, tasks_path)))
+  compact.run(workspace, tasks_path) |> result.map(json.string)
 }
 
 pub fn history_cmd(
   tasks_path: String,
   id: String,
 ) -> Result(json.Json, String) {
-  let index = load_store(tasks_path)
+  use index <- result.try(jsonl.load_store(from: tasks_path))
   case store.find_by_id(index, id) {
     Error(Nil) -> Error("no such task: " <> id)
     Ok(_) -> {
@@ -301,7 +303,9 @@ pub fn history_cmd(
 }
 
 pub fn analytics_cmd(tasks_path: String) -> Result(json.Json, String) {
-  let tasks = store.current_tasks(load_store(tasks_path))
+  use tasks <- result.try(
+    jsonl.load_store(from: tasks_path) |> result.map(store.current_tasks),
+  )
   case aarondb_bridge.db_from_tasks(tasks) {
     Error(e) -> Error(e)
     Ok(db) -> {
@@ -330,16 +334,14 @@ pub fn search_cmd(
   rest: List(String),
 ) -> Result(json.Json, String) {
   let query = string.join(rest, " ")
-  let tasks = store.current_tasks(load_store(tasks_path))
+  use tasks <- result.try(
+    jsonl.load_store(from: tasks_path) |> result.map(store.current_tasks),
+  )
   let task_docs =
     list.map(tasks, fn(t) { #("task", t.id, t.title <> " " <> t.description) })
-  let mem_docs = case memory.load(from: workspace <> "/memories.jsonl") {
-    Ok(mems) ->
-      list.map(mems, fn(m) {
-        #("memory", store.hash_key(m.content_hash), m.text)
-      })
-    Error(_) -> []
-  }
+  use mems <- result.try(memory.load(from: workspace <> "/memories.jsonl"))
+  let mem_docs =
+    list.map(mems, fn(m) { #("memory", store.hash_key(m.content_hash), m.text) })
   let docs = list.append(task_docs, mem_docs)
   let results = aarondb_bridge.search(docs, query)
   Ok(
@@ -366,7 +368,9 @@ pub fn semantic_duplicates_cmd(
   rest: List(String),
 ) -> Result(json.Json, String) {
   let threshold = parser.parse_threshold(rest, 0.78)
-  let tasks = store.current_tasks(load_store(tasks_path))
+  use tasks <- result.try(
+    jsonl.load_store(from: tasks_path) |> result.map(store.current_tasks),
+  )
   let docs =
     list.map(tasks, fn(t) {
       vector_bridge.Document("task", t.id, t.title <> " " <> t.description)
@@ -389,14 +393,15 @@ pub fn semantic_duplicates_cmd(
 }
 
 pub fn show_cmd(tasks_path: String, id: String) -> Result(json.Json, String) {
-  case store.find_by_id(load_store(tasks_path), id) {
+  use index <- result.try(jsonl.load_store(from: tasks_path))
+  case store.find_by_id(index, id) {
     Ok(task) -> Ok(serde.task_to_json(task))
     Error(Nil) -> Error("no such task: " <> id)
   }
 }
 
 pub fn epic_cmd(tasks_path: String, id: String) -> Result(json.Json, String) {
-  let index = load_store(tasks_path)
+  use index <- result.try(jsonl.load_store(from: tasks_path))
   case store.find_by_id(index, id) {
     Error(Nil) -> Error("no such task: " <> id)
     Ok(_) -> {
@@ -443,20 +448,23 @@ pub fn epic_cmd(tasks_path: String, id: String) -> Result(json.Json, String) {
   }
 }
 
-pub fn prime_query_text(workspace: String, query: String) -> String {
+pub fn prime_query_text(
+  workspace: String,
+  query: String,
+) -> Result(String, String) {
   let tasks_path = workspace <> "/tasks.jsonl"
-  let tasks = store.current_tasks(load_store(tasks_path))
+  use tasks <- result.try(
+    jsonl.load_store(from: tasks_path) |> result.map(store.current_tasks),
+  )
   let task_docs =
     list.map(tasks, fn(t) {
       vector_bridge.Document("task", t.id, t.title <> " " <> t.description)
     })
-  let mem_docs = case memory.load(from: workspace <> "/memories.jsonl") {
-    Ok(mems) ->
-      list.map(mems, fn(m) {
-        vector_bridge.Document("memory", store.hash_key(m.content_hash), m.text)
-      })
-    Error(_) -> []
-  }
+  use mems <- result.try(memory.load(from: workspace <> "/memories.jsonl"))
+  let mem_docs =
+    list.map(mems, fn(m) {
+      vector_bridge.Document("memory", store.hash_key(m.content_hash), m.text)
+    })
   let matches =
     vector_bridge.search(list.append(task_docs, mem_docs), query, 0.18, 12)
   let context =
@@ -470,21 +478,23 @@ pub fn prime_query_text(workspace: String, query: String) -> String {
       <> match_text(m, task_docs, mem_docs)
     })
     |> string.join("\n")
-  let base = prime_text(workspace)
+  use base <- result.try(prime_text(workspace))
   case context {
-    "" -> base <> "\n\n## Semantic context\nNo matches for: " <> query
+    "" -> Ok(base <> "\n\n## Semantic context\nNo matches for: " <> query)
     _ ->
-      base
-      <> "\n\n## Semantic context ("
-      <> vector_bridge.backend()
-      <> ")\nQuery: "
-      <> query
-      <> "\n"
-      <> context
+      Ok(
+        base
+        <> "\n\n## Semantic context ("
+        <> vector_bridge.backend()
+        <> ")\nQuery: "
+        <> query
+        <> "\n"
+        <> context,
+      )
   }
 }
 
-pub fn prime_text(workspace: String) -> String {
+pub fn prime_text(workspace: String) -> Result(String, String) {
   let base =
     "You are an agent operating against the bankai task-memory mesh.\n"
     <> "Task identity is content-addressed (SHA-256 over canonical state).\n"
@@ -496,25 +506,18 @@ pub fn prime_text(workspace: String) -> String {
     <> "`--label`; prioritize with `--priority`; persist durable insights with\n"
     <> "`bankai remember \"...\"`. Use `bankai rule register`, then explicitly\n"
     <> "approve and evaluate a rule through the daemon; approvals and audits stay local."
-  let mems_block = case memory.load(from: workspace <> "/memories.jsonl") {
-    Ok([]) -> ""
-    Ok(mems) -> {
+  use mems <- result.try(memory.load(from: workspace <> "/memories.jsonl"))
+  let mems_block = case mems {
+    [] -> ""
+    mems -> {
       let lines =
         mems
         |> list.map(fn(m) { "- " <> m.text })
         |> string.join("\n")
       "\n\n## Agent memories (persisted insights)\n" <> lines
     }
-    Error(_) -> ""
   }
-  base <> mems_block
-}
-
-fn load_store(tasks_path: String) -> store.Store {
-  case jsonl.load(from: tasks_path) {
-    Ok(tasks) -> store.from_list(tasks)
-    Error(_) -> store.new()
-  }
+  Ok(base <> mems_block)
 }
 
 fn status_counts_to_json(counts: Dict(String, Int)) -> json.Json {

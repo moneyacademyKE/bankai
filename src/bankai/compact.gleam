@@ -17,13 +17,17 @@ import bankai/types.{type Task, Closed, Wisp}
 import gleam/dict
 import gleam/int
 import gleam/list
+import gleam/result
 import gleam/set
 
 /// Compact the workspace: move Closed tasks (all their versions) out of the
 /// active store into archive.jsonl (deduped by hash), rewrite the active store
 /// with what remains, and record a summary memory. Returns a human summary.
-pub fn run(workspace: String, tasks_path: String) -> String {
-  let index = load_store(tasks_path)
+/// Reads are honest (bk-f250): an unreadable tasks, archive or memories file
+/// is an Error — masking any of them to empty would let the next flush
+/// destroy that file's content.
+pub fn run(workspace: String, tasks_path: String) -> Result(String, String) {
+  use index <- result.try(jsonl.load_store(from: tasks_path))
   let closed_ids =
     store.current_tasks(index)
     |> list.filter(fn(t) { t.status == Closed && t.kind != Wisp })
@@ -31,18 +35,17 @@ pub fn run(workspace: String, tasks_path: String) -> String {
     |> set.from_list
 
   case set.size(closed_ids) {
-    0 -> "nothing to compact (no closed tasks)"
+    0 -> Ok("nothing to compact (no closed tasks)")
     n -> {
       let all = store.list(index)
       let keep = list.filter(all, fn(t) { !set.contains(closed_ids, t.id) })
       let archived = list.filter(all, fn(t) { set.contains(closed_ids, t.id) })
 
-      // Archive: dedupe by content hash with anything already archived.
+      // Archive: dedupe by content hash with anything already archived. An
+      // unreadable archive is an Error, never an empty set — the flush below
+      // would otherwise destroy the archived history it cannot see.
       let archive_path = workspace <> "/archive.jsonl"
-      let existing = case jsonl.load(from: archive_path) {
-        Ok(e) -> e
-        Error(_) -> []
-      }
+      use existing <- result.try(jsonl.load(from: archive_path))
       let _ =
         jsonl.flush(dedupe(list.append(existing, archived)), to: archive_path)
 
@@ -55,20 +58,10 @@ pub fn run(workspace: String, tasks_path: String) -> String {
         <> int.to_string(n)
         <> " closed task(s) retired into archive.jsonl"
       let mem = memory.new(note, time.now())
-      let mems = case memory.load(from: workspace <> "/memories.jsonl") {
-        Ok(m) -> m
-        Error(_) -> []
-      }
+      use mems <- result.try(memory.load(from: workspace <> "/memories.jsonl"))
       let _ = memory.flush([mem, ..mems], to: workspace <> "/memories.jsonl")
-      note
+      Ok(note)
     }
-  }
-}
-
-fn load_store(tasks_path: String) -> store.Store {
-  case jsonl.load(from: tasks_path) {
-    Ok(tasks) -> store.from_list(tasks)
-    Error(_) -> store.new()
   }
 }
 

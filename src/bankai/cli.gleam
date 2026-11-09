@@ -123,10 +123,13 @@ pub fn run_in(workspace: String, argv: List(String)) -> String {
     ["inspect", hash, ..] -> parser.envelope(inspect_cmd(tasks_path, hash))
     ["prime", "--query", query, ..] ->
       parser.envelope(
-        Ok(json.string(maintenance.prime_query_text(workspace, query))),
+        maintenance.prime_query_text(workspace, query)
+        |> result.map(json.string),
       )
     ["prime", ..] ->
-      parser.envelope(Ok(json.string(maintenance.prime_text(workspace))))
+      parser.envelope(
+        maintenance.prime_text(workspace) |> result.map(json.string),
+      )
     ["hooks", "install", ..] ->
       parser.envelope(setup.hooks_install_cmd(workspace))
     ["hooks", ..] -> parser.envelope(Error("usage: hooks install"))
@@ -167,7 +170,7 @@ pub fn agent_instructions() -> String {
   setup.agent_instructions()
 }
 
-pub fn prime_text(workspace: String) -> String {
+pub fn prime_text(workspace: String) -> Result(String, String) {
   maintenance.prime_text(workspace)
 }
 
@@ -204,7 +207,7 @@ fn create_cmd(
   }
   case parent {
     option.Some(parent_id) -> {
-      let index = load_store(tasks_path)
+      use index <- result.try(jsonl.load_store(from: tasks_path))
       case store.find_by_id(index, parent_id) {
         Error(Nil) -> Error("no such parent task: " <> parent_id)
         Ok(_) -> {
@@ -262,7 +265,8 @@ fn create_cmd(
           option.None,
           kind,
         )
-      let index = store.put(load_store(tasks_path), task)
+      use index <- result.try(jsonl.load_store(from: tasks_path))
+      let index = store.put(index, task)
       let _ = jsonl.flush(store.list(index), to: tasks_path)
       Ok(serde.task_to_json(task))
     }
@@ -278,7 +282,9 @@ fn list_cmd(
   case task_view.parse(rest) {
     Error(e) -> Error(e)
     Ok(spec) -> {
-      let tasks = load_store(tasks_path) |> store.current_tasks()
+      use tasks <- result.try(
+        jsonl.load_store(from: tasks_path) |> result.map(store.current_tasks),
+      )
       Ok(task_view.envelope(
         tasks,
         spec,
@@ -293,10 +299,11 @@ fn ready_cmd(
   tasks_path: String,
   rest: List(String),
 ) -> Result(json.Json, String) {
-  let tasks =
-    load_store(tasks_path)
-    |> store.current_tasks()
-    |> graph.ready_tasks()
+  use tasks <- result.try(
+    jsonl.load_store(from: tasks_path)
+    |> result.map(store.current_tasks)
+    |> result.map(graph.ready_tasks),
+  )
   let tasks = filter_by_label(tasks, parser.parse_label_filter(rest))
   Ok(json.array(tasks, of: serde.task_to_json))
 }
@@ -305,7 +312,9 @@ fn count_cmd(
   tasks_path: String,
   rest: List(String),
 ) -> Result(json.Json, String) {
-  let tasks = load_store(tasks_path) |> store.current_tasks()
+  use tasks <- result.try(
+    jsonl.load_store(from: tasks_path) |> result.map(store.current_tasks),
+  )
   let tasks = filter_by_label(tasks, parser.parse_label_filter(rest))
   Ok(json.object([#("count", json.int(list.length(tasks)))]))
 }
@@ -314,19 +323,21 @@ fn blocked_cmd(
   tasks_path: String,
   rest: List(String),
 ) -> Result(json.Json, String) {
-  let tasks =
-    load_store(tasks_path)
-    |> store.current_tasks()
-    |> graph.blocked_tasks_at(time.now())
+  use tasks <- result.try(
+    jsonl.load_store(from: tasks_path)
+    |> result.map(store.current_tasks)
+    |> result.map(fn(tasks) { graph.blocked_tasks_at(tasks, time.now()) }),
+  )
   let tasks = filter_by_label(tasks, parser.parse_label_filter(rest))
   Ok(json.array(tasks, of: serde.task_to_json))
 }
 
 fn cycles_cmd(tasks_path: String) -> Result(json.Json, String) {
-  let edges =
-    load_store(tasks_path)
-    |> store.current_tasks()
-    |> graph.cycle_edges()
+  use edges <- result.try(
+    jsonl.load_store(from: tasks_path)
+    |> result.map(store.current_tasks)
+    |> result.map(graph.cycle_edges),
+  )
   Ok(
     json.array(edges, of: fn(e) {
       let #(from, to) = e
@@ -339,14 +350,17 @@ fn cycles_cmd(tasks_path: String) -> Result(json.Json, String) {
 }
 
 fn duplicates_cmd(tasks_path: String) -> Result(json.Json, String) {
-  let pairs =
-    load_store(tasks_path)
-    |> store.current_tasks()
-    |> list.flat_map(fn(t) {
-      t.relationships
-      |> list.filter(fn(r) { r.relation == Duplicates })
-      |> list.map(fn(r) { #(t.id, r.target_id) })
-    })
+  use pairs <- result.try(
+    jsonl.load_store(from: tasks_path)
+    |> result.map(store.current_tasks)
+    |> result.map(fn(tasks) {
+      list.flat_map(tasks, fn(t) {
+        t.relationships
+        |> list.filter(fn(r) { r.relation == Duplicates })
+        |> list.map(fn(r) { #(t.id, r.target_id) })
+      })
+    }),
+  )
   Ok(
     json.array(pairs, of: fn(p) {
       let #(a, b) = p
@@ -364,10 +378,15 @@ fn stale_cmd(
 ) -> Result(json.Json, String) {
   let days = parser.parse_days(rest)
   let cutoff = time.now() - days * time.day_ns
-  let tasks =
-    load_store(tasks_path)
-    |> store.current_tasks()
-    |> list.filter(fn(t) { graph.is_active(t.status) && t.updated_at < cutoff })
+  use tasks <- result.try(
+    jsonl.load_store(from: tasks_path)
+    |> result.map(store.current_tasks)
+    |> result.map(fn(tasks) {
+      list.filter(tasks, fn(t) {
+        graph.is_active(t.status) && t.updated_at < cutoff
+      })
+    }),
+  )
   Ok(json.array(tasks, of: serde.task_to_json))
 }
 
@@ -379,16 +398,14 @@ fn msg_add_cmd(
   rest: List(String),
 ) -> Result(json.Json, String) {
   let _ = jsonl.ensure_dir(workspace)
-  case store.find_by_id(load_store(tasks_path), task_id) {
+  use index <- result.try(jsonl.load_store(from: tasks_path))
+  case store.find_by_id(index, task_id) {
     Error(Nil) -> Error("no such task: " <> task_id)
     Ok(_) -> {
       let parent = msg_add_parse_reply(rest)
       let msg = message.new(task_id, parent, "agent", text, time.now())
       let path = workspace <> "/messages.jsonl"
-      let existing = case message.load(from: path) {
-        Ok(m) -> m
-        Error(_) -> []
-      }
+      use existing <- result.try(message.load(from: path))
       let _ = message.flush([msg, ..existing], to: path)
       Ok(message.message_to_json(msg))
     }
@@ -400,10 +417,7 @@ fn msg_list_cmd(
   task_id: String,
 ) -> Result(json.Json, String) {
   let path = workspace <> "/messages.jsonl"
-  let msgs = case message.load(from: path) {
-    Ok(m) -> m
-    Error(_) -> []
-  }
+  use msgs <- result.try(message.load(from: path))
   let task_msgs =
     msgs
     |> list.filter(fn(m) { m.task_id == task_id })
@@ -418,7 +432,7 @@ fn dep_add_cmd(
   rest: List(String),
 ) -> Result(json.Json, String) {
   let rel_type = parser.parse_relation_type(rest)
-  let index = load_store(tasks_path)
+  use index <- result.try(jsonl.load_store(from: tasks_path))
   case store.find_by_id(index, task_id) {
     Error(Nil) -> Error("no such task: " <> task_id)
     Ok(task) ->
@@ -539,7 +553,7 @@ fn apply_update(
     True, option.None -> Error("--force only applies with --claim")
     _, _ -> Ok(Nil)
   })
-  let index = load_store(tasks_path)
+  use index <- result.try(jsonl.load_store(from: tasks_path))
   case store.find_by_id(index, args.id) {
     Error(Nil) -> Error("no such task: " <> args.id)
     Ok(task) -> {
@@ -705,7 +719,7 @@ fn heartbeat_cmd(
   id: String,
   ttl: option.Option(String),
 ) -> Result(json.Json, String) {
-  let index = load_store(tasks_path)
+  use index <- result.try(jsonl.load_store(from: tasks_path))
   case store.find_by_id(index, id) {
     Error(Nil) -> Error("no such task: " <> id)
     Ok(task) ->
@@ -734,7 +748,7 @@ fn heartbeat_cmd(
 /// Free tasks whose claim lease has expired (bk-ccbf): back to open,
 /// assignee and lease cleared. Returns the reclaimed ids.
 fn reclaim_cmd(tasks_path: String) -> Result(json.Json, String) {
-  let index = load_store(tasks_path)
+  use index <- result.try(jsonl.load_store(from: tasks_path))
   let now = time.now()
   let expired =
     store.current_tasks(index)
@@ -775,7 +789,8 @@ fn memories_cmd(workspace: String) -> Result(json.Json, String) {
 }
 
 fn inspect_cmd(tasks_path: String, hash: String) -> Result(json.Json, String) {
-  case store.get_by_hex(load_store(tasks_path), hash) {
+  use index <- result.try(jsonl.load_store(from: tasks_path))
+  case store.get_by_hex(index, hash) {
     Ok(task) -> Ok(serde.task_to_json(task))
     Error(Nil) -> Error("no task for hash: " <> hash)
   }
@@ -846,7 +861,8 @@ fn sync_cmd(
     option.None -> {
       case parser.parse_from(rest) {
         option.Some(remote_path) -> {
-          let local = store.list(load_store(tasks_path))
+          use index <- result.try(jsonl.load_store(from: tasks_path))
+          let local = store.list(index)
           case jsonl.load(from: remote_path) {
             Error(_) -> Error("could not read remote: " <> remote_path)
             Ok(remote_tasks) -> {
@@ -883,7 +899,8 @@ fn sync_cmd(
           }
         }
         option.None -> {
-          let tasks = store.list(load_store(tasks_path))
+          use index <- result.try(jsonl.load_store(from: tasks_path))
+          let tasks = store.list(index)
           let _ = jsonl.flush(tasks, to: tasks_path)
           Ok(json.string(
             "synced " <> int.to_string(list.length(tasks)) <> " task(s)",
@@ -914,13 +931,6 @@ fn sync_pull_cmd(
       <> "; import requires the daemon",
     )
   })
-}
-
-fn load_store(tasks_path: String) -> store.Store {
-  case jsonl.load(from: tasks_path) {
-    Ok(tasks) -> store.from_list(tasks)
-    Error(_) -> store.new()
-  }
 }
 
 fn parse_peers(args: List(String)) -> Option(String) {

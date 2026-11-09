@@ -3,10 +3,12 @@
 //// flush would destroy it. A missing file is still a legitimate empty
 //// store (fresh workspace).
 
+import bankai/cli
 import bankai/memory
 import bankai/message
 import bankai/sync/jsonl
 import gleam/set
+import gleam/string
 import gleeunit/should
 import simplifile.{FilePermissions, Read, Write}
 
@@ -88,5 +90,16 @@ pub fn messages_unreadable_file_is_error_test() {
   setup()
   let _ = unreadable_path("messages.jsonl")
   let assert Error(_) = message.load(from: dir <> "/messages.jsonl")
+  cleanup()
+}
+
+/// bk-f250: the file-mode CLI propagates an unreadable tasks.jsonl instead
+/// of answering an empty list — the old load_store mask let the next flush
+/// destroy the file. The envelope is a String, so assert on the error text.
+pub fn cli_list_unreadable_file_is_error_test() {
+  setup()
+  let _ = unreadable_path("tasks.jsonl")
+  let out = cli.run_in(dir, ["list"])
+  should.be_true(string.contains(out, "tasks file exists"))
   cleanup()
 }

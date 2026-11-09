@@ -245,15 +245,17 @@ pub fn search(
   rest: List(String),
 ) -> Result(json.Json, String) {
   projected_tasks(workspace)
-  |> result.map(fn(tasks) {
+  |> result.try(fn(tasks) {
     let task_docs =
       list.map(tasks, fn(task) {
         #("task", task.id, task.title <> " " <> task.description)
       })
-    let memory_docs = memory_docs(workspace)
+    use memory_docs <- result.try(memory_docs(workspace))
     let docs = list.append(task_docs, memory_docs)
-    aarondb_bridge.search(docs, string.join(rest, " "))
-    |> json.array(of: fn(result) { search_result_json(docs, result) })
+    Ok(
+      aarondb_bridge.search(docs, string.join(rest, " "))
+      |> json.array(of: fn(result) { search_result_json(docs, result) }),
+    )
   })
 }
 
@@ -311,10 +313,10 @@ pub fn prime_query(
   |> result.try(fn(snapshot) {
     let #(offset, tasks) = snapshot
     let task_docs = task_documents(tasks)
-    let memory_docs = memory_documents(workspace)
+    use memory_docs <- result.try(memory_documents(workspace))
     let all_docs = list.append(task_docs, memory_docs)
     vector_bridge.projected_search(workspace, offset, all_docs, query, 0.18, 12)
-    |> result.map(fn(matches) {
+    |> result.try(fn(matches) {
       let context =
         matches
         |> list.map(fn(match) {
@@ -326,8 +328,8 @@ pub fn prime_query(
           <> match_text(match, task_docs, memory_docs)
         })
         |> string.join("\n")
-      let base = cli.prime_text(workspace)
-      case context {
+      use base <- result.try(cli.prime_text(workspace))
+      Ok(case context {
         "" ->
           json.string(
             base <> "\n\n## Semantic context\nNo matches for: " <> query,
@@ -342,7 +344,7 @@ pub fn prime_query(
             <> "\n"
             <> context,
           )
-      }
+      })
     })
   })
 }
@@ -354,7 +356,9 @@ pub fn warm_vector_projection(workspace: String) -> Result(Int, String) {
   projected_snapshot(workspace)
   |> result.try(fn(snapshot) {
     let #(offset, tasks) = snapshot
-    let docs = list.append(task_documents(tasks), memory_documents(workspace))
+    let task_docs = task_documents(tasks)
+    use memory_docs <- result.try(memory_documents(workspace))
+    let docs = list.append(task_docs, memory_docs)
     vector_bridge.warm_projection(workspace, offset, docs)
   })
 }
@@ -462,28 +466,30 @@ fn task_documents(tasks: List(Task)) -> List(vector_bridge.Document) {
   })
 }
 
-fn memory_documents(workspace: String) -> List(vector_bridge.Document) {
-  case memory.load(from: workspace <> "/memories.jsonl") {
-    Ok(memories) ->
-      list.map(memories, fn(memory) {
-        vector_bridge.Document(
-          "memory",
-          store.hash_key(memory.content_hash),
-          memory.text,
-        )
-      })
-    Error(_) -> []
-  }
+fn memory_documents(
+  workspace: String,
+) -> Result(List(vector_bridge.Document), String) {
+  use memories <- result.try(memory.load(from: workspace <> "/memories.jsonl"))
+  Ok(
+    list.map(memories, fn(memory) {
+      vector_bridge.Document(
+        "memory",
+        store.hash_key(memory.content_hash),
+        memory.text,
+      )
+    }),
+  )
 }
 
-fn memory_docs(workspace: String) -> List(#(String, String, String)) {
-  case memory.load(from: workspace <> "/memories.jsonl") {
-    Ok(memories) ->
-      list.map(memories, fn(memory) {
-        #("memory", store.hash_key(memory.content_hash), memory.text)
-      })
-    Error(_) -> []
-  }
+fn memory_docs(
+  workspace: String,
+) -> Result(List(#(String, String, String)), String) {
+  use memories <- result.try(memory.load(from: workspace <> "/memories.jsonl"))
+  Ok(
+    list.map(memories, fn(memory) {
+      #("memory", store.hash_key(memory.content_hash), memory.text)
+    }),
+  )
 }
 
 fn search_result_json(

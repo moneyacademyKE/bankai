@@ -1,9 +1,11 @@
 //// .bankai/tasks.jsonl persistence (Git-trackable, one task per line).
 
 import bankai/serde
+import bankai/storage/store
 import bankai/types.{type Task}
 import gleam/json
 import gleam/list
+import gleam/result
 import gleam/string
 import simplifile
 
@@ -56,6 +58,14 @@ pub fn load(from path: String) -> Result(List(Task), String) {
           )
       }
   }
+}
+
+/// Load tasks.jsonl straight into a content-addressed Store. This is the
+/// ONE owner of that composition (bk-f250): a missing file is a fresh empty
+/// store, an unreadable file is an Error the caller must propagate — the
+/// private cli/compact copies that re-masked it to store.new() are gone.
+pub fn load_store(from path: String) -> Result(store.Store, String) {
+  load(from: path) |> result.map(store.from_list)
 }
 
 /// Ensure a directory exists (for `.bankai/`).

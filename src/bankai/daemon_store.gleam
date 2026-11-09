@@ -400,7 +400,10 @@ pub fn compact(workspace: String) -> Result(json.Json, String) {
   |> result.try(fn(before) {
     export_jsonl(workspace)
     |> result.try(fn(_) {
-      let message = compact.run(workspace, workspace <> "/tasks.jsonl")
+      use message <- result.try(compact.run(
+        workspace,
+        workspace <> "/tasks.jsonl",
+      ))
       jsonl.load(from: workspace <> "/tasks.jsonl")
       |> result.try(fn(tasks) {
         before
