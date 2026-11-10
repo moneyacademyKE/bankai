@@ -15,7 +15,7 @@ pub fn route_update(
   case args.heartbeat {
     True ->
       case parser.simple_fields_requested(args) {
-        False -> daemon_result(daemon_store.heartbeat(workspace, id, args.ttl))
+        False -> daemon_store.heartbeat(workspace, id, args.ttl)
         True -> Error("--heartbeat does not combine with other update fields")
       }
     False -> route_update_rest(workspace, args)
@@ -41,13 +41,13 @@ fn route_update_rest(
     0, True ->
       case args.force, args.claim {
         True, option.None -> Error("--force only applies with --claim")
-        _, _ -> daemon_result(daemon_store.update_fields(workspace, id, args))
+        _, _ -> daemon_store.update_fields(workspace, id, args)
       }
     0, False -> Error("update requires a change")
     1, True ->
       case args.fence, args.status {
         option.Some(fence), option.Some(status) ->
-          daemon_result(daemon_store.update_fenced(workspace, id, status, fence))
+          daemon_store.update_fenced(workspace, id, status, fence)
         _, _ -> Error("only --fence may combine with a status update")
       }
     1, False ->
@@ -86,32 +86,20 @@ fn route_exclusive(
     args.remove_labels,
     args.fence
   {
-    True, _, _, _, _, _, _, _ ->
-      daemon_result(daemon_store.release(workspace, id))
-    _, True, _, _, _, _, _, _ ->
-      daemon_result(daemon_store.reopen(workspace, id))
-    _, _, True, _, _, _, _, _ ->
-      daemon_result(daemon_store.undefer(workspace, id))
-    _, _, _, True, _, _, _, _ ->
-      daemon_result(daemon_store.satisfy_gate(workspace, id))
+    True, _, _, _, _, _, _, _ -> daemon_store.release(workspace, id)
+    _, True, _, _, _, _, _, _ -> daemon_store.reopen(workspace, id)
+    _, _, True, _, _, _, _, _ -> daemon_store.undefer(workspace, id)
+    _, _, _, True, _, _, _, _ -> daemon_store.satisfy_gate(workspace, id)
     _, _, _, _, option.Some(reason), _, _, _ ->
-      daemon_result(daemon_store.close(workspace, id, reason))
+      daemon_store.close(workspace, id, reason)
     _, _, _, _, _, option.Some(until), _, _ ->
-      daemon_result(daemon_store.defer_until(workspace, id, until))
+      daemon_store.defer_until(workspace, id, until)
     _, _, _, _, _, _, labels, _ ->
-      daemon_result(
-        list.fold(labels, Ok(json.null()), fn(acc, l) {
-          case acc {
-            Ok(_) -> daemon_store.remove_label(workspace, id, l)
-            Error(e) -> Error(e)
-          }
-        }),
-      )
+      list.fold(labels, Ok(json.null()), fn(acc, l) {
+        case acc {
+          Ok(_) -> daemon_store.remove_label(workspace, id, l)
+          Error(e) -> Error(e)
+        }
+      })
   }
-}
-
-fn daemon_result(
-  result: Result(json.Json, String),
-) -> Result(json.Json, String) {
-  result
 }
