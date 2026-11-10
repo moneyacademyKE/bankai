@@ -86,13 +86,6 @@ pub fn ffi_recv_line(sock: Dynamic) -> Result(String, Dynamic)
 @external(erlang, "bankai_socket_ffi", "recv_line_t")
 pub fn ffi_recv_line_t(sock: Dynamic, timeout: Int) -> Result(String, Dynamic)
 
-/// Client-side bounded recv, historically designed but left unwired: a
-/// controlled experiment flipping `recv_line_t/2` on produced a raw Badarg
-/// in full-suite service_auth runs; root cause found 2026-10-27 (bk-06d1) —
-/// gen_tcp delivered {packet, line} data as an Erlang list and Gleam's `<>`
-/// (binary concatenation) crashed on it. Fixed by normalizing in the FFI
-/// (same strip_eol + iolist_to_binary contract as recv_line); see
-/// ffi_recv_line_t below.
 @external(erlang, "bankai_socket_ffi", "send_data")
 pub fn ffi_send(sock: Dynamic, data: String) -> Result(Dynamic, Dynamic)
 
