@@ -21,6 +21,7 @@
     close_s/1,
     connect/1,
     recv_line_t/2,
+    trim_valid/1,
     delete_path/1,
     socket_exists/1,
     controlling_process/2,
@@ -80,6 +81,24 @@ close_s(Socket) ->
 %% signals are tied to it (the acceptor is the default owner after accept).
 controlling_process(Socket, Pid) ->
     gen_tcp:controlling_process(Socket, Pid).
+
+%% bk-4d82: validate a line before trimming it.
+%%
+%% string:trim/1 raises badarg when its scan crosses a truncated multi-byte
+%% UTF-8 sequence (string.erl bin_search_inv_n / trim_t). gen_tcp
+%% {packet, line} chunks can split a codepoint at the recv-buffer boundary,
+%% so a partially-accumulated reply line can end mid-sequence — and
+%% recv_full_response feeds every partial to extract_result as its
+%% completeness check, so one split em-dash crashed the whole `list` verb
+%% (2026-11-10). unicode:characters_to_binary with matching in/out
+%% encodings is a pure validator: valid input returns the binary unchanged,
+%% invalid input returns {error, _, _}. Invalid here maps to {error, nil} so
+%% Gleam callers treat the line as not-yet-parseable instead of crashing.
+trim_valid(Bin) when is_binary(Bin) ->
+    case unicode:characters_to_binary(Bin, utf8, utf8) of
+        B when is_binary(B) -> {ok, string:trim(B)};
+        _ -> {error, nil}
+    end.
 
 %% Client connect to an existing UNIX-domain socket. Bounded: if the daemon
 %% is booting (socket file exists, backlog full), connect returns {error,

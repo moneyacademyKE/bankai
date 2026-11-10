@@ -7,7 +7,6 @@ import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
 import gleam/result
-import gleam/string
 
 const socket_filename = "bankai.sock"
 
@@ -21,11 +20,24 @@ pub fn socket_path(workspace: String) -> String {
 pub fn parse_request(
   line: String,
 ) -> Result(#(String, List(String), Int), Nil) {
-  case json.parse(from: string.trim(line), using: request_decoder()) {
-    Ok(req) -> Ok(req)
-    Error(_) -> Error(Nil)
+  case trim_valid(line) {
+    Error(Nil) -> Error(Nil)
+    Ok(trimmed) ->
+      case json.parse(from: trimmed, using: request_decoder()) {
+        Ok(req) -> Ok(req)
+        Error(_) -> Error(Nil)
+      }
   }
 }
+
+/// string.trim raises badarg when its scan crosses a truncated multi-byte
+/// UTF-8 sequence, and gen_tcp {packet, line} chunks can split a codepoint
+/// at the recv-buffer boundary — so a partially-accumulated line can end
+/// mid-sequence (bk-4d82). Validate before trimming: an invalid line is a
+/// plain error, which recv_full_response already treats as
+/// "not the whole reply yet, keep accumulating".
+@external(erlang, "bankai_socket_ffi", "trim_valid")
+fn trim_valid(line: String) -> Result(String, Nil)
 
 fn request_decoder() -> decode.Decoder(#(String, List(String), Int)) {
   use method <- decode.field("method", decode.string)
@@ -45,13 +57,17 @@ pub fn error_response(message: String, id: Int) -> String {
 }
 
 pub fn extract_result(line: String) -> Result(String, String) {
-  case json.parse(from: string.trim(line), using: response_decoder()) {
-    Ok(#(result, error)) ->
-      case error == "" {
-        True -> Ok(result)
-        False -> Error(error)
+  case trim_valid(line) {
+    Error(Nil) -> Error("daemon response contained invalid UTF-8")
+    Ok(trimmed) ->
+      case json.parse(from: trimmed, using: response_decoder()) {
+        Ok(#(result, error)) ->
+          case error == "" {
+            True -> Ok(result)
+            False -> Error(error)
+          }
+        Error(_) -> Error("malformed daemon response")
       }
-    Error(_) -> Error("malformed daemon response")
   }
 }
 
