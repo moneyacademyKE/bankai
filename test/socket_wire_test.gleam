@@ -37,3 +37,17 @@ pub fn extract_result_completed_multibyte_line_test() {
   let assert Ok(text) = socket_wire.extract_result(wire_completed_line())
   should.be_true(string.contains(text, "gates as filed"))
 }
+
+/// The request parser has the same badarg class: a truncated multi-byte chunk
+/// must return an ordinary parse error, never crash the daemon handler.
+pub fn parse_request_truncated_utf8_test() {
+  socket_wire.parse_request(wire_partial_line()) |> should.equal(Error(Nil))
+}
+
+/// Valid multibyte JSON still parses: the guard rejects invalid UTF-8, not
+/// non-ASCII text.
+pub fn parse_request_valid_multibyte_test() {
+  let line = "{\"method\":\"list\",\"params\":[\"bk-eb25 — guard\"],\"id\":1}"
+  socket_wire.parse_request(line)
+  |> should.equal(Ok(#("list", ["bk-eb25 — guard"], 1)))
+}
