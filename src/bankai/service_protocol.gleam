@@ -5,9 +5,9 @@
 //// has been established, so domain handlers remain credential-free.
 
 import bankai/service_auth
+import bankai/socket_wire
 import gleam/dynamic/decode
 import gleam/json
-import gleam/string
 
 pub fn handle_line(
   workspace: String,
@@ -15,19 +15,19 @@ pub fn handle_line(
   dispatch: fn(String, List(String)) -> Result(String, String),
 ) -> String {
   case parse_request(line) {
-    Error(_) -> error_response("parse error", 0)
+    Error(_) -> socket_wire.error_response("parse error", 0)
     Ok(#(method, params, token, id)) ->
       case token {
-        "" -> error_response("missing capability token", id)
+        "" -> socket_wire.error_response("missing capability token", id)
         _ ->
           case
             service_auth.authorize_request(workspace, token, method, params)
           {
-            Error(message) -> error_response(message, id)
+            Error(message) -> socket_wire.error_response(message, id)
             Ok(Nil) ->
               case dispatch(method, params) {
-                Ok(value) -> ok_response(value, id)
-                Error(message) -> error_response(message, id)
+                Ok(value) -> socket_wire.ok_response(value, id)
+                Error(message) -> socket_wire.error_response(message, id)
               }
           }
       }
@@ -37,9 +37,16 @@ pub fn handle_line(
 fn parse_request(
   line: String,
 ) -> Result(#(String, List(String), String, Int), Nil) {
-  case json.parse(from: string.trim(line), using: request_decoder()) {
-    Ok(request) -> Ok(request)
-    Error(_) -> Error(Nil)
+  // socket_wire owns the UTF-8-safe trim. A chunk boundary can split a
+  // multi-byte codepoint; that must be an ordinary parse error, not the
+  // string.trim badarg crash fixed for the unauthenticated path (bk-4d82).
+  case socket_wire.trim_valid(line) {
+    Error(Nil) -> Error(Nil)
+    Ok(trimmed) ->
+      case json.parse(from: trimmed, using: request_decoder()) {
+        Ok(request) -> Ok(request)
+        Error(_) -> Error(Nil)
+      }
   }
 }
 
@@ -49,14 +56,4 @@ fn request_decoder() -> decode.Decoder(#(String, List(String), String, Int)) {
   use token <- decode.optional_field("token", "", decode.string)
   use id <- decode.field("id", decode.int)
   decode.success(#(method, params, token, id))
-}
-
-fn ok_response(value: String, id: Int) -> String {
-  json.object([#("result", json.string(value)), #("id", json.int(id))])
-  |> json.to_string
-}
-
-fn error_response(message: String, id: Int) -> String {
-  json.object([#("error", json.string(message)), #("id", json.int(id))])
-  |> json.to_string
 }

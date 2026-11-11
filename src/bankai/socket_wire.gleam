@@ -30,6 +30,8 @@ pub fn parse_request(
   }
 }
 
+/// The one UTF-8-safe trim owner for Bankai wire lines.
+///
 /// string.trim raises badarg when its scan crosses a truncated multi-byte
 /// UTF-8 sequence, and gen_tcp {packet, line} chunks can split a codepoint
 /// at the recv-buffer boundary — so a partially-accumulated line can end
@@ -37,7 +39,7 @@ pub fn parse_request(
 /// plain error, which parse_response reports and recv_full_response treats as
 /// "not the whole reply yet, keep accumulating".
 @external(erlang, "bankai_socket_ffi", "trim_valid")
-fn trim_valid(line: String) -> Result(String, Nil)
+pub fn trim_valid(line: String) -> Result(String, Nil)
 
 fn request_decoder() -> decode.Decoder(#(String, List(String), Int)) {
   use method <- decode.field("method", decode.string)
