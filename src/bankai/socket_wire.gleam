@@ -34,7 +34,7 @@ pub fn parse_request(
 /// UTF-8 sequence, and gen_tcp {packet, line} chunks can split a codepoint
 /// at the recv-buffer boundary — so a partially-accumulated line can end
 /// mid-sequence (bk-4d82). Validate before trimming: an invalid line is a
-/// plain error, which recv_full_response already treats as
+/// plain error, which parse_response reports and recv_full_response treats as
 /// "not the whole reply yet, keep accumulating".
 @external(erlang, "bankai_socket_ffi", "trim_valid")
 fn trim_valid(line: String) -> Result(String, Nil)
@@ -56,17 +56,34 @@ pub fn error_response(message: String, id: Int) -> String {
   |> json.to_string()
 }
 
-pub fn extract_result(line: String) -> Result(String, String) {
+/// Decode one response line without interpreting whether it is a success.
+///
+/// This separates two questions the old code complected:
+/// - syntax: has the accumulated chunk become a parsable response envelope?
+/// - semantics: does that envelope carry `result` or `error`?
+///
+/// `recv_full_response` must only ask the first question. Using
+/// `extract_result` there treated a complete application error as an
+/// incomplete chunk, so the client depended on the daemon closing the socket
+/// to stop accumulating.
+pub fn parse_response(line: String) -> Result(#(String, String), String) {
   case trim_valid(line) {
     Error(Nil) -> Error("daemon response contained invalid UTF-8")
     Ok(trimmed) ->
       case json.parse(from: trimmed, using: response_decoder()) {
-        Ok(#(result, error)) ->
-          case error == "" {
-            True -> Ok(result)
-            False -> Error(error)
-          }
+        Ok(decoded) -> Ok(decoded)
         Error(_) -> Error("malformed daemon response")
+      }
+  }
+}
+
+pub fn extract_result(line: String) -> Result(String, String) {
+  case parse_response(line) {
+    Error(reason) -> Error(reason)
+    Ok(#(result, error)) ->
+      case error == "" {
+        True -> Ok(result)
+        False -> Error(error)
       }
   }
 }
@@ -135,15 +152,17 @@ pub fn client_request(
 /// longer than the recv buffer as several partial "lines". Once the task store
 /// grew past ~4KB, the single recv here returned a mid-JSON fragment and every
 /// read died as "malformed daemon response" — masked upstream as
-/// "daemon required". Accumulate chunks until the whole line parses or the
-/// daemon closes the socket. Bounded: each chunk wait is capped at 30s
-/// (recv_line_t), so a stalled daemon yields "daemon did not reply within
-/// 30s" instead of hanging the client forever.
+/// "daemon required". Accumulate chunks until the whole line parses as a
+/// response envelope or the daemon closes the socket. A complete application
+/// error is already a whole envelope, so it stops here and is interpreted by
+/// extract_result. Bounded: each chunk wait is capped at 30s (recv_line_t), so
+/// a stalled daemon yields "daemon did not reply within 30s" instead of
+/// hanging the client forever.
 fn recv_full_response(sock: Dynamic, acc: String) -> Result(String, Dynamic) {
   case ffi_recv_line_t(sock, 30_000) {
     Ok(chunk) -> {
       let line = acc <> chunk
-      case extract_result(line) {
+      case parse_response(line) {
         Ok(_) -> Ok(line)
         Error(_) -> recv_full_response(sock, line)
       }
