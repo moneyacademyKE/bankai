@@ -25,9 +25,11 @@ const workspace_progress = "/tmp/bankai_molecule_progress_test"
 
 const workspace_protocol = "/tmp/bankai_molecule_protocol_test"
 
-const valid_template = "{\"schema\":1,\"name\":\"release\",\"variables\":[{\"name\":\"project\",\"required\":true}],\"nodes\":[{\"name\":\"build\",\"title\":\"Build {{project}}\",\"kind\":\"task\",\"priority\":2,\"labels\":[\"build\"]},{\"name\":\"test\",\"title\":\"Test {{project}}\",\"kind\":\"task\",\"priority\":1,\"labels\":[]}],\"edges\":[{\"from\":\"test\",\"to\":\"build\",\"relation\":\"blocks\"}]}"
+const valid_template =
+  "{\"schema\":1,\"name\":\"release\",\"variables\":[{\"name\":\"project\",\"required\":true}],\"nodes\":[{\"name\":\"build\",\"title\":\"Build {{project}}\",\"kind\":\"task\",\"priority\":2,\"labels\":[\"build\"]},{\"name\":\"test\",\"title\":\"Test {{project}}\",\"kind\":\"task\",\"priority\":1,\"labels\":[]}],\"edges\":[{\"from\":\"test\",\"to\":\"build\",\"relation\":\"blocks\"}]}"
 
-const invalid_template = "{\"schema\":1,\"name\":\"bad\",\"variables\":[],\"nodes\":[{\"name\":\"only\",\"title\":\"Unknown {{value}}\",\"kind\":\"task\",\"priority\":1,\"labels\":[]}],\"edges\":[]}"
+const invalid_template =
+  "{\"schema\":1,\"name\":\"bad\",\"variables\":[],\"nodes\":[{\"name\":\"only\",\"title\":\"Unknown {{value}}\",\"kind\":\"task\",\"priority\":1,\"labels\":[]}],\"edges\":[]}"
 
 fn reset(workspace: String) -> Nil {
   let _ = simplifile.create_directory_all(workspace)
