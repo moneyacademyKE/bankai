@@ -4,7 +4,10 @@
     reset_workspace/1,
     record_in_transaction/3,
     high_watermark_in_transaction/1,
-    tail_json/2
+    high_watermark/1,
+    tail_json/2,
+    exported_offset/1,
+    mark_exported_offset/2
 ]).
 
 %% Bankai's committed change source. These tables are owned by Bankai, not by
@@ -59,6 +62,27 @@ tail_json(Workspace, After) ->
         Ordered = lists:keysort(4, [Row || Row = {?CHANGES, _, _, Offset, _, _, _, _, _} <- Rows,
                                          Offset > After]),
         {ok, [event_json(Row) || Row <- Ordered]}
+    end).
+
+%% Durable-export progress: the changefeed offset the last tasks.jsonl
+%% export reflects. Keyed to the same feed the projection runtime reads,
+%% so export freshness can never drift from the mutation signal.
+high_watermark(Workspace) ->
+    transaction(fun() -> {ok, high_watermark_in_transaction(Workspace)} end).
+
+exported_offset(Workspace) ->
+    transaction(fun() ->
+        case mnesia:read(?META, {Workspace, exported_offset_v1}, read) of
+            [] -> {ok, -1};
+            [{?META, _, _, _, Offset}] -> {ok, Offset}
+        end
+    end).
+
+mark_exported_offset(Workspace, Offset) ->
+    transaction(fun() ->
+        mnesia:write({?META, {Workspace, exported_offset_v1},
+                      Workspace, exported_offset_v1, Offset}),
+        {ok, nil}
     end).
 
 ensure_table(Name, Attributes) ->

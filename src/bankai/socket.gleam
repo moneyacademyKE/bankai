@@ -3,6 +3,7 @@
 
 import bankai/cluster_transport
 import bankai/daemon_store
+import bankai/durable_export
 import bankai/platform_profile
 import bankai/service_protocol
 import bankai/socket_route
@@ -26,8 +27,14 @@ pub type Response {
 
 pub fn handle_request(workspace: String, request: Request) -> Response {
   case socket_route.route(workspace, request.method, request.params) {
-    Ok(value) ->
+    Ok(value) -> {
+      // Durability pulse: tasks.jsonl stays within one request of the
+      // authoritative store, keyed to the changefeed watermark. Export
+      // failures are swallowed on purpose — the marker only advances
+      // after a successful export, so the next request retries.
+      let _ = durable_export.refresh_if_stale(workspace)
       OkResponse(value: json.to_string(json.object([#("ok", value)])))
+    }
     Error(message) -> ErrorResponse(message: message)
   }
 }
