@@ -1,0 +1,1 @@
+-record(voter, {id :: binary()}).

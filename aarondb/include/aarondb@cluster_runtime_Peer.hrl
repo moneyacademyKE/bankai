@@ -1,0 +1,1 @@
+-record(peer, {node :: binary(), fingerprint :: binary()}).

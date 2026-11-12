@@ -1,0 +1,1 @@
+-record(remote_runtime, {pid :: gleam@erlang@process:pid_()}).

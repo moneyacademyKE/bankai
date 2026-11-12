@@ -1,0 +1,1 @@
+-record(query_timed_out, {shard_id :: integer(), deadline_ms :: integer()}).

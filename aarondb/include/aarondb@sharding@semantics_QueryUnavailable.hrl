@@ -1,0 +1,1 @@
+-record(query_unavailable, {shard_id :: integer()}).

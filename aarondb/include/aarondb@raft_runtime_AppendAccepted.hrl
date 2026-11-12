@@ -1,0 +1,1 @@
+-record(append_accepted, {term :: integer(), matched :: integer()}).

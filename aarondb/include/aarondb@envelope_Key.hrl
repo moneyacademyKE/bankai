@@ -1,0 +1,1 @@
+-record(key, {public_key :: bitstring(), state :: aarondb@envelope:key_state()}).

@@ -1,0 +1,1 @@
+-record(snapshot, {offset :: integer(), state :: binary(), checksum :: binary()}).

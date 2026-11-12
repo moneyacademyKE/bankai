@@ -1,0 +1,1 @@
+-record(permanent, {reason :: binary()}).

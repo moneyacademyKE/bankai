@@ -1,0 +1,1 @@
+-record(source_unavailable, {reason :: binary()}).

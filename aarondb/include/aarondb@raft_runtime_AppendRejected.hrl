@@ -1,0 +1,1 @@
+-record(append_rejected, {term :: integer(), next_index :: integer()}).

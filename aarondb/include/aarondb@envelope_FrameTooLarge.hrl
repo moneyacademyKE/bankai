@@ -1,0 +1,1 @@
+-record(frame_too_large, {actual :: integer(), maximum :: integer()}).

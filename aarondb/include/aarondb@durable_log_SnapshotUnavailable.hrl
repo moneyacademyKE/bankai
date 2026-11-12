@@ -1,0 +1,1 @@
+-record(snapshot_unavailable, {offset :: integer()}).

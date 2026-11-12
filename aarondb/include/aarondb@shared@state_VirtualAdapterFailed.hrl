@@ -1,0 +1,1 @@
+-record(virtual_adapter_failed, {message :: binary()}).

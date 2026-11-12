@@ -1,0 +1,1 @@
+-record(invalid_committed_index, {index :: integer(), last_applied :: integer()}).

@@ -1,0 +1,1 @@
+-record(reconnect_exhausted, {attempts :: integer()}).

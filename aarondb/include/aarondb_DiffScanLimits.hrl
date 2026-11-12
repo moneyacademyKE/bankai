@@ -1,0 +1,1 @@
+-record(diff_scan_limits, {max_datoms :: integer()}).

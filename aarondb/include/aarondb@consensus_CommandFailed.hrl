@@ -1,0 +1,1 @@
+-record(command_failed, {error :: aarondb@command:command_error()}).

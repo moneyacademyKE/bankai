@@ -1,0 +1,1 @@
+-record(federation, {sources :: list(aarondb@federation:source())}).

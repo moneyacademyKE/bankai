@@ -1,0 +1,1 @@
+-record(corrupt_entry, {offset :: integer()}).

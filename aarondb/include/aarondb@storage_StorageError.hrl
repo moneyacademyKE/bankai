@@ -1,0 +1,1 @@
+-record(storage_error, {message :: binary()}).

@@ -1,0 +1,1 @@
+-record(numeric_range, {min :: float(), max :: float()}).

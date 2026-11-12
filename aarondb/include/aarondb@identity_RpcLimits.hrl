@@ -1,0 +1,1 @@
+-record(rpc_limits, {maximum_bytes :: integer(), maximum_attempts :: integer()}).

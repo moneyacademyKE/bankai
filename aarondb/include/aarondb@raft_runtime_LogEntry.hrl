@@ -1,0 +1,1 @@
+-record(log_entry, {term :: integer(), command :: binary()}).

@@ -1,0 +1,1 @@
+-record(applied, {index :: integer(), copies :: integer()}).

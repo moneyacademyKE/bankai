@@ -1,0 +1,1 @@
+-record(cluster_mismatch, {received :: binary()}).

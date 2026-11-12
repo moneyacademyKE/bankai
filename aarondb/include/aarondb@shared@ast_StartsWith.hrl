@@ -1,0 +1,1 @@
+-record(starts_with, {variable :: binary(), prefix :: binary()}).

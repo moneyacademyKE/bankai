@@ -1,0 +1,1 @@
+-record(invalid_clock, {now :: integer(), last_now :: integer()}).

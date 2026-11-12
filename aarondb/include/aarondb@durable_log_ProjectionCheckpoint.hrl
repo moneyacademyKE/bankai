@@ -1,0 +1,1 @@
+-record(projection_checkpoint, {projection :: binary(), offset :: integer()}).

@@ -1,0 +1,1 @@
+-record(snapshot_accepted, {term :: integer(), index :: integer()}).

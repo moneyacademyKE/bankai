@@ -1,0 +1,1 @@
+-record(corrupt_source, {offset :: integer()}).

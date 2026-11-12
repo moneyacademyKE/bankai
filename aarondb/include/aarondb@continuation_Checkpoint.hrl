@@ -1,0 +1,1 @@
+-record(checkpoint, {continuation :: aarondb@continuation:continuation()}).

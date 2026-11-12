@@ -1,0 +1,1 @@
+-record(search_result, {entity :: aarondb@fact:entity_id(), score :: float()}).

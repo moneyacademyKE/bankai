@@ -1,0 +1,1 @@
+-record(cursor_expired, {requested :: integer(), earliest_available :: integer()}).

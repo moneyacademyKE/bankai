@@ -1,0 +1,1 @@
+-record(transaction_error, {reason :: binary()}).

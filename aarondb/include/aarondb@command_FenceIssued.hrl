@@ -1,0 +1,1 @@
+-record(fence_issued, {resource :: binary(), token :: integer()}).

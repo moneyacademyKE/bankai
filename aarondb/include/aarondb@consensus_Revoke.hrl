@@ -1,0 +1,1 @@
+-record(revoke, {resource :: binary(), holder :: binary(), fence :: integer()}).

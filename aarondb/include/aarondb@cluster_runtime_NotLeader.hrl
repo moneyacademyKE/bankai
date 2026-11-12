@@ -1,0 +1,1 @@
+-record(not_leader, {leader :: gleam@option:option(binary())}).

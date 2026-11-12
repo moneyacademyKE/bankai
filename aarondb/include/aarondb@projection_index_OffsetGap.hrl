@@ -1,0 +1,1 @@
+-record(offset_gap, {expected :: integer(), received :: integer()}).

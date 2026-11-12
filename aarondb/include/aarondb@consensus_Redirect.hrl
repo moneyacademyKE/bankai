@@ -1,0 +1,1 @@
+-record(redirect, {leader :: gleam@option:option(binary())}).

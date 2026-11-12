@@ -1,0 +1,1 @@
+-record(work, {plan_id :: binary(), task_id :: binary(), effect_key :: binary()}).

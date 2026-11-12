@@ -1,0 +1,1 @@
+-record(art, {root :: aarondb@index@art:node_()}).

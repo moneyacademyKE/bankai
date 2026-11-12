@@ -1,0 +1,1 @@
+-record(acquire, {resource :: binary(), holder :: binary(), ttl :: integer()}).

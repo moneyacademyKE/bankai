@@ -1,0 +1,1 @@
+-record(recovery_alarm, {present :: boolean()}).

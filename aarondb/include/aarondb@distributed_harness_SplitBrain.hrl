@@ -1,0 +1,1 @@
+-record(split_brain, {term :: integer(), leaders :: list(binary())}).

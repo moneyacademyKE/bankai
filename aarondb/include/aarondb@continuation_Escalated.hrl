@@ -1,0 +1,1 @@
+-record(escalated, {payload :: aarondb@continuation:issue_payload()}).

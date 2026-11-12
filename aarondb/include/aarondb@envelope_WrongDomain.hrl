@@ -1,0 +1,1 @@
+-record(wrong_domain, {expected :: binary(), actual :: binary()}).

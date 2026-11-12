@@ -1,0 +1,1 @@
+-record(cas_rejected, {key :: binary(), actual :: gleam@option:option(binary())}).

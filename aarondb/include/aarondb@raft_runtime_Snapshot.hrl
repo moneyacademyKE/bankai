@@ -1,0 +1,1 @@
+-record(snapshot, {index :: integer(), term :: integer(), state :: binary()}).

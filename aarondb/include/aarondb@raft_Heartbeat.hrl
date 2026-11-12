@@ -1,0 +1,1 @@
+-record(heartbeat, {term :: integer(), leader :: gleam@erlang@process:pid_()}).

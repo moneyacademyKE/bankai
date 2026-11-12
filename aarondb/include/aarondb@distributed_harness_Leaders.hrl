@@ -1,0 +1,1 @@
+-record(leaders, {term :: integer(), nodes :: list(binary())}).

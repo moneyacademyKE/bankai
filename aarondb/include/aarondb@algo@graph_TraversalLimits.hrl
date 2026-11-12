@@ -1,0 +1,1 @@
+-record(traversal_limits, {max_visits :: integer(), max_results :: integer()}).

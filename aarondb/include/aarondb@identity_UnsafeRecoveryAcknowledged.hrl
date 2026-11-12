@@ -1,0 +1,1 @@
+-record(unsafe_recovery_acknowledged, {reason :: binary()}).

@@ -1,0 +1,1 @@
+-record(too_many_parents, {actual :: integer(), maximum :: integer()}).

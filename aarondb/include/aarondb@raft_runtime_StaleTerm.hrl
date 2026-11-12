@@ -1,0 +1,1 @@
+-record(stale_term, {term :: integer()}).

@@ -1,0 +1,1 @@
+-record(retry_exhausted, {attempt :: integer()}).

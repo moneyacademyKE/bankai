@@ -1,0 +1,1 @@
+-record(issue_fence, {resource :: binary()}).

@@ -1,0 +1,1 @@
+-record(temporal_scan_limits, {max_datoms :: integer()}).

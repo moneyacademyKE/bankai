@@ -1,0 +1,1 @@
+-record(switched_to_fallback, {provider :: binary()}).

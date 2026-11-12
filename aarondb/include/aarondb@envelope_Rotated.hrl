@@ -1,0 +1,1 @@
+-record(rotated, {epoch :: integer()}).

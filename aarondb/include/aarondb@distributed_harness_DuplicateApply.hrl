@@ -1,0 +1,1 @@
+-record(duplicate_apply, {index :: integer(), copies :: integer()}).

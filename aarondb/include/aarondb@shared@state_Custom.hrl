@@ -1,0 +1,1 @@
+-record(custom, {data :: binary()}).

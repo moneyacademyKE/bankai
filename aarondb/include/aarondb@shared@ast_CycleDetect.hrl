@@ -1,0 +1,1 @@
+-record(cycle_detect, {edge :: binary(), cycle_var :: binary()}).

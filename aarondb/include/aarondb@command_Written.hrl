@@ -1,0 +1,1 @@
+-record(written, {key :: binary(), value :: binary()}).

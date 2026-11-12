@@ -1,0 +1,1 @@
+-record(read_index_accepted, {term :: integer(), index :: integer()}).
