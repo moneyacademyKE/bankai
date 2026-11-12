@@ -12,7 +12,7 @@ jobs:
 
       - uses: erlef/setup-beam@v1
         with:
-          gleam-version: "1.17.0"
+          gleam-version: "1.19.2"
           otp-version: "27"
 
       - name: Format check
