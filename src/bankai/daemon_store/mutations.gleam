@@ -407,6 +407,23 @@ pub fn claim_next_ready(
   workspace: String,
   rest: List(String),
 ) -> Result(json.Json, String) {
+  // Cluster admission has external effects and cannot run in a retrying
+  // Mnesia callback. Fail closed until selection participates in consensus.
+  use mode <- result.try(cluster.mode(workspace))
+  case mode {
+    cluster.Cluster(_, _) ->
+      Error("atomic ready claim is not supported in clustered mode")
+    cluster.Local ->
+      mnesia_store.with_current_transaction(fn() {
+        claim_next_ready_transaction(workspace, rest)
+      })
+  }
+}
+
+fn claim_next_ready_transaction(
+  workspace: String,
+  rest: List(String),
+) -> Result(json.Json, String) {
   mnesia_store.current_store(workspace)
   |> result.map(store.current_tasks)
   |> result.try(fn(tasks) {
@@ -415,7 +432,7 @@ pub fn claim_next_ready(
     |> result.try(fn(readiness_tasks) {
       let ready =
         graph.ready_tasks_at(readiness_tasks, now)
-        |> list.filter(fn(t) { t.kind != Wisp })
+        |> list.filter(fn(t) { t.kind != Wisp && t.status == Open })
       let filtered = case parse_label_filter(rest) {
         option.None -> ready
         option.Some(label) ->

@@ -5,7 +5,17 @@
          idempotent_result/3, import_if_needed/3, import_snapshot/3, import_snapshot/4,
          replace_current_snapshot/2, restore_snapshot/3, promote_row/6,
          projection_checkpoint/2, set_projection_checkpoint/3, ancestry_rows/1,
-         put_ancestry/2]).
+         put_ancestry/2, with_current_transaction/1]).
+
+%% Selection and mutation share the authority transaction, including phantom
+%% protection. Nested repository transactions participate in this transaction.
+with_current_transaction(F) -> transaction(fun() ->
+    mnesia:write_lock_table(bankai_current_v2),
+    case F() of
+        {error, Reason} -> mnesia:abort(Reason);
+        Reply -> Reply
+    end
+end).
 
 %% Versioned table names are intentional. The abandoned v1 schema keyed records
 %% by workspace alone, which could retain only one task per workspace. Leaving
@@ -469,6 +479,12 @@ join_json([Json]) -> Json;
 join_json([Json | Rest]) -> <<Json/binary, ",", (join_json(Rest))/binary>>.
 
 transaction(F) ->
+    case mnesia:is_transaction() of
+        true -> F();
+        false -> outer_transaction(F)
+    end.
+
+outer_transaction(F) ->
     try mnesia:transaction(F) of
         {atomic, Reply} -> Reply;
         {aborted, Reason} -> {error, iolist_to_binary(io_lib:format("mnesia transaction aborted: ~p", [Reason]))}

@@ -23,7 +23,8 @@ pub fn route(
   case method {
     "ready" ->
       case params {
-        ["--claim", ..rest] -> daemon_store.claim_next_ready(workspace, rest)
+        ["--claim", ..rest] | ["--claim-atomic", ..rest] ->
+          daemon_store.claim_next_ready(workspace, rest)
         _ -> daemon_store.ready_tasks(workspace, params)
       }
 

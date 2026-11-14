@@ -14,6 +14,13 @@ import gleam/option.{type Option}
 import gleam/result
 import gleamunison/identity
 
+/// Execute selection and its writes within the same authoritative transaction.
+/// The callback must not perform external side effects (transactions may retry).
+@external(erlang, "bankai_mnesia_ffi", "with_current_transaction")
+pub fn with_current_transaction(
+  work: fn() -> Result(a, String),
+) -> Result(a, String)
+
 @external(erlang, "bankai_mnesia_ffi", "init")
 fn ffi_init(workspace: String) -> Result(Nil, String)
 
