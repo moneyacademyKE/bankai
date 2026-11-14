@@ -26,6 +26,6 @@ prefix() ->
     %% NOTE: em-dash as explicit bytes — a codepoint >255 inside a plain
     %% binary literal is truncated to its low 8 bits (0x2014 -> 0x14, a
     %% JSON-illegal control char), so <<"...—...">> silently corrupts.
-    Seg = <<"bk-6285 ", 16#E2, 16#80, 16#94,
-            " delete the dead module; claim the bead; gates as filed; ">>,
+    Seg = <<"bk-4d82 ", 16#E2, 16#80, 16#94,
+            " validate UTF-8 before trim; claim bead; gates as filed; ">>,
     binary:copy(Seg, 20).
