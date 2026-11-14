@@ -10,6 +10,7 @@ import bankai/daemon_store/diagnostics
 import bankai/daemon_store/mutations
 import bankai/daemon_store/queries
 import bankai/daemon_store/relations
+import bankai/durable_export
 import bankai/gate_wisp/store as gate_wisp_store
 import bankai/gates/service as gate_service
 import bankai/memory
@@ -378,38 +379,41 @@ pub fn memories(workspace: String) -> Result(json.Json, String) {
 }
 
 pub fn compact(workspace: String) -> Result(json.Json, String) {
+  use <- durable_export.with_lock(workspace <> "/tasks.jsonl")
+  use staging <- compact_staging(workspace)
   mnesia_store.current_store(workspace)
   |> result.map(store.current_tasks)
   |> result.try(fn(before) {
-    export_jsonl(workspace)
+    export_jsonl_to(workspace, staging)
     |> result.try(fn(_) {
-      use message <- result.try(compact.run(
-        workspace,
-        workspace <> "/tasks.jsonl",
-      ))
-      jsonl.load(from: workspace <> "/tasks.jsonl")
-      |> result.try(fn(tasks) {
+      use message <- result.try(compact.run(workspace, staging))
+      use tasks <- result.try(jsonl.load(from: staging))
+      use _ <- result.try(
         before
         |> list.filter(fn(task) { task.kind == Wisp })
         |> list.append(tasks)
         |> store.from_list()
-        |> mnesia_store.replace_current_snapshot(workspace, _)
-      })
+        |> mnesia_store.replace_current_snapshot(workspace, _),
+      )
+      export_jsonl(workspace)
       |> result.map(fn(_) { json.string(message) })
     })
   })
 }
 
+@external(erlang, "bankai_export_ffi", "with_staging")
+fn compact_staging(
+  workspace: String,
+  action: fn(String) -> Result(a, String),
+) -> Result(a, String)
+
 pub fn export_jsonl_to(
   workspace: String,
   path: String,
 ) -> Result(json.Json, String) {
-  mnesia_store.exportable_versions(workspace)
-  |> result.try(fn(versions) {
-    case jsonl.flush(store.list(versions), to: path) {
-      Ok(_) -> Ok(json.string("exported immutable task history to " <> path))
-      Error(_) -> Error("export failed: could not write " <> path)
-    }
+  durable_export.export_to(workspace, path)
+  |> result.map(fn(_) {
+    json.string("exported immutable task history to " <> path)
   })
 }
 

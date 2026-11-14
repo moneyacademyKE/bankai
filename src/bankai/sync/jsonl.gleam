@@ -9,7 +9,10 @@ import gleam/result
 import gleam/string
 import simplifile
 
-/// Write all tasks to a JSONL file (full rewrite — deterministic).
+@external(erlang, "bankai_export_ffi", "atomic_write")
+fn atomic_write(path: String, body: String) -> Result(Nil, simplifile.FileError)
+
+/// Write all tasks to a JSONL file (atomic full rewrite — deterministic).
 pub fn flush(
   tasks: List(Task),
   to path: String,
@@ -28,7 +31,7 @@ pub fn flush(
     False -> body <> "\n"
   }
 
-  simplifile.write(body, to: path)
+  atomic_write(path, body)
 }
 
 /// Flush with an honest, named error (bk-035b): a failed durable write IS

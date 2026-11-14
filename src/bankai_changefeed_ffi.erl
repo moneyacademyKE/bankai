@@ -71,19 +71,39 @@ high_watermark(Workspace) ->
     transaction(fun() -> {ok, high_watermark_in_transaction(Workspace)} end).
 
 exported_offset(Workspace) ->
+    Epoch = export_epoch(),
     transaction(fun() ->
         case mnesia:read(?META, {Workspace, exported_offset_v1}, read) of
-            [] -> {ok, -1};
-            [{?META, _, _, _, Offset}] -> {ok, Offset}
+            [{?META, _, _, _, {Epoch, Offset}}] -> {ok, Offset};
+            _ -> {ok, -1}
         end
     end).
 
 mark_exported_offset(Workspace, Offset) ->
+    Epoch = export_epoch(),
     transaction(fun() ->
         mnesia:write({?META, {Workspace, exported_offset_v1},
-                      Workspace, exported_offset_v1, Offset}),
+                      Workspace, exported_offset_v1, {Epoch, Offset}}),
         {ok, nil}
     end).
+
+%% Persisted offsets describe a local file, not replicated authority. A new VM
+%% (or another replica) must publish again rather than trust a recovered marker.
+export_epoch() ->
+    Key = {?MODULE, export_epoch},
+    case persistent_term:get(Key, undefined) of
+        undefined ->
+            global:trans({Key, self()}, fun() ->
+                case persistent_term:get(Key, undefined) of
+                    undefined ->
+                        Epoch = make_ref(),
+                        persistent_term:put(Key, Epoch),
+                        Epoch;
+                    Epoch -> Epoch
+                end
+            end, [node()]);
+        Epoch -> Epoch
+    end.
 
 ensure_table(Name, Attributes) ->
     case mnesia:create_table(Name, [{attributes, Attributes}, {disc_copies, [node()]}]) of

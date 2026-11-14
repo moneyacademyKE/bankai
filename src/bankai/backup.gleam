@@ -1,5 +1,6 @@
 //// Safe catalog, validation, preview, and restore operations for task backups.
 
+import bankai/durable_export
 import bankai/storage/authority
 import bankai/storage/store
 import bankai/sync/jsonl
@@ -152,10 +153,7 @@ pub fn restore(workspace: String, path: String) -> Result(Nil, String) {
     Ok(Nil) ->
       authority.restore_snapshot(workspace, store.from_list(tasks))
       |> result.try(fn(_) {
-        case jsonl.flush(tasks, to: workspace <> "/tasks.jsonl") {
-          Ok(Nil) -> Ok(Nil)
-          Error(_) -> Error("could not replace task store")
-        }
+        durable_export.export_to(workspace, workspace <> "/tasks.jsonl")
       })
   }
 }

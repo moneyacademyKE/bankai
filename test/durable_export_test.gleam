@@ -8,6 +8,13 @@ import gleeunit
 import gleeunit/should
 import simplifile
 
+@external(erlang, "bankai_durable_publication_test", "run")
+fn publication_regressions() -> Nil
+
+pub fn serialized_publication_regressions_test() {
+  publication_regressions()
+}
+
 pub fn main() {
   gleeunit.main()
 }

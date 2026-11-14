@@ -7,6 +7,7 @@
 //// proof of the fork.
 
 import bankai/builder
+import bankai/durable_export
 import bankai/mnesia_store
 import bankai/storage/authority
 import bankai/storage/store
@@ -189,11 +190,7 @@ pub fn resolve_conflict(
 /// exportable-set rule belongs to `mnesia_store.exportable_versions`, the
 /// owner `daemon_store.export_jsonl` also writes through — not restated here.
 fn refresh_export(workspace: String) -> Result(Nil, String) {
-  mnesia_store.exportable_versions(workspace)
-  |> result.try(fn(versions) {
-    jsonl.flush(store.list(versions), to: workspace <> "/tasks.jsonl")
-    |> result.replace_error("could not refresh the task export")
-  })
+  durable_export.export_to(workspace, workspace <> "/tasks.jsonl")
 }
 
 fn find_conflict_record(
