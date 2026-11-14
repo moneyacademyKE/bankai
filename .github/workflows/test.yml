@@ -15,6 +15,9 @@ jobs:
           gleam-version: "1.19.2"
           otp-version: "27"
 
+      - name: Verify vendored dependency provenance
+        run: sh scripts/vendor-aarondb.sh check
+
       - name: Format check
         run: gleam format --check src test
 
@@ -24,6 +27,4 @@ jobs:
       - name: Run tests
         run: gleam test
 
-# gleamunison is resolved as a git dep pinned to a public moneyacademyKE/gleamunison
-# commit (see gleam.toml + manifest.toml), so "Download dependencies" resolves
-# cleanly on a fresh runner — no local path, no auth needed (repo is public).
+# gleamunison is locked through Hex; AaronDB is a verified in-tree dependency.
