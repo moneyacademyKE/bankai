@@ -194,6 +194,8 @@ pub fn aarondb_projection_bootstrap_replay_and_checkpoint_test() {
   let restarted_tail = should.be_ok(projections.pull(restarted, 0, 8))
   restarted_tail |> list.length |> should.equal(1)
 
+  // Pure bootstrap values do not replace the daemon's cached runtime.
+  let _ = should.be_ok(projections.ensure_runtime(ws))
   let doctor = should.be_ok(daemon_store.doctor(ws))
   json.to_string(doctor)
   |> string.contains("\"changefeed\":{\"healthy\":true")
@@ -695,6 +697,8 @@ pub fn doctor_and_dependency_graph_are_read_only_and_daemon_routable_test() {
       ]),
     )
 
+  // Catch up explicitly before asserting health; doctor must not repair it.
+  let _ = should.be_ok(projections.ensure_runtime(ws))
   let doctor = should.be_ok(daemon_store.doctor(ws))
   json.to_string(doctor)
   |> string.contains("\"healthy\":true")

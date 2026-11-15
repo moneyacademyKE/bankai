@@ -30,13 +30,24 @@ status(Workspace) ->
             {status, HistoryState, HistoryOffset, HistoryLag, HistoryFailure, _, _} = History,
             {status, TextState, TextOffset, TextLag, TextFailure, _, _} = Text,
             {status, VectorState, VectorOffset, VectorLag, VectorFailure, _, _} = Vector,
-            {ok, {bankai@projections:healthy(View), Watermark,
-                  atom_to_binary(HistoryState, utf8), HistoryOffset, HistoryLag,
-                  failure_text(HistoryFailure),
-                  atom_to_binary(TextState, utf8), TextOffset, TextLag,
-                  failure_text(TextFailure),
-                  atom_to_binary(VectorState, utf8), VectorOffset, VectorLag,
-                  failure_text(VectorFailure)}};
+            %% A cached view cannot certify its own freshness. Read authority
+            %% without advancing the projection: doctor remains read-only.
+            case bankai_changefeed_ffi:high_watermark(Workspace) of
+                {ok, Committed} ->
+                    Healthy = bankai@projections:healthy(View)
+                              andalso Watermark =:= Committed,
+                    {ok, {Healthy, Committed,
+                          atom_to_binary(HistoryState, utf8), HistoryOffset,
+                          max(HistoryLag, max(0, Committed - HistoryOffset)),
+                          failure_text(HistoryFailure),
+                          atom_to_binary(TextState, utf8), TextOffset,
+                          max(TextLag, max(0, Committed - TextOffset)),
+                          failure_text(TextFailure),
+                          atom_to_binary(VectorState, utf8), VectorOffset,
+                          max(VectorLag, max(0, Committed - VectorOffset)),
+                          failure_text(VectorFailure)}};
+                {error, _} = Error -> Error
+            end;
         [] -> {error, <<"projection runtime is not started">>}
     end.
 
