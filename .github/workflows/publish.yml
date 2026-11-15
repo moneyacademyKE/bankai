@@ -52,9 +52,15 @@ jobs:
         run: |
           set -euo pipefail
           gh release view "$RELEASE_TAG" --json assets > release-assets.json
-          if ! jq -e '.assets | any(.name == "bankai")' release-assets.json >/dev/null; then
-            gh release upload "$RELEASE_TAG" dist/bankai
+          asset_id=$(jq -r '.assets[] | select(.name == "bankai") | .id' release-assets.json)
+          if [ -n "$asset_id" ]; then
+            # Keep a recoverable copy before replacing a previously uploaded binary.
+            mkdir -p previous
+            gh release download "$RELEASE_TAG" --pattern bankai --dir previous
+            mv previous/bankai "previous/bankai-before-${GITHUB_RUN_ID}"
+            gh release upload "$RELEASE_TAG" "previous/bankai-before-${GITHUB_RUN_ID}"
           fi
+          gh release upload "$RELEASE_TAG" dist/bankai --clobber
           mkdir -p downloaded
           gh release download "$RELEASE_TAG" --pattern bankai --dir downloaded
           chmod +x downloaded/bankai
