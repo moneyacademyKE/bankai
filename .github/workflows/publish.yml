@@ -4,12 +4,29 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and verify
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: binary-release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      BANKAI_EMBED_BACKEND: term-hash
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ github.event.release.tag_name || inputs.tag }}
 
       - uses: erlef/setup-beam@v1
         with:
@@ -20,9 +37,28 @@ jobs:
         run: gleam deps download
 
       - name: Run verification tests
-        run: gleam test
+        run: make test
 
-      - name: Publish to Hex.pm
+      - name: Build and smoke-test escript
+        run: |
+          make escript
+          chmod +x dist/bankai
+          expected="${RELEASE_TAG#v}"
+          ./dist/bankai --version | jq -e --arg version "$expected" '.ok.version == $version'
+
+      - name: Upload missing asset and verify published download
         env:
-          HEXPM_API_KEY: ${{ secrets.HEXPM_API_KEY }}
-        run: echo "I am not using semantic versioning" | gleam publish --yes
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" --json assets > release-assets.json
+          if ! jq -e '.assets | any(.name == "bankai")' release-assets.json >/dev/null; then
+            gh release upload "$RELEASE_TAG" dist/bankai
+          fi
+          mkdir -p downloaded
+          gh release download "$RELEASE_TAG" --pattern bankai --dir downloaded
+          chmod +x downloaded/bankai
+          expected="${RELEASE_TAG#v}"
+          ./downloaded/bankai --version | jq -e --arg version "$expected" '.ok.version == $version'
+          ./downloaded/bankai --help > /dev/null
+          sha256sum downloaded/bankai
